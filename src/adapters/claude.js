@@ -56,9 +56,12 @@ const REPORT_FINDINGS_TOOL = {
  */
 export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.claude }) {
   if (!changedFiles || changedFiles.length === 0) return [];
-  if (!toolConfig.enabled) return [];
+  if (!toolConfig.enabled) {
+    console.log('[claude] skipping — not enabled for this repo (set "claude": {"enabled": true} in config/repos.json)');
+    return [];
+  }
 
-  debug('claude', `scanning ${changedFiles.length} file(s)`);
+  console.log(`[claude] scanning ${changedFiles.length} file(s) with model ${toolConfig.model}`);
 
   // 1. Read files, skip binaries, cap at FILE_SIZE_LIMIT each
   const fileContents = [];
