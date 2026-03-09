@@ -36,6 +36,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src/ ./src/
+COPY config/ ./config/
 
 # /tmp is writable by all users; Layne clones repos there and cleans up after itself.
 # Explicitly declare it as a volume so Docker does not persist scan artifacts.
