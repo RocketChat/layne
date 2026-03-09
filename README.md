@@ -79,6 +79,7 @@ Repositories with no entry — or whose entry omits a tool block — get the def
 |---|---|
 | Semgrep | `semgrep scan --config auto --json <files>` |
 | Trufflehog | `trufflehog filesystem --json --no-update <files>` |
+| Claude | disabled (must opt in per repo) |
 
 ### Schema
 
@@ -92,10 +93,16 @@ Repositories with no entry — or whose entry omits a tool block — get the def
     "trufflehog": {
       "enabled": true,
       "extraArgs": ["--only-verified", "--exclude-detectors", "GitHub,Slack"]
+    },
+    "claude": {
+      "enabled": true,
+      "model": "claude-haiku-4-5-20251001"
     }
   }
 }
 ```
+
+**Semgrep / Trufflehog keys:**
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -110,6 +117,15 @@ Repositories with no entry — or whose entry omits a tool block — get the def
 > ```json
 > "extraArgs": ["--config", "auto", "--config", "p/owasp-top-ten"]
 > ```
+
+**Claude keys:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Must be set to `true` to enable Claude scanning for this repo |
+| `model` | string | `claude-haiku-4-5-20251001` | Claude model ID to use for analysis |
+
+> **Opt-in only.** Claude scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly set `"enabled": true`. Requires `ANTHROPIC_API_KEY` to be set in the environment.
 
 ### Examples
 
@@ -166,6 +182,27 @@ Repositories with no entry — or whose entry omits a tool block — get the def
     },
     "trufflehog": {
       "extraArgs": ["--only-verified", "--exclude-detectors", "GitHub,Slack"]
+    }
+  }
+}
+```
+
+**Enable Claude malicious-intent scanning for a repo:**
+```json
+{
+  "acme/frontend": {
+    "claude": { "enabled": true }
+  }
+}
+```
+
+**Use a more capable Claude model for a sensitive repo:**
+```json
+{
+  "acme/payments": {
+    "claude": {
+      "enabled": true,
+      "model": "claude-opus-4-6"
     }
   }
 }
@@ -478,6 +515,7 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 | `GH_WEBHOOK_SECRET` | Webhook HMAC secret (maps to `GITHUB_WEBHOOK_SECRET` in `.env`) |
 | `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude scanning (required even when no repos have Claude enabled) |
 
 > **Note:** GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
 
@@ -562,6 +600,7 @@ To disable, remove or set `DEBUG_MODE=false` and restart.
 | `GITHUB_APP_ID` | Yes | Numeric GitHub App ID |
 | `GITHUB_APP_PRIVATE_KEY` | Yes | RSA private key (single line, `\n`-escaped) |
 | `GITHUB_WEBHOOK_SECRET` | Yes | HMAC secret for webhook signature verification |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude malicious-intent scanning |
 | `REDIS_URL` | Yes | Redis connection string (set automatically in Docker Compose) |
 | `DOMAIN` | Yes | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Yes | Email for Let's Encrypt expiry notifications |

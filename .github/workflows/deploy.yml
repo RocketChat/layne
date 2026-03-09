@@ -55,6 +55,7 @@ jobs:
           GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
           DOMAIN: ${{ secrets.DOMAIN }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           {
             printf 'GITHUB_APP_ID=%s\n'          "$GH_APP_ID"
@@ -62,6 +63,7 @@ jobs:
             printf 'GITHUB_WEBHOOK_SECRET=%s\n'  "$GH_WEBHOOK_SECRET"
             printf 'DOMAIN=%s\n'                 "$DOMAIN"
             printf 'LETSENCRYPT_EMAIL=%s\n'      "$LETSENCRYPT_EMAIL"
+            printf 'ANTHROPIC_API_KEY=%s\n'      "$ANTHROPIC_API_KEY"
           } | ssh -F "$HOME/.ssh/config" deploy-target \
               'cat > /home/ubuntu/layne/layne/.env'
 

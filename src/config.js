@@ -14,6 +14,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     enabled:   true,
     extraArgs: [],
   }),
+  claude: Object.freeze({
+    enabled: false,
+    model:   'claude-haiku-4-5-20251001',
+  }),
 });
 
 // Cached after first read — repos.json is loaded once per worker process.
@@ -38,5 +42,6 @@ export async function loadScanConfig({ owner, repo }) {
   return {
     semgrep:    { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog: { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
+    claude:     { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
   };
 }

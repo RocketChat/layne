@@ -11,6 +11,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@octokit/auth-app": "^7.0.0",
     "@octokit/rest": "^21.0.0",
     "bullmq": "^5.0.0",

@@ -8,15 +8,21 @@ vi.mock('../adapters/semgrep.js', () => ({
   runSemgrep: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock('../adapters/claude.js', () => ({
+  runClaude: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock('../config.js', () => ({
   loadScanConfig: vi.fn().mockResolvedValue({
     semgrep:    { enabled: true, extraArgs: ['--config', 'auto'] },
     trufflehog: { enabled: true, extraArgs: [] },
+    claude:     { enabled: false, model: 'claude-haiku-4-5-20251001' },
   }),
 }));
 
 const { runTrufflehog }  = await import('../adapters/trufflehog.js');
 const { runSemgrep }     = await import('../adapters/semgrep.js');
+const { runClaude }      = await import('../adapters/claude.js');
 const { loadScanConfig } = await import('../config.js');
 const { dispatch }       = await import('../dispatcher.js');
 
@@ -33,10 +39,11 @@ const BASE = {
 describe('dispatch()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('calls both adapters', async () => {
+  it('calls all three adapters', async () => {
     await dispatch(BASE);
     expect(runTrufflehog).toHaveBeenCalledOnce();
     expect(runSemgrep).toHaveBeenCalledOnce();
+    expect(runClaude).toHaveBeenCalledOnce();
   });
 
   it('passes changedFiles to the trufflehog adapter', async () => {
@@ -121,5 +128,27 @@ describe('dispatch()', () => {
     expect(runTrufflehog).toHaveBeenCalledWith(expect.objectContaining({
       toolConfig: { enabled: true, extraArgs: [] },
     }));
+  });
+
+  it('passes toolConfig.claude from scanConfig to runClaude', async () => {
+    await dispatch(BASE);
+    expect(runClaude).toHaveBeenCalledWith(expect.objectContaining({
+      toolConfig: { enabled: false, model: 'claude-haiku-4-5-20251001' },
+    }));
+  });
+
+  it('merges findings from all three adapters', async () => {
+    const th = { file: 'a.js', line: 1, severity: 'high',   message: 'secret',   ruleId: 'trufflehog/aws',         tool: 'trufflehog' };
+    const sg = { file: 'b.py', line: 5, severity: 'medium', message: 'eval',     ruleId: 'python/eval',            tool: 'semgrep' };
+    const cl = { file: 'c.sh', line: 3, severity: 'high',   message: 'backdoor', ruleId: 'claude/reverse-shell',   tool: 'claude' };
+    runTrufflehog.mockResolvedValueOnce([th]);
+    runSemgrep.mockResolvedValueOnce([sg]);
+    runClaude.mockResolvedValueOnce([cl]);
+
+    const findings = await dispatch(BASE);
+    expect(findings).toHaveLength(3);
+    expect(findings).toContainEqual(th);
+    expect(findings).toContainEqual(sg);
+    expect(findings).toContainEqual(cl);
   });
 });

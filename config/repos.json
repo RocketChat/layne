@@ -5,6 +5,9 @@
     },
     "trufflehog": {
       "extraArgs": ["--only-verified"]
+    },
+    "claude": {
+      "enabled": true
     }
   },
   "acme/backend": {
@@ -15,6 +18,17 @@
   "acme/internal-tool": {
     "trufflehog": {
       "enabled": false
+    }
+  },
+  "acme/payments": {
+    "claude": {
+      "enabled": true,
+      "model": "claude-opus-4-6"
+    }
+  },
+  "RocketChat/security": {
+    "claude": {
+      "enabled": true
     }
   }
 }

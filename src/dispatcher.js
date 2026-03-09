@@ -1,5 +1,6 @@
 import { runTrufflehog } from './adapters/trufflehog.js';
 import { runSemgrep }    from './adapters/semgrep.js';
+import { runClaude }     from './adapters/claude.js';
 import { debug }         from './debug.js';
 import { loadScanConfig } from './config.js';
 
@@ -13,10 +14,11 @@ export async function dispatch({ workspacePath, changedFiles, baseSha, baseRef, 
 
   const scanConfig = await loadScanConfig({ owner, repo });
 
-  const [trufflehogFindings, semgrepFindings] = await Promise.all([
+  const [trufflehogFindings, semgrepFindings, claudeFindings] = await Promise.all([
     runTrufflehog({ workspacePath, changedFiles, toolConfig: scanConfig.trufflehog }),
     runSemgrep({ workspacePath, changedFiles, toolConfig: scanConfig.semgrep }),
+    runClaude({ workspacePath, changedFiles, toolConfig: scanConfig.claude }),
   ]);
 
-  return [...trufflehogFindings, ...semgrepFindings];
+  return [...trufflehogFindings, ...semgrepFindings, ...claudeFindings];
 }
