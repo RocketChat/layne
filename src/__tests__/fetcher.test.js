@@ -1,0 +1,170 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mockMkdtemp = vi.fn().mockResolvedValue('/tmp/layne-job-1-xyz');
+const mockRm      = vi.fn().mockResolvedValue(undefined);
+const mockExecFile = vi.fn((cmd, args, cb) => cb(null, '', ''));
+
+vi.mock('fs/promises', () => ({
+  mkdtemp: mockMkdtemp,
+  rm:      mockRm,
+}));
+
+vi.mock('child_process', () => ({
+  execFile: mockExecFile,
+}));
+
+const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
+
+describe('createWorkspace()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('creates a temp directory prefixed with the job ID', async () => {
+    const path = await createWorkspace('job-42');
+    expect(mockMkdtemp).toHaveBeenCalledWith(expect.stringContaining('layne-job-42-'));
+    expect(path).toBe('/tmp/layne-job-1-xyz');
+  });
+});
+
+// Helper — call cloneRepo with default args
+function doClone(overrides = {}) {
+  return cloneRepo({
+    token:         'tok123',
+    cloneUrl:      'https://github.com/org/repo.git',
+    headSha:       'abc123',
+    workspacePath: '/tmp/workspace',
+    ...overrides,
+  });
+}
+
+describe('cloneRepo()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('initialises an empty git repo in the workspace', async () => {
+    await doClone();
+    const [cmd, args] = mockExecFile.mock.calls[0];
+    expect(cmd).toBe('git');
+    expect(args).toContain('init');
+    expect(args).toContain('/tmp/workspace');
+  });
+
+  it('adds the authenticated URL as the origin remote', async () => {
+    await doClone();
+    const [cmd, args] = mockExecFile.mock.calls[1]; // second call: remote add
+    expect(cmd).toBe('git');
+    expect(args).toContain('remote');
+    expect(args).toContain('add');
+    expect(args).toContain('origin');
+    expect(args).toContain('https://x-access-token:tok123@github.com/org/repo.git');
+  });
+
+  it('fetches exactly the head SHA with depth 1', async () => {
+    await doClone({ headSha: 'deadbeef' });
+    const [cmd, args] = mockExecFile.mock.calls[2]; // third call: fetch
+    expect(cmd).toBe('git');
+    expect(args).toContain('fetch');
+    expect(args).toContain('--depth');
+    expect(args).toContain('1');
+    expect(args).toContain('deadbeef');
+  });
+
+  it('checks out FETCH_HEAD after fetching', async () => {
+    await doClone();
+    const [cmd, args] = mockExecFile.mock.calls[3]; // fourth call: checkout
+    expect(cmd).toBe('git');
+    expect(args).toContain('checkout');
+    expect(args).toContain('FETCH_HEAD');
+  });
+
+  it('injects the token into the remote URL', async () => {
+    await doClone({ token: 'tok999' });
+    const remoteAddArgs = mockExecFile.mock.calls[1][1];
+    const url = remoteAddArgs.find(a => a.includes('x-access-token'));
+    expect(url).toBe('https://x-access-token:tok999@github.com/org/repo.git');
+  });
+
+  it('throws if any git step fails', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(new Error('Repository not found'), '', '')
+    );
+    await expect(doClone()).rejects.toThrow('Repository not found');
+  });
+});
+
+describe('fetchBase()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('runs git fetch for the base ref inside the workspace', async () => {
+    await fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' });
+
+    const [cmd, args] = mockExecFile.mock.calls[0];
+    expect(cmd).toBe('git');
+    expect(args).toContain('-C');
+    expect(args).toContain('/tmp/ws');
+    expect(args).toContain('fetch');
+    expect(args).toContain('origin');
+    expect(args).toContain('main');
+  });
+
+  it('fetches with depth 1 to keep it shallow', async () => {
+    await fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' });
+    const args = mockExecFile.mock.calls[0][1];
+    expect(args).toContain('--depth');
+  });
+
+  it('throws if git fetch fails', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(new Error('fatal: remote branch not found'), '', '')
+    );
+    await expect(fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' }))
+      .rejects.toThrow('fatal: remote branch not found');
+  });
+});
+
+describe('getChangedFiles()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('runs git diff --name-only -z FETCH_HEAD inside the workspace', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
+    await getChangedFiles({ workspacePath: '/tmp/ws' });
+
+    const [cmd, args] = mockExecFile.mock.calls[0];
+    expect(cmd).toBe('git');
+    expect(args).toContain('-C');
+    expect(args).toContain('/tmp/ws');
+    expect(args).toContain('diff');
+    expect(args).toContain('--name-only');
+    expect(args).toContain('-z');
+    expect(args).toContain('FETCH_HEAD');
+  });
+
+  it('returns an array of changed file paths (NUL-delimited output)', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'src/app.js\0src/utils.js\0', '')
+    );
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual(['src/app.js', 'src/utils.js']);
+  });
+
+  it('correctly handles filenames with spaces', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'src/my file.js\0src/utils.js\0', '')
+    );
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual(['src/my file.js', 'src/utils.js']);
+  });
+
+  it('returns an empty array when no files changed', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual([]);
+  });
+});
+
+describe('cleanupWorkspace()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('removes the workspace directory recursively', async () => {
+    await cleanupWorkspace('/tmp/layne-job-1-xyz');
+    expect(mockRm).toHaveBeenCalledWith('/tmp/layne-job-1-xyz', { recursive: true, force: true });
+  });
+});
