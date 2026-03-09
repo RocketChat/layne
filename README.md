@@ -600,7 +600,7 @@ To disable, remove or set `DEBUG_MODE=false` and restart.
 | `GITHUB_APP_ID` | Yes | Numeric GitHub App ID |
 | `GITHUB_APP_PRIVATE_KEY` | Yes | RSA private key (single line, `\n`-escaped) |
 | `GITHUB_WEBHOOK_SECRET` | Yes | HMAC secret for webhook signature verification |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude malicious-intent scanning |
+| `ANTHROPIC_API_KEY` | No | Anthropic API key for Claude scanning (required when any repo has `claude.enabled: true`) |
 | `REDIS_URL` | Yes | Redis connection string (set automatically in Docker Compose) |
 | `DOMAIN` | Yes | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Yes | Email for Let's Encrypt expiry notifications |
