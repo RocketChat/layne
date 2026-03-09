@@ -31,13 +31,13 @@ jobs:
           echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           cat >> ~/.ssh/config << 'EOF'
-          Host deploy-target
-            HostName ${{ secrets.EC2_HOST }}
-            User ubuntu
-            IdentityFile ~/.ssh/deploy_key
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-          EOF
+Host deploy-target
+  HostName ${{ secrets.EC2_HOST }}
+  User ubuntu
+  IdentityFile ~/.ssh/deploy_key
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+EOF
 
       - name: Sync code to server
         run: |
