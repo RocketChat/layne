@@ -30,7 +30,14 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host deploy-target
+            HostName ${{ secrets.EC2_HOST }}
+            User ubuntu
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
 
       - name: Sync code to server
         run: |
@@ -40,8 +47,8 @@ jobs:
             --exclude='.env' \
             --exclude='data' \
             --exclude='coverage' \
-            -e "ssh -i ~/.ssh/deploy_key" \
-            ./ ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/layne/layne/
+            -e "ssh -F ~/.ssh/config" \
+            ./ deploy-target:/home/ubuntu/layne/layne/
 
       - name: Write .env from secrets
         env:
@@ -52,15 +59,15 @@ jobs:
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
         run: |
           {
-            printf 'GITHUB_APP_ID=%s\n'        "$GH_APP_ID"
+            printf 'GITHUB_APP_ID=%s\n'          "$GH_APP_ID"
             printf 'GITHUB_APP_PRIVATE_KEY=%s\n' "$GH_APP_PRIVATE_KEY"
-            printf 'GITHUB_WEBHOOK_SECRET=%s\n' "$GH_WEBHOOK_SECRET"
-            printf 'DOMAIN=%s\n'              "$DOMAIN"
-            printf 'LETSENCRYPT_EMAIL=%s\n'   "$LETSENCRYPT_EMAIL"
-          } | ssh -i ~/.ssh/deploy_key ubuntu@${{ secrets.EC2_HOST }} \
+            printf 'GITHUB_WEBHOOK_SECRET=%s\n'  "$GH_WEBHOOK_SECRET"
+            printf 'DOMAIN=%s\n'                 "$DOMAIN"
+            printf 'LETSENCRYPT_EMAIL=%s\n'      "$LETSENCRYPT_EMAIL"
+          } | ssh -F ~/.ssh/config deploy-target \
               'cat > /home/ubuntu/layne/layne/.env'
 
       - name: Rebuild and restart server and worker
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@${{ secrets.EC2_HOST }} \
+          ssh -F ~/.ssh/config deploy-target \
             'cd /home/ubuntu/layne/layne && docker compose up --build --no-deps -d server worker'
