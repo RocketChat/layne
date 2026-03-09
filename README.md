@@ -1,6 +1,10 @@
 # Layne
 
-Layne is a self-hosted GitHub App that centralises security scanning across your repositories. Instead of maintaining a GitHub Actions workflow file in every repo, you install Layne once and it listens for pull request events, runs your security tools server-side, and posts the results back as native GitHub Check Run annotations.
+<p align="center">
+  <img src="assets/layne-logo.png" alt="Layne logo" width="160" />
+</p>
+
+> Layne is a self-hosted GitHub App that centralises security scanning across our repositories. Since we don't use commercial SAST/secrets scanning tools, nor we have access to GitHub Enterprise, it can get hard to maintain different GitHub Actions workflow files across different repositories - especially as such repositories grow in number. Instead, we install Layne once and it listens for pull request events, runs our security tools server-side, and posts the results back as native GitHub Check Run annotations.
 
 ---
 
