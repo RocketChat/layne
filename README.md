@@ -13,6 +13,7 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 ## Table of Contents
 
 - [How It Works](#how-it-works)
+- [Per-Repo Configuration](#per-repo-configuration)
 - [Deployment](#deployment)
   - [Prerequisites](#prerequisites)
   - [Step 1 — Create the GitHub App](#step-1--create-the-github-app)
@@ -65,6 +66,121 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 When a PR is opened or updated, GitHub sends a webhook to Layne. The server immediately enqueues a scan job and returns `200 OK` to GitHub. A worker picks up the job, clones exactly the commit that triggered the event, runs Trufflehog (secrets) and Semgrep (SAST) against only the files changed in the PR, and posts the results as inline annotations on the Check Run.
 
 Scans are **diff-aware**: only the files modified in the PR are passed to each scanner. Findings in files you did not touch are never reported.
+
+---
+
+## Per-Repo Configuration
+
+Scanner behaviour can be customised per repository without touching any code. All overrides live in `config/repos.json`, keyed by `"owner/repo"`. Layne reads this file once at worker startup; **restart the worker to pick up changes** (the automated deploy pipeline does this automatically).
+
+Repositories with no entry — or whose entry omits a tool block — get the defaults:
+
+| Tool | Default behaviour |
+|---|---|
+| Semgrep | `semgrep scan --config auto --json <files>` |
+| Trufflehog | `trufflehog filesystem --json --no-update <files>` |
+
+### Schema
+
+```json
+{
+  "owner/repo": {
+    "semgrep": {
+      "enabled": true,
+      "extraArgs": ["--config", "p/ruleset", "--severity", "WARNING"]
+    },
+    "trufflehog": {
+      "enabled": true,
+      "extraArgs": ["--only-verified", "--exclude-detectors", "GitHub,Slack"]
+    }
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Set to `false` to skip the tool entirely for this repo |
+| `extraArgs` | string[] | see below | CLI flags passed verbatim to the tool, between the subcommand and `--json` |
+
+**Default `extraArgs`:**
+- Semgrep: `["--config", "auto"]`
+- Trufflehog: `[]`
+
+> **Replacement, not extension.** When you set `extraArgs`, it fully replaces the default. If you want `--config auto` _and_ a custom ruleset, include both:
+> ```json
+> "extraArgs": ["--config", "auto", "--config", "p/owasp-top-ten"]
+> ```
+
+### Examples
+
+**Use a specific Semgrep ruleset instead of `auto`:**
+```json
+{
+  "acme/frontend": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/owasp-top-ten", "--severity", "WARNING"]
+    }
+  }
+}
+```
+
+**Run multiple Semgrep rulesets on a Python backend:**
+```json
+{
+  "acme/backend": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/security-audit", "--config", "p/python"]
+    }
+  }
+}
+```
+
+**Only report verified secrets (reduce Trufflehog noise):**
+```json
+{
+  "acme/scripts": {
+    "trufflehog": {
+      "extraArgs": ["--only-verified"]
+    }
+  }
+}
+```
+
+**Disable a scanner entirely for a repo:**
+```json
+{
+  "acme/internal-tool": {
+    "trufflehog": {
+      "enabled": false
+    }
+  }
+}
+```
+
+**Combine overrides for both tools:**
+```json
+{
+  "acme/monorepo": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/owasp-top-ten", "--exclude", "tests/**"]
+    },
+    "trufflehog": {
+      "extraArgs": ["--only-verified", "--exclude-detectors", "GitHub,Slack"]
+    }
+  }
+}
+```
+
+### How args are assembled
+
+The final CLI invocations look like this (using the Semgrep example above):
+
+```
+semgrep scan <extraArgs> --json <absolute-file-paths...>
+trufflehog filesystem --json --no-update <extraArgs> <absolute-file-paths...>
+```
+
+Arguments are passed directly via `execFile` — **not** through a shell — so no quoting or escaping is needed and shell injection is not possible.
 
 ---
 

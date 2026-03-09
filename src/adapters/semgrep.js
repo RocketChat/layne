@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { exec, stripPrefix } from './helpers.js';
 import { debug } from '../debug.js';
+import { DEFAULT_CONFIG } from '../config.js';
 
 /**
  * Runs Semgrep against the files changed in the PR and returns findings
@@ -13,13 +14,14 @@ import { debug } from '../debug.js';
  * Exit code 1 means findings were found; we parse stdout rather than
  * rejecting on non-zero exit.
  */
-export async function runSemgrep({ workspacePath, changedFiles }) {
+export async function runSemgrep({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.semgrep }) {
   if (!changedFiles || changedFiles.length === 0) return [];
+  if (!toolConfig.enabled) return [];
 
   debug('semgrep', `scanning ${changedFiles.length} file(s): ${changedFiles.join(', ')}`);
 
   const absolutePaths = changedFiles.map(f => join(workspacePath, f));
-  const args = ['scan', '--config', 'auto', '--json', ...absolutePaths];
+  const args = ['scan', ...(toolConfig.extraArgs ?? []), '--json', ...absolutePaths];
 
   const stdout = await exec('semgrep', args, { cwd: workspacePath });
 

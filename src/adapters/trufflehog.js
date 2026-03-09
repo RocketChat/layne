@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { exec, stripPrefix } from './helpers.js';
 import { debug } from '../debug.js';
+import { DEFAULT_CONFIG } from '../config.js';
 
 /**
  * Runs Trufflehog against the files changed in the PR and returns findings
@@ -17,12 +18,14 @@ import { debug } from '../debug.js';
 // BATCH_SIZE files is uncommon but valid in monorepos.
 const BATCH_SIZE = 200;
 
-export async function runTrufflehog({ workspacePath, changedFiles }) {
+export async function runTrufflehog({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.trufflehog }) {
   if (!changedFiles || changedFiles.length === 0) return [];
+  if (!toolConfig.enabled) return [];
 
   const absolutePaths = changedFiles.map(f => join(workspacePath, f));
   const findings = [];
   const batchCount = Math.ceil(absolutePaths.length / BATCH_SIZE);
+  const extraArgs = toolConfig.extraArgs ?? [];
 
   debug('trufflehog', `scanning ${changedFiles.length} file(s) in ${batchCount} batch(es)`);
 
@@ -30,7 +33,7 @@ export async function runTrufflehog({ workspacePath, changedFiles }) {
     const batch = absolutePaths.slice(i, i + BATCH_SIZE);
     const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
     debug('trufflehog', `batch ${batchIndex}/${batchCount}: ${batch.length} file(s)`);
-    const stdout = await exec('trufflehog', ['filesystem', '--json', '--no-update', ...batch]);
+    const stdout = await exec('trufflehog', ['filesystem', '--json', '--no-update', ...extraArgs, ...batch]);
 
     stdout
       .split('\n')

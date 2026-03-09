@@ -1,0 +1,20 @@
+{
+  "acme/frontend": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/owasp-top-ten", "--severity", "WARNING"]
+    },
+    "trufflehog": {
+      "extraArgs": ["--only-verified"]
+    }
+  },
+  "acme/backend": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/security-audit", "--config", "p/python"]
+    }
+  },
+  "acme/internal-tool": {
+    "trufflehog": {
+      "enabled": false
+    }
+  }
+}

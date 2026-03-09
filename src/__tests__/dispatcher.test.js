@@ -8,9 +8,17 @@ vi.mock('../adapters/semgrep.js', () => ({
   runSemgrep: vi.fn().mockResolvedValue([]),
 }));
 
-const { runTrufflehog } = await import('../adapters/trufflehog.js');
-const { runSemgrep }    = await import('../adapters/semgrep.js');
-const { dispatch }      = await import('../dispatcher.js');
+vi.mock('../config.js', () => ({
+  loadScanConfig: vi.fn().mockResolvedValue({
+    semgrep:    { enabled: true, extraArgs: ['--config', 'auto'] },
+    trufflehog: { enabled: true, extraArgs: [] },
+  }),
+}));
+
+const { runTrufflehog }  = await import('../adapters/trufflehog.js');
+const { runSemgrep }     = await import('../adapters/semgrep.js');
+const { loadScanConfig } = await import('../config.js');
+const { dispatch }       = await import('../dispatcher.js');
 
 const BASE = {
   workspacePath: '/tmp/ws',
@@ -94,5 +102,24 @@ describe('dispatch()', () => {
   it('propagates errors from semgrep', async () => {
     runSemgrep.mockRejectedValueOnce(new Error('semgrep not installed'));
     await expect(dispatch(BASE)).rejects.toThrow('semgrep not installed');
+  });
+
+  it('calls loadScanConfig with owner and repo from the dispatch args', async () => {
+    await dispatch(BASE);
+    expect(loadScanConfig).toHaveBeenCalledWith({ owner: 'org', repo: 'repo' });
+  });
+
+  it('passes toolConfig.semgrep from scanConfig to runSemgrep', async () => {
+    await dispatch(BASE);
+    expect(runSemgrep).toHaveBeenCalledWith(expect.objectContaining({
+      toolConfig: { enabled: true, extraArgs: ['--config', 'auto'] },
+    }));
+  });
+
+  it('passes toolConfig.trufflehog from scanConfig to runTrufflehog', async () => {
+    await dispatch(BASE);
+    expect(runTrufflehog).toHaveBeenCalledWith(expect.objectContaining({
+      toolConfig: { enabled: true, extraArgs: [] },
+    }));
   });
 });

@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockExecFile = vi.fn();
 vi.mock('child_process', () => ({ execFile: mockExecFile }));
+vi.mock('../../config.js', () => ({
+  DEFAULT_CONFIG: Object.freeze({
+    semgrep: Object.freeze({ enabled: true, extraArgs: ['--config', 'auto'] }),
+    trufflehog: Object.freeze({ enabled: true, extraArgs: [] }),
+  }),
+}));
 
 const { runSemgrep } = await import('../../adapters/semgrep.js');
 
@@ -166,5 +172,70 @@ describe('runSemgrep()', () => {
   it('throws when execFile errors with no stdout (e.g. command not found)', async () => {
     stubError('spawn semgrep ENOENT');
     await expect(runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES })).rejects.toThrow('spawn semgrep ENOENT');
+  });
+
+  it('returns empty array immediately when toolConfig.enabled is false', async () => {
+    const findings = await runSemgrep({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED_FILES,
+      toolConfig:    { enabled: false, extraArgs: [] },
+    });
+    expect(findings).toEqual([]);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('default toolConfig uses --config auto from DEFAULT_CONFIG', async () => {
+    stubStdout(semgrepOutput([]));
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const idx = args.indexOf('--config');
+    expect(args[idx + 1]).toBe('auto');
+  });
+
+  it('custom extraArgs replaces --config auto entirely', async () => {
+    stubStdout(semgrepOutput([]));
+    await runSemgrep({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED_FILES,
+      toolConfig:    { enabled: true, extraArgs: ['--config', 'p/owasp-top-ten'] },
+    });
+
+    const args = mockExecFile.mock.calls[0][1];
+    expect(args).toContain('--config');
+    expect(args).toContain('p/owasp-top-ten');
+    expect(args).not.toContain('auto');
+  });
+
+  it('multiple extraArgs flags appear in correct order before --json', async () => {
+    stubStdout(semgrepOutput([]));
+    await runSemgrep({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED_FILES,
+      toolConfig:    { enabled: true, extraArgs: ['--config', 'p/custom', '--severity', 'WARNING'] },
+    });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const scanIdx   = args.indexOf('scan');
+    const configIdx = args.indexOf('--config');
+    const jsonIdx   = args.indexOf('--json');
+    expect(configIdx).toBeGreaterThan(scanIdx);
+    expect(jsonIdx).toBeGreaterThan(args.indexOf('WARNING'));
+    expect(args[configIdx + 1]).toBe('p/custom');
+    expect(args[args.indexOf('--severity') + 1]).toBe('WARNING');
+  });
+
+  it('empty extraArgs produces no extra flags between scan and --json', async () => {
+    stubStdout(semgrepOutput([]));
+    await runSemgrep({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED_FILES,
+      toolConfig:    { enabled: true, extraArgs: [] },
+    });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const scanIdx = args.indexOf('scan');
+    const jsonIdx = args.indexOf('--json');
+    expect(jsonIdx).toBe(scanIdx + 1);
   });
 });

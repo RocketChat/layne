@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockExecFile = vi.fn();
 vi.mock('child_process', () => ({ execFile: mockExecFile }));
+vi.mock('../../config.js', () => ({
+  DEFAULT_CONFIG: Object.freeze({
+    semgrep: Object.freeze({ enabled: true, extraArgs: ['--config', 'auto'] }),
+    trufflehog: Object.freeze({ enabled: true, extraArgs: [] }),
+  }),
+}));
 
 const { runTrufflehog } = await import('../../adapters/trufflehog.js');
 
@@ -136,5 +142,73 @@ describe('runTrufflehog()', () => {
     const [finding] = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
     expect(finding.file).toBe('unknown');
     expect(finding.line).toBe(1);
+  });
+
+  it('returns empty array immediately when toolConfig.enabled is false', async () => {
+    const findings = await runTrufflehog({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED,
+      toolConfig:    { enabled: false, extraArgs: [] },
+    });
+    expect(findings).toEqual([]);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('default toolConfig produces no extra flags between --no-update and file paths', async () => {
+    stubStdout('');
+    await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const noUpdateIdx = args.indexOf('--no-update');
+    expect(args[noUpdateIdx + 1]).toBe('/tmp/ws/src/config.js');
+  });
+
+  it('extraArgs: ["--only-verified"] appears before file paths', async () => {
+    stubStdout('');
+    await runTrufflehog({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED,
+      toolConfig:    { enabled: true, extraArgs: ['--only-verified'] },
+    });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const onlyVerifiedIdx = args.indexOf('--only-verified');
+    const firstFileIdx    = args.indexOf('/tmp/ws/src/config.js');
+    expect(onlyVerifiedIdx).toBeGreaterThan(-1);
+    expect(onlyVerifiedIdx).toBeLessThan(firstFileIdx);
+  });
+
+  it('multiple extraArgs flags all appear before file paths', async () => {
+    stubStdout('');
+    await runTrufflehog({
+      workspacePath: '/tmp/ws',
+      changedFiles:  CHANGED,
+      toolConfig:    { enabled: true, extraArgs: ['--only-verified', '--exclude-detectors', 'GitHub,AWS'] },
+    });
+
+    const args = mockExecFile.mock.calls[0][1];
+    const firstFileIdx        = args.indexOf('/tmp/ws/src/config.js');
+    const onlyVerifiedIdx     = args.indexOf('--only-verified');
+    const excludeDetectorsIdx = args.indexOf('--exclude-detectors');
+    expect(onlyVerifiedIdx).toBeLessThan(firstFileIdx);
+    expect(excludeDetectorsIdx).toBeLessThan(firstFileIdx);
+    expect(args[excludeDetectorsIdx + 1]).toBe('GitHub,AWS');
+  });
+
+  it('extraArgs appear in every batch for large file lists', async () => {
+    // 201 files forces two batches
+    const manyFiles = Array.from({ length: 201 }, (_, i) => `src/file${i}.js`);
+    stubStdout('');
+    stubStdout('');
+    await runTrufflehog({
+      workspacePath: '/tmp/ws',
+      changedFiles:  manyFiles,
+      toolConfig:    { enabled: true, extraArgs: ['--only-verified'] },
+    });
+
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    for (const call of mockExecFile.mock.calls) {
+      expect(call[1]).toContain('--only-verified');
+    }
   });
 });
