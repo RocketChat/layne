@@ -89,11 +89,20 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   // 3. Call Claude for each batch
   const client = new Anthropic();
   const findings = [];
+  let errorCount = 0;
   for (const batch of batches) {
-    findings.push(...await scanBatch(client, batch, toolConfig.model));
+    const result = await scanBatch(client, batch, toolConfig.model);
+    if (result.error) {
+      errorCount++;
+    } else {
+      findings.push(...result.findings);
+    }
   }
 
-  console.log(`[claude] ${findings.length} finding(s):`);
+  if (errorCount > 0) {
+    console.error(`[claude] ${errorCount}/${batches.length} batch(es) failed — findings may be incomplete`);
+  }
+  console.log(`[claude] ${findings.length} finding(s)${errorCount > 0 ? ' (incomplete — API errors occurred)' : ''}:`);
   for (const f of findings) {
     console.log(`[claude]   ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
   }
@@ -139,15 +148,15 @@ async function scanBatch(client, files, model) {
     const toolUse = response.content.find(
       b => b.type === 'tool_use' && b.name === 'report_findings'
     );
-    if (!toolUse) return [];
+    if (!toolUse) return { findings: [] };
 
-    return (toolUse.input.findings ?? []).map(f => ({
+    return { findings: (toolUse.input.findings ?? []).map(f => ({
       ...f,
       ruleId: `claude/${f.ruleId}`,
       tool:   'claude',
-    }));
+    })) };
   } catch (err) {
     console.error('[claude] API error during scan batch:', err.message ?? err);
-    return [];
+    return { error: true };
   }
 }
