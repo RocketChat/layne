@@ -10,7 +10,7 @@ vi.mock('@octokit/auth-app', () => ({
 }));
 
 vi.mock('@octokit/rest', () => ({
-  Octokit: vi.fn().mockImplementation(() => mockOctokitInstance),
+  Octokit: vi.fn().mockImplementation(function() { return mockOctokitInstance; }),
 }));
 
 const { createAppAuth }              = await import('@octokit/auth-app');

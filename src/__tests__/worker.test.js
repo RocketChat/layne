@@ -6,7 +6,7 @@ vi.mock('../queue.js', () => ({
 }));
 
 vi.mock('bullmq', () => ({
-  Worker: vi.fn().mockImplementation(() => ({ on: vi.fn(), close: vi.fn().mockResolvedValue(undefined) })),
+  Worker: vi.fn().mockImplementation(function() { return { on: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }; }),
 }));
 
 vi.mock('../auth.js', () => ({

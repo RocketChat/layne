@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const mockQueue = { name: '', opts: {} };
-const MockQueue = vi.fn().mockImplementation((name, opts) => {
+const MockQueue = vi.fn().mockImplementation(function(name, opts) {
   mockQueue.name = name;
   mockQueue.opts = opts;
   return mockQueue;
 });
 
 const mockRedisInstance = {};
-const MockIORedis = vi.fn().mockImplementation(() => mockRedisInstance);
+const MockIORedis = vi.fn().mockImplementation(function() { return mockRedisInstance; });
 
 vi.mock('bullmq',   () => ({ Queue: MockQueue }));
 vi.mock('ioredis',  () => ({ default: MockIORedis }));
