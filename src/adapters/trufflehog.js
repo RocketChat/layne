@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { exec, stripPrefix } from './helpers.js';
+import { debug } from '../debug.js';
 
 /**
  * Runs Trufflehog against the files changed in the PR and returns findings
@@ -21,9 +22,14 @@ export async function runTrufflehog({ workspacePath, changedFiles }) {
 
   const absolutePaths = changedFiles.map(f => join(workspacePath, f));
   const findings = [];
+  const batchCount = Math.ceil(absolutePaths.length / BATCH_SIZE);
+
+  debug('trufflehog', `scanning ${changedFiles.length} file(s) in ${batchCount} batch(es)`);
 
   for (let i = 0; i < absolutePaths.length; i += BATCH_SIZE) {
     const batch = absolutePaths.slice(i, i + BATCH_SIZE);
+    const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
+    debug('trufflehog', `batch ${batchIndex}/${batchCount}: ${batch.length} file(s)`);
     const stdout = await exec('trufflehog', ['filesystem', '--json', '--no-update', ...batch]);
 
     stdout

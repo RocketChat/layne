@@ -7,19 +7,19 @@ const { runTrufflehog } = await import('../../adapters/trufflehog.js');
 
 // Helper to make execFile resolve with the given stdout.
 function stubStdout(stdout) {
-  mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, stdout, ''));
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => cb(null, stdout, ''));
 }
 
 // Helper to make execFile resolve with a non-zero exit but still produce stdout
 // (e.g. Trufflehog exits 183 when secrets are found).
 function stubExitWithStdout(stdout) {
   const err = Object.assign(new Error('exit 183'), { code: 183 });
-  mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(err, stdout, ''));
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => cb(err, stdout, ''));
 }
 
 // Helper to make execFile fail with no stdout (command not found, etc.).
 function stubError(message) {
-  mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) =>
     cb(new Error(message), '', '')
   );
 }

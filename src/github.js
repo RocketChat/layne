@@ -1,4 +1,5 @@
 import { getInstallationOctokit } from './auth.js';
+import { debug } from './debug.js';
 
 const CHECK_NAME = 'Layne Security Scan';
 
@@ -7,6 +8,8 @@ const CHECK_NAME = 'Layne Security Scan';
  * Returns the Check Run ID, which the worker uses to update it later.
  */
 export async function createCheckRun({ installationId, owner, repo, headSha }) {
+  debug('github', `creating check run for ${owner}/${repo} sha=${headSha}`);
+
   const octokit = await getInstallationOctokit(installationId);
 
   const { data } = await octokit.checks.create({
@@ -17,6 +20,7 @@ export async function createCheckRun({ installationId, owner, repo, headSha }) {
     status:   'queued',
   });
 
+  debug('github', `check run created: id=${data.id}`);
   return data.id;
 }
 
@@ -24,6 +28,8 @@ export async function createCheckRun({ installationId, owner, repo, headSha }) {
  * Marks the Check Run as in_progress when the worker picks up the job.
  */
 export async function startCheckRun({ installationId, owner, repo, checkRunId }) {
+  debug('github', `marking check run ${checkRunId} in_progress for ${owner}/${repo}`);
+
   const octokit = await getInstallationOctokit(installationId);
 
   await octokit.checks.update({
@@ -59,8 +65,11 @@ export async function completeCheckRun({
   const chunks = chunkArray(annotations, 50);
   if (chunks.length === 0) chunks.push([]);
 
+  debug('github', `completing check run ${checkRunId} for ${owner}/${repo}: conclusion=${conclusion} annotations=${annotations.length} chunks=${chunks.length}`);
+
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1;
+    debug('github', `posting chunk ${i + 1}/${chunks.length} (${chunks[i].length} annotation(s))`);
 
     await octokit.checks.update({
       owner,

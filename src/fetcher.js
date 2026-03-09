@@ -2,13 +2,21 @@ import { execFile } from 'child_process';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { debug } from './debug.js';
 
 /**
  * Runs a git command and returns its stdout. Rejects on non-zero exit.
+ * stderr is always captured and logged when non-empty (e.g. git warnings,
+ * remote messages). Command arguments are redacted in debug output so
+ * installation tokens never appear in logs.
  */
 function git(args) {
+  const redacted = args.map(a => a.replace(/x-access-token:[^@]+@/, 'x-access-token:[REDACTED]@'));
+  debug('git', `running: git ${redacted.join(' ')}`);
+
   return new Promise((resolve, reject) => {
-    execFile('git', args, (err, stdout) => {
+    execFile('git', args, (err, stdout, stderr) => {
+      if (stderr) console.error(`[git] stderr: ${stderr.trim()}`);
       if (err) reject(err);
       else resolve(stdout ?? '');
     });
@@ -21,7 +29,9 @@ function git(args) {
  */
 export async function createWorkspace(jobId) {
   const safeId = jobId.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return mkdtemp(join(tmpdir(), `layne-${safeId}-`));
+  const path = await mkdtemp(join(tmpdir(), `layne-${safeId}-`));
+  debug('fetcher', `workspace created: ${path}`);
+  return path;
 }
 
 /**
@@ -40,10 +50,14 @@ export async function cloneRepo({ token, cloneUrl, headSha, workspacePath }) {
     `https://x-access-token:${token}@`
   );
 
+  debug('fetcher', `cloning ${cloneUrl} at ${headSha}`);
+
   await git(['init', workspacePath]);
   await git(['-C', workspacePath, 'remote', 'add', 'origin', authenticatedUrl]);
   await git(['-C', workspacePath, 'fetch', '--depth', '1', 'origin', headSha]);
   await git(['-C', workspacePath, 'checkout', 'FETCH_HEAD']);
+
+  debug('fetcher', 'clone complete');
 }
 
 /**
@@ -54,7 +68,9 @@ export async function cloneRepo({ token, cloneUrl, headSha, workspacePath }) {
  * needs to be passed here.
  */
 export async function fetchBase({ workspacePath, baseRef }) {
+  debug('fetcher', `fetching base ref: ${baseRef}`);
   await git(['-C', workspacePath, 'fetch', '--depth', '1', 'origin', baseRef]);
+  debug('fetcher', 'base fetch complete');
 }
 
 /**
@@ -68,7 +84,9 @@ export async function getChangedFiles({ workspacePath }) {
   // -z uses NUL as the record separator instead of newline, which correctly
   // handles filenames that contain spaces or other special characters.
   const stdout = await git(['-C', workspacePath, 'diff', '--name-only', '-z', 'FETCH_HEAD']);
-  return stdout.split('\0').filter(Boolean);
+  const files = stdout.split('\0').filter(Boolean);
+  debug('fetcher', `${files.length} changed file(s)${files.length ? ': ' + files.join(', ') : ''}`);
+  return files;
 }
 
 /**
@@ -76,5 +94,6 @@ export async function getChangedFiles({ workspacePath }) {
  * so it runs whether the scan succeeded or failed.
  */
 export async function cleanupWorkspace(workspacePath) {
+  debug('fetcher', `cleaning up workspace: ${workspacePath}`);
   await rm(workspacePath, { recursive: true, force: true });
 }

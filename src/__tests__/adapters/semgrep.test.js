@@ -6,22 +6,22 @@ vi.mock('child_process', () => ({ execFile: mockExecFile }));
 const { runSemgrep } = await import('../../adapters/semgrep.js');
 
 function stubStdout(stdout) {
-  mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, stdout, ''));
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => cb(null, stdout, ''));
 }
 
 function stubExitWithStdout(stdout) {
   const err = Object.assign(new Error('exit 1'), { code: 1 });
-  mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(err, stdout, ''));
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) => cb(err, stdout, ''));
 }
 
 function stubError(message) {
-  mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+  mockExecFile.mockImplementationOnce((cmd, args, opts, cb) =>
     cb(new Error(message), '', '')
   );
 }
 
-// Semgrep is given the workspace path as its scan target and returns
-// that prefix in all output paths. The adapter must strip it.
+// Semgrep is given absolute file paths as scan targets and returns those
+// absolute paths in its output. The adapter must strip the workspace prefix.
 const SEMGREP_RESULT = {
   check_id: 'python.lang.security.audit.eval.eval-detected',
   path:     '/tmp/ws/src/app.py',
@@ -33,6 +33,8 @@ const SEMGREP_RESULT = {
   },
 };
 
+const CHANGED_FILES = ['src/app.py'];
+
 function semgrepOutput(results) {
   return JSON.stringify({ results, errors: [] });
 }
@@ -40,9 +42,15 @@ function semgrepOutput(results) {
 describe('runSemgrep()', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('returns an empty array immediately when changedFiles is empty', async () => {
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: [] });
+    expect(findings).toEqual([]);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
   it('invokes semgrep with scan subcommand and --json flag', async () => {
     stubStdout(semgrepOutput([]));
-    await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
 
     const [cmd, args] = mockExecFile.mock.calls[0];
     expect(cmd).toBe('semgrep');
@@ -52,48 +60,47 @@ describe('runSemgrep()', () => {
 
   it('passes --config auto', async () => {
     stubStdout(semgrepOutput([]));
-    await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
 
     const args = mockExecFile.mock.calls[0][1];
     const idx = args.indexOf('--config');
     expect(args[idx + 1]).toBe('auto');
   });
 
-  it('passes --baseline-commit with the provided baseline ref', async () => {
+  it('passes changed files as absolute paths', async () => {
     stubStdout(semgrepOutput([]));
-    await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: ['src/app.py', 'lib/utils.py'] });
 
     const args = mockExecFile.mock.calls[0][1];
-    const idx = args.indexOf('--baseline-commit');
-    expect(idx).toBeGreaterThan(-1);
-    expect(args[idx + 1]).toBe('FETCH_HEAD');
+    expect(args).toContain('/tmp/ws/src/app.py');
+    expect(args).toContain('/tmp/ws/lib/utils.py');
   });
 
-  it('omits --baseline-commit when no baseline is provided', async () => {
+  it('does not pass --baseline-commit', async () => {
     stubStdout(semgrepOutput([]));
-    await runSemgrep({ workspacePath: '/tmp/ws' });
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
 
     const args = mockExecFile.mock.calls[0][1];
     expect(args).not.toContain('--baseline-commit');
   });
 
-  it('passes the workspacePath as the last argument', async () => {
+  it('runs with cwd set to the workspace path', async () => {
     stubStdout(semgrepOutput([]));
-    await runSemgrep({ workspacePath: '/tmp/my-workspace', baseline: 'FETCH_HEAD' });
+    await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
 
-    const args = mockExecFile.mock.calls[0][1];
-    expect(args[args.length - 1]).toBe('/tmp/my-workspace');
+    const opts = mockExecFile.mock.calls[0][2];
+    expect(opts.cwd).toBe('/tmp/ws');
   });
 
   it('returns an empty array when results is empty', async () => {
     stubStdout(semgrepOutput([]));
-    const findings = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(findings).toEqual([]);
   });
 
   it('parses a single finding correctly', async () => {
     stubStdout(semgrepOutput([SEMGREP_RESULT]));
-    const findings = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
 
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
@@ -108,56 +115,56 @@ describe('runSemgrep()', () => {
 
   it('strips the workspace path prefix from the file field', async () => {
     stubStdout(semgrepOutput([SEMGREP_RESULT]));
-    const [finding] = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const [finding] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(finding.file).toBe('src/app.py');
     expect(finding.file).not.toContain('/tmp/ws');
   });
 
   it('maps ERROR → high severity', async () => {
     stubStdout(semgrepOutput([{ ...SEMGREP_RESULT, extra: { ...SEMGREP_RESULT.extra, severity: 'ERROR' } }]));
-    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(f.severity).toBe('high');
   });
 
   it('maps WARNING → medium severity', async () => {
     stubStdout(semgrepOutput([{ ...SEMGREP_RESULT, extra: { ...SEMGREP_RESULT.extra, severity: 'WARNING' } }]));
-    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(f.severity).toBe('medium');
   });
 
   it('maps INFO → low severity', async () => {
     stubStdout(semgrepOutput([{ ...SEMGREP_RESULT, extra: { ...SEMGREP_RESULT.extra, severity: 'INFO' } }]));
-    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(f.severity).toBe('low');
   });
 
   it('falls back to low for unknown severity values', async () => {
     stubStdout(semgrepOutput([{ ...SEMGREP_RESULT, extra: { ...SEMGREP_RESULT.extra, severity: 'SOMETHING' } }]));
-    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(f.severity).toBe('low');
   });
 
   it('parses multiple findings', async () => {
-    const result2 = { ...SEMGREP_RESULT, path: 'src/utils.py', start: { line: 5 } };
+    const result2 = { ...SEMGREP_RESULT, path: '/tmp/ws/src/utils.py', start: { line: 5 } };
     stubStdout(semgrepOutput([SEMGREP_RESULT, result2]));
-    const findings = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(findings).toHaveLength(2);
   });
 
   it('still parses findings when semgrep exits non-zero but produces stdout', async () => {
     stubExitWithStdout(semgrepOutput([SEMGREP_RESULT]));
-    const findings = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(findings).toHaveLength(1);
   });
 
   it('returns an empty array when stdout is not valid JSON', async () => {
     stubStdout('not valid json');
-    const findings = await runSemgrep({ workspacePath: '/tmp/ws', baseline: 'FETCH_HEAD' });
+    const findings = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
     expect(findings).toEqual([]);
   });
 
   it('throws when execFile errors with no stdout (e.g. command not found)', async () => {
     stubError('spawn semgrep ENOENT');
-    await expect(runSemgrep({ workspacePath: '/tmp/ws' })).rejects.toThrow('spawn semgrep ENOENT');
+    await expect(runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES })).rejects.toThrow('spawn semgrep ENOENT');
   });
 });

@@ -39,11 +39,11 @@ describe('dispatch()', () => {
     }));
   });
 
-  it('passes FETCH_HEAD as the baseline to semgrep', async () => {
+  it('passes changedFiles to the semgrep adapter', async () => {
     await dispatch(BASE);
     expect(runSemgrep).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/tmp/ws',
-      baseline:      'FETCH_HEAD',
+      changedFiles:  ['src/app.js', 'src/utils.js'],
     }));
   });
 

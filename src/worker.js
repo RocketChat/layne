@@ -8,6 +8,7 @@ import { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspac
 import { dispatch } from './dispatcher.js';
 import { buildAnnotations } from './reporter.js';
 import { validateEnv } from './env.js';
+import { debug } from './debug.js';
 
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -89,17 +90,27 @@ async function runScan(job) {
   let workspacePath = null;
 
   try {
+    debug('worker', `starting scan: ${owner}/${repo} PR #${prNumber} head=${headSha} base=${baseRef}`);
+
     // Signal to GitHub that we've started — PR check moves from "queued" to "in progress"
     await startCheckRun({ installationId, owner, repo, checkRunId });
+    debug('worker', 'check run marked in_progress');
 
     const token = await getInstallationToken(installationId);
+    debug('worker', 'installation token acquired');
+
     workspacePath = await createWorkspace(job.id);
 
     await cloneRepo({ token, cloneUrl, headSha, workspacePath });
     await fetchBase({ workspacePath, baseRef });
     const changedFiles = await getChangedFiles({ workspacePath });
+    debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
     const findings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, labels, owner, repo });
+    console.log(`[worker] ${findings.length} total finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
+    for (const f of findings) {
+      console.log(`[worker]   ${f.tool} ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
+    }
     const { annotations, conclusion, summary } = buildAnnotations(findings);
 
     await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations, summary });

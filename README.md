@@ -20,9 +20,11 @@
   - [Step 5 — Verify](#step-5--verify)
 - [Adding a New Tool](#adding-a-new-tool)
 - [Operations](#operations)
+  - [Automated Deployment](#automated-deployment)
   - [Scaling Workers](#scaling-workers)
   - [Renewing TLS Certificates](#renewing-tls-certificates)
   - [Updating Tool Versions](#updating-tool-versions)
+  - [Debugging](#debugging)
 - [Reference](#reference)
   - [Environment Variables](#environment-variables)
 
@@ -60,7 +62,7 @@
 
 When a PR is opened or updated, GitHub sends a webhook to Layne. The server immediately enqueues a scan job and returns `200 OK` to GitHub. A worker picks up the job, clones exactly the commit that triggered the event, runs Trufflehog (secrets) and Semgrep (SAST) against only the files changed in the PR, and posts the results as inline annotations on the Check Run.
 
-Scans are **diff-aware**: only the files modified in the PR are scanned, and Semgrep's `--baseline-commit` flag ensures it only reports findings introduced by the PR, not pre-existing ones on the base branch.
+Scans are **diff-aware**: only the files modified in the PR are passed to each scanner. Findings in files you did not touch are never reported.
 
 ---
 
@@ -273,9 +275,9 @@ function toFinding(result, workspacePath) {
 // Resolve with stdout even on non-zero exit so findings are not lost.
 // Many security tools exit non-zero when they find issues (e.g. Semgrep
 // exits 1, Trufflehog exits 183). Only reject when there is no output at all.
-function exec(cmd, args) {
+function exec(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, (err, stdout) => {
+    execFile(cmd, args, options, (err, stdout) => {
       if (err && !stdout) reject(err);
       else resolve(stdout ?? '');
     });
@@ -306,7 +308,7 @@ import { runMytool }     from './adapters/mytool.js';   // add this
 export async function dispatch({ workspacePath, changedFiles, baseSha, baseRef, labels, owner, repo }) {
   const [trufflehogFindings, semgrepFindings, mytoolFindings] = await Promise.all([
     runTrufflehog({ workspacePath, changedFiles }),
-    runSemgrep({ workspacePath, baseline: 'FETCH_HEAD' }),
+    runSemgrep({ workspacePath, changedFiles }),
     runMytool({ workspacePath, changedFiles }),           // add this
   ]);
 
@@ -333,6 +335,37 @@ Pin the version so builds are reproducible. Pass `--build-arg MYTOOL_VERSION=x.y
 ---
 
 ## Operations
+
+### Automated Deployment
+
+Layne ships with a GitHub Actions workflow (`.github/workflows/deploy.yml`) that runs tests and then deploys to your EC2 instance on every push to `main`. It can also be triggered manually from the Actions tab via `workflow_dispatch`.
+
+**What the workflow does:**
+
+1. Runs the full test suite — the deploy step is skipped if tests fail
+2. Rsyncs the repository to `/home/ubuntu/layne/layne/` on the server, preserving `data/` (certbot certificates) and never touching `.env`
+3. Writes a fresh `.env` file from GitHub secrets
+4. Runs `docker compose up --build --no-deps -d server worker` — rebuilds and restarts only the server and worker, leaving Redis (and the BullMQ queue) untouched
+
+**Required GitHub secrets:**
+
+Go to your repository → **Settings → Secrets and variables → Actions** and add the following:
+
+| Secret | Description |
+|---|---|
+| `EC2_HOST` | Public IP or hostname of the EC2 instance |
+| `EC2_SSH_KEY` | Contents of the SSH private key (`.pem`) used to connect to the instance |
+| `GH_APP_ID` | GitHub App ID (maps to `GITHUB_APP_ID` in `.env`) |
+| `GH_APP_PRIVATE_KEY` | RSA private key, single line with `\n`-escaped newlines (maps to `GITHUB_APP_PRIVATE_KEY` in `.env`) |
+| `GH_WEBHOOK_SECRET` | Webhook HMAC secret (maps to `GITHUB_WEBHOOK_SECRET` in `.env`) |
+| `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
+| `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
+
+> **Note:** GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
+
+The workflow uses a GitHub [**environment**](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) named `production`. You can configure deployment protection rules on that environment (e.g. require a manual approval before deploying to production).
+
+---
 
 ### Scaling Workers
 
@@ -372,6 +405,36 @@ Test the new versions in a staging environment before deploying to production.
 
 ---
 
+### Debugging
+
+Set `DEBUG_MODE=true` in your `.env` file (or as a Docker environment variable) to enable verbose logging across all Layne components. When active, you will see:
+
+- Every git command executed during the clone and diff phases (with tokens redacted)
+- The exact files passed to each scanner
+- Trufflehog batch progress (useful for large PRs)
+- Every GitHub API call (createCheckRun, startCheckRun, completeCheckRun) and annotation chunk counts
+- Installation token generation events
+- Webhook event details (action, repo, PR number, commit SHA)
+
+Stderr from subprocesses (git, semgrep, trufflehog) is **always** logged when non-empty, regardless of `DEBUG_MODE`. This is intentional — stderr from these tools almost always indicates a misconfiguration or tool error worth knowing about.
+
+To enable on a running stack without a full rebuild:
+
+```bash
+# Add to .env
+DEBUG_MODE=true
+
+# Restart only the affected containers
+docker compose up --no-deps -d server worker
+
+# Follow logs
+docker compose logs -f worker
+```
+
+To disable, remove or set `DEBUG_MODE=false` and restart.
+
+---
+
 ## Reference
 
 ### Environment Variables
@@ -385,3 +448,4 @@ Test the new versions in a staging environment before deploying to production.
 | `DOMAIN` | Yes | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Yes | Email for Let's Encrypt expiry notifications |
 | `PORT` | No | Port for the webhook server (default: `3000`) |
+| `DEBUG_MODE` | No | Set to `true` or `1` to enable verbose debug logging (default: off) |

@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { scanQueue } from './queue.js';
 import { createCheckRun, completeCheckRun } from './github.js';
 import { validateEnv } from './env.js';
+import { debug } from './debug.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,6 +42,7 @@ function parsePayload(rawBody) {
 
 export async function processWebhookRequest({ event, signature, rawBody }) {
   if (!verifySignature(rawBody, signature)) {
+    console.warn('[server] Webhook rejected: invalid signature — check GITHUB_WEBHOOK_SECRET');
     return { status: 401, body: 'Invalid signature' };
   }
 
@@ -58,7 +60,10 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
   const { action, pull_request, repository, installation } = payload;
   const prNumber = pull_request.number;
 
+  debug('server', `webhook received: ${event} action=${action} repo=${repository.full_name} PR #${prNumber} sha=${pull_request.head.sha}`);
+
   if (!HANDLED_ACTIONS.has(action)) {
+    debug('server', `ignoring action: ${action}`);
     return { status: 200, body: 'Action ignored' };
   }
 

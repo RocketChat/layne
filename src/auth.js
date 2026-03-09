@@ -1,5 +1,6 @@
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
+import { debug } from './debug.js';
 
 // Lazy-initialized so the module can be imported before env vars are
 // validated. Without this, a missing GITHUB_APP_PRIVATE_KEY would throw
@@ -23,6 +24,7 @@ function getAppAuth() {
  * The underlying token is short-lived (1 hour) and scoped to that installation's repos.
  */
 export async function getInstallationOctokit(installationId) {
+  debug('auth', `generating installation token for installation ${installationId}`);
   const { token } = await getAppAuth()({ type: 'installation', installationId });
   return new Octokit({ auth: token });
 }
@@ -32,6 +34,7 @@ export async function getInstallationOctokit(installationId) {
  * Useful when passing credentials to a subprocess (e.g. git clone).
  */
 export async function getInstallationToken(installationId) {
+  debug('auth', `generating installation token for installation ${installationId}`);
   const { token } = await getAppAuth()({ type: 'installation', installationId });
   return token;
 }
