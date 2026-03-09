@@ -45,7 +45,7 @@ jobs:
             --exclude='.env' \
             --exclude='data' \
             --exclude='coverage' \
-            -e "ssh -F ~/.ssh/config" \
+            -e "ssh -F $HOME/.ssh/config" \
             ./ deploy-target:/home/ubuntu/layne/layne/
 
       - name: Write .env from secrets
@@ -62,10 +62,10 @@ jobs:
             printf 'GITHUB_WEBHOOK_SECRET=%s\n'  "$GH_WEBHOOK_SECRET"
             printf 'DOMAIN=%s\n'                 "$DOMAIN"
             printf 'LETSENCRYPT_EMAIL=%s\n'      "$LETSENCRYPT_EMAIL"
-          } | ssh -F ~/.ssh/config deploy-target \
+          } | ssh -F "$HOME/.ssh/config" deploy-target \
               'cat > /home/ubuntu/layne/layne/.env'
 
       - name: Rebuild and restart server and worker
         run: |
-          ssh -F ~/.ssh/config deploy-target \
+          ssh -F "$HOME/.ssh/config" deploy-target \
             'cd /home/ubuntu/layne/layne && docker compose up --build --no-deps -d server worker'
