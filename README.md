@@ -37,30 +37,30 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 
 ```
                         ┌─────────────────────────────────┐
-                        │      GITHUB PULL REQUEST        │  ◀─────────────────────────────┐
-                        │      (OPEN, SYNC, REOPEN)       │                                │
-                        └─────────────────────────────────┘                                │
-                                        │                                        Check run │
-                                  HTTP Post /webhook                                       │ 
-                                        │                                                  │
-┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  EC2 Instance (Docker)                │                                                  │       │
-│                               ┌───────▼────────┐                                         │       │
-│                               │  NGINX + TLS   │                                         │       │
-│                               └───────┬────────┘                                         │       │
-│                                       │                                                  │       │
-│                    ┌──────────────────┘                                                  │       │
-│                    │                                                                     │       │
-│   ┌─────────────┐  │   Schedules job   ┌────────────────┐    ┌────────────────┐          │       │
-│   │    LAYNE    │◀─┘ ─────────────────▶│     REDIS      │───▶│   TRUFFLEHOG   │──┐       │       │
-│   │    SERVER   │                      │    (BULLMQ)    │    └────────────────┘  │       │       │
-│   └─────────────┘                      │                │    ┌────────────────┐  │  ┌──────────┐ │
-│                                        │                │───▶│    SEMGREP     │──┼─▶│ REPORTER │ │
-│                                        │                │    └────────────────┘  │  └──────────┘ │
-│                                        │                │    ┌────────────────┐  │               │
-│                                        └────────────────┘───▶│  CLAUDE CODE   │──┘               │
-│                                                              └────────────────┘                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+                        │      GITHUB PULL REQUEST        │  ◀──────────────────────────┐
+                        │      (OPEN, SYNC, REOPEN)       │                             │
+                        └─────────────────────────────────┘                             │
+                                        │                                     Check run │
+                                  HTTP Post /webhook                                    │ 
+                                        │                                               │
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│  EC2 Instance (Docker)             │                                                  │      │
+│                            ┌───────▼────────┐                                         │      │
+│                            │  NGINX + TLS   │                                         │      │
+│                            └───────┬────────┘                                         │      │
+│                                    │                                                  │      │
+│                 ┌──────────────────┘                                                  │      │
+│                 │                                                                     │      │
+│┌─────────────┐  │   Schedules job   ┌────────────────┐    ┌────────────────┐          │      │
+││    LAYNE    │◀─┘ ─────────────────▶│     REDIS      │───▶│   TRUFFLEHOG   │──┐       │      │
+││    SERVER   │                      │    (BULLMQ)    │ │  └────────────────┘  │       │      │
+│└─────────────┘                      └────────────────┘ │  ┌────────────────┐  │  ┌──────────┐│
+│                                                        │─▶│    SEMGREP     │──┼─▶│ REPORTER ││
+│                                                        │  └────────────────┘  │  └──────────┘│
+│                                                        │  ┌────────────────┐  │              │
+│                                                        └─▶│  CLAUDE CODE   │──┘              │
+│                                                           └────────────────┘                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 When a PR is opened or updated, GitHub sends a webhook to Layne. The server immediately enqueues a scan job and returns `200 OK` to GitHub. A worker picks up the job, clones exactly the commit that triggered the event, runs Trufflehog (secrets) and Semgrep (SAST) against only the files changed in the PR, and posts the results as inline annotations on the Check Run.
