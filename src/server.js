@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import crypto from 'crypto';
-import { scanQueue } from './queue.js';
+import { redis, scanQueue } from './queue.js';
 import { createCheckRun, completeCheckRun } from './github.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
@@ -10,12 +10,12 @@ import { debug } from './debug.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const ACCEPTED_RESPONSE = { status: 200, body: 'Accepted' };
 const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
+const WEBHOOK_LOCK_TTL_SECONDS = 30;
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Raw body required — HMAC verification must run against the exact bytes GitHub sent.
-// express.json() would re-serialize and could subtly alter the body.
 app.use('/webhook', express.raw({ type: 'application/json' }));
 
 function verifySignature(rawBody, signature) {
@@ -40,6 +40,28 @@ function parsePayload(rawBody) {
   return JSON.parse(body);
 }
 
+function getJobId(repositoryFullName, prNumber, headSha) {
+  return `${repositoryFullName}#${prNumber}@${headSha}`;
+}
+
+async function acquireWebhookLock(jobId) {
+  const key = `layne:webhook:${jobId}`;
+  const token = crypto.randomUUID();
+  const acquired = await redis.set(key, token, 'EX', WEBHOOK_LOCK_TTL_SECONDS, 'NX');
+  return acquired === 'OK' ? { key, token } : null;
+}
+
+async function releaseWebhookLock(lock) {
+  if (!lock) return;
+
+  await redis.eval(
+    'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end return 0',
+    1,
+    lock.key,
+    lock.token
+  );
+}
+
 export async function processWebhookRequest({ event, signature, rawBody }) {
   if (!verifySignature(rawBody, signature)) {
     console.warn('[server] Webhook rejected: invalid signature — check GITHUB_WEBHOOK_SECRET');
@@ -59,6 +81,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
 
   const { action, pull_request, repository, installation } = payload;
   const prNumber = pull_request.number;
+  const jobId = getJobId(repository.full_name, prNumber, pull_request.head.sha);
 
   debug('server', `webhook received: ${event} action=${action} repo=${repository.full_name} PR #${prNumber} sha=${pull_request.head.sha}`);
 
@@ -67,12 +90,25 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     return { status: 200, body: 'Action ignored' };
   }
 
+  if (await scanQueue.getJob(jobId)) {
+    debug('server', `duplicate webhook ignored: job already exists for ${jobId}`);
+    return ACCEPTED_RESPONSE;
+  }
+
+  const webhookLock = await acquireWebhookLock(jobId);
+  if (!webhookLock) {
+    debug('server', `duplicate webhook ignored: another request is already accepting ${jobId}`);
+    return ACCEPTED_RESPONSE;
+  }
+
   let checkRunId = null;
 
   try {
-    // Only acknowledge the webhook after both the queued check run and the
-    // BullMQ job have been created. If either step fails, return 5xx so
-    // GitHub retries the delivery instead of silently dropping the scan.
+    if (await scanQueue.getJob(jobId)) {
+      debug('server', `duplicate webhook ignored after lock: job already exists for ${jobId}`);
+      return ACCEPTED_RESPONSE;
+    }
+
     checkRunId = await createCheckRun({
       installationId: installation.id,
       owner:          repository.owner.login,
@@ -94,18 +130,14 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
       labels:         pull_request.labels?.map(l => l.name) ?? [],
       checkRunId,
     }, {
-      // Deduplicate by repo + PR + commit SHA. If GitHub delivers the same
-      // webhook twice (it retries on timeout), the second enqueue is a no-op.
-      jobId: `${repository.full_name}#${prNumber}@${pull_request.head.sha}`,
+      jobId,
     });
 
     console.log(`[server] Enqueued scan for ${repository.full_name} PR #${prNumber}`);
-    return { status: 200, body: 'Accepted' };
+    return ACCEPTED_RESPONSE;
   } catch (err) {
     console.error('[server] Failed to enqueue scan job:', err);
 
-    // If the queued check run exists but the job never made it to BullMQ,
-    // fail the check run explicitly so it does not sit in "queued" forever.
     if (checkRunId !== null) {
       await completeCheckRun({
         installationId: installation.id,
@@ -119,6 +151,8 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     }
 
     return { status: 500, body: 'Failed to accept webhook' };
+  } finally {
+    await releaseWebhookLock(webhookLock).catch(() => {});
   }
 }
 
@@ -132,11 +166,8 @@ app.post('/webhook', async (req, res) => {
   return res.status(result.status).send(result.body);
 });
 
-// Export the app so tests can import it without starting a live server.
 export { app, verifySignature };
 
-// Only bind to a port when this file is the process entry point.
-// When imported by a test, isMain is false and no port is opened.
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
   validateEnv();

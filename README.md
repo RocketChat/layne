@@ -515,7 +515,7 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 | `GH_WEBHOOK_SECRET` | Webhook HMAC secret (maps to `GITHUB_WEBHOOK_SECRET` in `.env`) |
 | `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude scanning (required even when no repos have Claude enabled) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude scanning (required when any repo has `claude.enabled: true`) |
 
 > **Note:** GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
 
@@ -548,12 +548,10 @@ Add this to a monthly cron job on the host to automate renewal.
 
 ### Updating Tool Versions
 
-Trufflehog and Semgrep versions are pinned in the `Dockerfile` as build arguments. To update:
+Trufflehog and Semgrep versions are pinned directly in the `Dockerfile`. To update them, edit the version strings in that file, then rebuild and restart:
 
 ```bash
-docker compose build \
-  --build-arg TRUFFLEHOG_VERSION=3.89.0 \
-  --build-arg SEMGREP_VERSION=1.91.0
+docker compose build
 docker compose up -d
 ```
 

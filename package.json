@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "worker": "node src/worker.js",
+    "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.0.3",
     "supertest": "^7.0.0",
     "vitest": "^4.0.18"
   }

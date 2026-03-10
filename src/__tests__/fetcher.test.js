@@ -93,8 +93,8 @@ describe('cloneRepo()', () => {
 describe('fetchBase()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('runs git fetch for the base ref inside the workspace', async () => {
-    await fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' });
+  it('runs git fetch for the base sha inside the workspace', async () => {
+    await fetchBase({ workspacePath: '/tmp/ws', baseSha: 'def456' });
 
     const [cmd, args] = mockExecFile.mock.calls[0];
     expect(cmd).toBe('git');
@@ -102,11 +102,11 @@ describe('fetchBase()', () => {
     expect(args).toContain('/tmp/ws');
     expect(args).toContain('fetch');
     expect(args).toContain('origin');
-    expect(args).toContain('main');
+    expect(args).toContain('def456');
   });
 
   it('fetches with depth 1 to keep it shallow', async () => {
-    await fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' });
+    await fetchBase({ workspacePath: '/tmp/ws', baseSha: 'def456' });
     const args = mockExecFile.mock.calls[0][1];
     expect(args).toContain('--depth');
   });
@@ -115,7 +115,7 @@ describe('fetchBase()', () => {
     mockExecFile.mockImplementationOnce((cmd, args, cb) =>
       cb(new Error('fatal: remote branch not found'), '', '')
     );
-    await expect(fetchBase({ workspacePath: '/tmp/ws', baseRef: 'main' }))
+    await expect(fetchBase({ workspacePath: '/tmp/ws', baseSha: 'def456' }))
       .rejects.toThrow('fatal: remote branch not found');
   });
 });
@@ -123,7 +123,7 @@ describe('fetchBase()', () => {
 describe('getChangedFiles()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('runs git diff --name-only -z FETCH_HEAD inside the workspace', async () => {
+  it('runs git diff --name-only -z FETCH_HEAD HEAD inside the workspace', async () => {
     mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
     await getChangedFiles({ workspacePath: '/tmp/ws' });
 
@@ -135,6 +135,7 @@ describe('getChangedFiles()', () => {
     expect(args).toContain('--name-only');
     expect(args).toContain('-z');
     expect(args).toContain('FETCH_HEAD');
+    expect(args).toContain('HEAD');
   });
 
   it('returns an array of changed file paths (NUL-delimited output)', async () => {

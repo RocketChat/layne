@@ -26,8 +26,8 @@ function sanitizeError(message) {
  * without needing a live BullMQ worker or Redis connection.
  */
 export async function processJob(job) {
-  // Use a resolving sentinel rather than a rejecting promise so there is
-  // no risk of an unhandled rejection if the race settles before handlers attach.
+  // Resolving sentinel rather than a rejecting promise so there is no risk of an
+  // unhandled rejection if the race settles before handlers attach.
   let timer;
   const timeoutSentinel = Symbol('timeout');
   const timeoutPromise  = new Promise(resolve => {
@@ -52,8 +52,8 @@ export async function processJob(job) {
       `${safeMessage}${retryMessage}`
     );
 
-    // Keep the check run open for retryable failures so the next attempt can
-    // continue the same check instead of flipping it to failed too early.
+    // Keep the check run open for retryable failures so the next attempt can update it
+    // rather than flipping it to failed prematurely.
     if (finalAttempt) {
       const { installationId, owner, repo, checkRunId } = job.data;
       await completeCheckRun({
@@ -92,7 +92,6 @@ async function runScan(job) {
   try {
     debug('worker', `starting scan: ${owner}/${repo} PR #${prNumber} head=${headSha} base=${baseRef}`);
 
-    // Signal to GitHub that we've started — PR check moves from "queued" to "in progress"
     await startCheckRun({ installationId, owner, repo, checkRunId });
     debug('worker', 'check run marked in_progress');
 
@@ -102,7 +101,7 @@ async function runScan(job) {
     workspacePath = await createWorkspace(job.id);
 
     await cloneRepo({ token, cloneUrl, headSha, workspacePath });
-    await fetchBase({ workspacePath, baseRef });
+    await fetchBase({ workspacePath, baseSha });
     const changedFiles = await getChangedFiles({ workspacePath });
     debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
@@ -117,7 +116,6 @@ async function runScan(job) {
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
   } finally {
-    // Always clean up — code must not linger on disk after a scan finishes.
     if (workspacePath) {
       await cleanupWorkspace(workspacePath);
     }
@@ -139,11 +137,9 @@ worker.on('failed', (job, err) => {
   console.error(`[worker] Job ${job?.id} permanently failed:`, err.message);
 });
 
-/**
- * Gracefully stops the worker — finishes any in-flight job then exits.
- * Called on SIGTERM (Docker stop) and SIGINT (Ctrl-C) so that the PR check
- * run is never left stuck in "in_progress" due to a hard kill.
- */
+// Gracefully stops the worker — finishes any in-flight job before exiting.
+// Called on SIGTERM (Docker stop) and SIGINT (Ctrl-C) so that PR check runs are
+// never left stuck in "in_progress" due to a hard kill.
 export async function shutdown() {
   console.log('[worker] Shutting down gracefully…');
   await worker.close();

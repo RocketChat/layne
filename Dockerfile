@@ -1,6 +1,3 @@
-# ── Stage 1: deps ─────────────────────────────────────────────────────────────
-# Install production dependencies in a clean layer so they can be cached
-# separately from the application source.
 FROM node:22-alpine AS deps
 
 WORKDIR /app
@@ -8,14 +5,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
-# Final image — minimal Alpine base with only what is needed at runtime.
 FROM node:22-alpine AS runtime
 
-# Pin tool versions for reproducible builds. Update periodically and
-# verify the new version in a staging environment before deploying.
-# Security tools — installed as root before dropping privileges.
+# Pin tool versions for reproducible builds. Update periodically and verify in staging.
 # trufflehog and semgrep are the only external binaries Layne shells out to.
 RUN apk add --no-cache \
     git \
@@ -32,18 +24,15 @@ RUN addgroup -S layne && adduser -S layne -G layne
 
 WORKDIR /app
 
-# Copy pre-built deps from the deps stage, then the application source.
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src/ ./src/
 COPY config/ ./config/
 
-# /tmp is writable by all users; Layne clones repos there and cleans up after itself.
-# Explicitly declare it as a volume so Docker does not persist scan artifacts.
+# /tmp is where Layne clones repos. Declaring it as a VOLUME prevents Docker
+# from persisting scan artifacts across container restarts.
 VOLUME ["/tmp"]
 
 USER layne
 
-# CMD is overridden per service in docker-compose.yml.
-# Default to the webhook server so the image is useful standalone.
 CMD ["node", "src/server.js"]

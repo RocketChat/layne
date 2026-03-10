@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'crypto';
 
 vi.mock('../queue.js', () => ({
-  scanQueue: { add: vi.fn() },
+  redis: { set: vi.fn(), eval: vi.fn() },
+  scanQueue: { add: vi.fn(), getJob: vi.fn() },
 }));
 
 vi.mock('../github.js', () => ({
@@ -10,7 +11,7 @@ vi.mock('../github.js', () => ({
   completeCheckRun: vi.fn(),
 }));
 
-const { scanQueue } = await import('../queue.js');
+const { redis, scanQueue } = await import('../queue.js');
 const { createCheckRun, completeCheckRun } = await import('../github.js');
 const { verifySignature, processWebhookRequest } = await import('../server.js');
 
@@ -64,7 +65,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   createCheckRun.mockResolvedValue(99);
   completeCheckRun.mockResolvedValue(undefined);
+  redis.set.mockResolvedValue('OK');
+  redis.eval.mockResolvedValue(1);
   scanQueue.add.mockResolvedValue({ id: 'job-1' });
+  scanQueue.getJob.mockResolvedValue(null);
 });
 
 describe('verifySignature()', () => {
@@ -143,7 +147,7 @@ describe('processWebhookRequest()', () => {
     expect(settled).toBe(false);
 
     checkRun.resolve(99);
-    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(scanQueue.add).toHaveBeenCalledOnce();
     expect(settled).toBe(false);
 
@@ -185,6 +189,26 @@ describe('processWebhookRequest()', () => {
 
     const [, , opts] = scanQueue.add.mock.calls[0];
     expect(opts.jobId).toBe('org/my-repo#42@abc123');
+  });
+
+  it('does not create a second check run when the job already exists', async () => {
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123' });
+
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not create a second check run while another request is accepting the same webhook', async () => {
+    redis.set.mockResolvedValueOnce(null);
+
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
   });
 
   it('returns 500 and skips enqueueing when createCheckRun fails', async () => {

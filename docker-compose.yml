@@ -1,12 +1,9 @@
 services:
-
-  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # appendonly yes — write every command to the AOF log so the queue
-    # survives a container restart. appendfsync everysec balances durability
-    # (at most 1 second of data loss) against write performance.
+    # appendonly: persist the queue to disk so it survives restarts.
+    # appendfsync everysec: at most 1 second of data loss, balanced against write performance.
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis-data:/data
@@ -16,9 +13,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Webhook server ────────────────────────────────────────────────────────────
-  # Receives GitHub webhook events and enqueues scan jobs.
-  # Not exposed directly — nginx is the public entry point.
   server:
     build: .
     command: node src/server.js
@@ -31,8 +25,7 @@ services:
       redis:
         condition: service_healthy
 
-  # ── Worker ────────────────────────────────────────────────────────────────────
-  # Processes scan jobs from the queue. Scale with --scale worker=N.
+  # Scale horizontally with: docker compose up --scale worker=N
   worker:
     build: .
     command: node src/worker.js
@@ -44,8 +37,6 @@ services:
       redis:
         condition: service_healthy
 
-  # ── nginx ─────────────────────────────────────────────────────────────────────
-  # TLS termination and reverse proxy. Serves ACME challenges for Certbot.
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -59,9 +50,8 @@ services:
     depends_on:
       - server
 
-  # ── Certbot ───────────────────────────────────────────────────────────────────
-  # Certificate issuance and renewal. Run via scripts/init-tls.sh initially,
-  # then on a cron/timer for renewals: docker compose run --rm certbot renew
+  # Run via scripts/init-tls.sh for initial issuance, then on a timer for renewals:
+  #   docker compose run --rm certbot renew
   certbot:
     image: certbot/certbot:latest
     volumes:

@@ -43,7 +43,6 @@ const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun } = await import('../github.js');
 const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
-const { buildAnnotations }                = await import('../reporter.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
 // ---
@@ -106,7 +105,7 @@ describe('processJob()', () => {
       await processJob(baseJob);
       expect(fetchBase).toHaveBeenCalledWith(expect.objectContaining({
         workspacePath: '/tmp/layne-test-workspace',
-        baseRef:       'main',
+        baseSha:       'def456',
       }));
       expect(getChangedFiles).toHaveBeenCalledWith({ workspacePath: '/tmp/layne-test-workspace' });
     });
