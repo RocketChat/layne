@@ -33,7 +33,7 @@ export async function runTrufflehog({ workspacePath, changedFiles, toolConfig = 
     const batch = absolutePaths.slice(i, i + BATCH_SIZE);
     const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
     debug('trufflehog', `batch ${batchIndex}/${batchCount}: ${batch.length} file(s)`);
-    const stdout = await exec('trufflehog', ['filesystem', '--json', '--no-update', ...extraArgs, ...batch]);
+    const stdout = await exec('trufflehog', ['filesystem', '--json', '--no-update', ...extraArgs, '--', ...batch]);
 
     stdout
       .split('\n')

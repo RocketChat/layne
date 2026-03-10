@@ -154,13 +154,14 @@ describe('runTrufflehog()', () => {
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('default toolConfig produces no extra flags between --no-update and file paths', async () => {
+  it('default toolConfig produces -- sentinel before file paths and no extra flags', async () => {
     stubStdout('');
     await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
 
     const args = mockExecFile.mock.calls[0][1];
     const noUpdateIdx = args.indexOf('--no-update');
-    expect(args[noUpdateIdx + 1]).toBe('/tmp/ws/src/config.js');
+    expect(args[noUpdateIdx + 1]).toBe('--');
+    expect(args[noUpdateIdx + 2]).toBe('/tmp/ws/src/config.js');
   });
 
   it('extraArgs: ["--only-verified"] appears before file paths', async () => {

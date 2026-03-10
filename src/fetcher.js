@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
-import { mkdtemp, rm } from 'fs/promises';
-import { join } from 'path';
+import { mkdtemp, realpath, rm, stat } from 'fs/promises';
+import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { debug } from './debug.js';
 
@@ -12,7 +12,7 @@ function git(args) {
 
   return new Promise((resolve, reject) => {
     execFile('git', args, (err, stdout, stderr) => {
-      if (stderr) console.error(`[git] stderr: ${stderr.trim()}`);
+      if (stderr) console.error(`[git] stderr: ${stderr.trim().replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')}`);
       if (err) reject(err);
       else resolve(stdout ?? '');
     });
@@ -58,11 +58,56 @@ export async function getChangedFiles({ workspacePath }) {
   // -z uses NUL as the record separator so filenames with spaces are handled correctly.
   const stdout = await git(['-C', workspacePath, 'diff', '--name-only', '-z', 'FETCH_HEAD', 'HEAD']);
   const files = stdout.split('\0').filter(Boolean);
-  debug('fetcher', `${files.length} changed file(s)${files.length ? ': ' + files.join(', ') : ''}`);
-  return files;
+  const workspaceReal = await realpath(workspacePath);
+  const safe = [];
+
+  for (const file of files) {
+    if (file.startsWith('/') || file.split('/').includes('..')) {
+      continue;
+    }
+
+    const candidate = resolve(workspacePath, file);
+    if (!isWithinPath(candidate, workspacePath)) {
+      continue;
+    }
+
+    let resolved;
+    try {
+      resolved = await realpath(candidate);
+    } catch {
+      continue;
+    }
+
+    if (!isWithinPath(resolved, workspaceReal)) {
+      continue;
+    }
+
+    let fileStat;
+    try {
+      fileStat = await stat(candidate);
+    } catch {
+      continue;
+    }
+
+    if (!fileStat.isFile()) {
+      continue;
+    }
+
+    safe.push(file);
+  }
+
+  if (safe.length !== files.length) {
+    console.warn(`[fetcher] Dropped ${files.length - safe.length} unsafe path(s) from diff output`);
+  }
+  debug('fetcher', `${safe.length} changed file(s)${safe.length ? ': ' + safe.join(', ') : ''}`);
+  return safe;
 }
 
 export async function cleanupWorkspace(workspacePath) {
   debug('fetcher', `cleaning up workspace: ${workspacePath}`);
   await rm(workspacePath, { recursive: true, force: true });
+}
+
+function isWithinPath(targetPath, basePath) {
+  return targetPath === basePath || targetPath.startsWith(`${basePath}${sep}`);
 }

@@ -2,11 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockMkdtemp = vi.fn().mockResolvedValue('/tmp/layne-job-1-xyz');
 const mockRm      = vi.fn().mockResolvedValue(undefined);
+const mockRealpath = vi.fn(async path => path);
+const mockStat     = vi.fn().mockResolvedValue({ isFile: () => true });
 const mockExecFile = vi.fn((cmd, args, cb) => cb(null, '', ''));
 
 vi.mock('fs/promises', () => ({
   mkdtemp: mockMkdtemp,
+  realpath: mockRealpath,
   rm:      mockRm,
+  stat:    mockStat,
 }));
 
 vi.mock('child_process', () => ({
@@ -16,7 +20,11 @@ vi.mock('child_process', () => ({
 const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
 
 describe('createWorkspace()', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async path => path);
+    mockStat.mockResolvedValue({ isFile: () => true });
+  });
 
   it('creates a temp directory prefixed with the job ID', async () => {
     const path = await createWorkspace('job-42');
@@ -37,7 +45,11 @@ function doClone(overrides = {}) {
 }
 
 describe('cloneRepo()', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async path => path);
+    mockStat.mockResolvedValue({ isFile: () => true });
+  });
 
   it('initialises an empty git repo in the workspace', async () => {
     await doClone();
@@ -91,7 +103,11 @@ describe('cloneRepo()', () => {
 });
 
 describe('fetchBase()', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async path => path);
+    mockStat.mockResolvedValue({ isFile: () => true });
+  });
 
   it('runs git fetch for the base sha inside the workspace', async () => {
     await fetchBase({ workspacePath: '/tmp/ws', baseSha: 'def456' });
@@ -121,7 +137,11 @@ describe('fetchBase()', () => {
 });
 
 describe('getChangedFiles()', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async path => path);
+    mockStat.mockResolvedValue({ isFile: () => true });
+  });
 
   it('runs git diff --name-only -z FETCH_HEAD HEAD inside the workspace', async () => {
     mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
@@ -159,10 +179,70 @@ describe('getChangedFiles()', () => {
     const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
     expect(files).toEqual([]);
   });
+
+  it('keeps an internal symlink target when it resolves inside the workspace', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'link.js\0', '')
+    );
+    mockRealpath.mockImplementation(async path => {
+      if (path === '/tmp/ws') return '/private/tmp/ws';
+      if (path === '/tmp/ws/link.js') return '/private/tmp/ws/src/real.js';
+      return path;
+    });
+
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual(['link.js']);
+  });
+
+  it('drops a changed path when its resolved target escapes the workspace', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'leak\0', '')
+    );
+    mockRealpath.mockImplementation(async path => {
+      if (path === '/tmp/ws') return '/private/tmp/ws';
+      if (path === '/tmp/ws/leak') return '/etc/hosts';
+      return path;
+    });
+
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual([]);
+  });
+
+  it('keeps a file beneath an internal symlinked directory', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'shared/app.js\0', '')
+    );
+    mockRealpath.mockImplementation(async path => {
+      if (path === '/tmp/ws') return '/private/tmp/ws';
+      if (path === '/tmp/ws/shared/app.js') return '/private/tmp/ws/packages/shared/app.js';
+      return path;
+    });
+
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual(['shared/app.js']);
+  });
+
+  it('drops broken symlinks or missing files', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(null, 'broken-link\0', '')
+    );
+    mockRealpath.mockImplementation(async path => {
+      if (path === '/tmp/ws') return '/private/tmp/ws';
+      if (path === '/tmp/ws/broken-link') throw new Error('ENOENT');
+      return path;
+    });
+
+    const files = await getChangedFiles({ workspacePath: '/tmp/ws' });
+    expect(files).toEqual([]);
+  });
 });
 
 describe('cleanupWorkspace()', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async path => path);
+    mockStat.mockResolvedValue({ isFile: () => true });
+  });
 
   it('removes the workspace directory recursively', async () => {
     await cleanupWorkspace('/tmp/layne-job-1-xyz');

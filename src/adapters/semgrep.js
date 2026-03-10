@@ -21,7 +21,7 @@ export async function runSemgrep({ workspacePath, changedFiles, toolConfig = DEF
   debug('semgrep', `scanning ${changedFiles.length} file(s): ${changedFiles.join(', ')}`);
 
   const absolutePaths = changedFiles.map(f => join(workspacePath, f));
-  const args = ['scan', ...(toolConfig.extraArgs ?? []), '--json', ...absolutePaths];
+  const args = ['scan', ...(toolConfig.extraArgs ?? []), '--json', '--', ...absolutePaths];
 
   const stdout = await exec('semgrep', args, { cwd: workspacePath });
 
