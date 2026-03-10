@@ -20,7 +20,7 @@ const SYSTEM_PROMPT =
   'You are a security code reviewer. Analyse the provided source files for malicious intent: ' +
   'reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. ' +
   'Report ONLY confirmed malicious patterns with high confidence. Do not report style issues, bugs, or ' +
-  'theoretical vulnerabilities. Call `report_findings` with your results.';
+  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real.' + 'Call `report_findings` with your results.';
 
 const REPORT_FINDINGS_TOOL = {
   name: 'report_findings',
@@ -94,7 +94,7 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   const findings = [];
   let errorCount = 0;
   for (const batch of batches) {
-    const result = await scanBatch(client, batch, toolConfig.model);
+    const result = await scanBatch(client, batch, toolConfig.model, toolConfig.prompt ?? SYSTEM_PROMPT);
     if (result.error) {
       errorCount++;
     } else {
@@ -133,7 +133,7 @@ function splitIntoBatches(fileContents, charLimit) {
   return batches;
 }
 
-async function scanBatch(client, files, model) {
+async function scanBatch(client, files, model, prompt) {
   const userMessage = files
     .map(f => `### ${f.file}\n\`\`\`\n${f.content}\n\`\`\``)
     .join('\n\n');
@@ -142,7 +142,7 @@ async function scanBatch(client, files, model) {
     const response = await client.messages.create({
       model,
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: prompt,
       messages: [{ role: 'user', content: userMessage }],
       tools: [REPORT_FINDINGS_TOOL],
       tool_choice: { type: 'any' },

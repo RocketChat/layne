@@ -91,12 +91,12 @@ Scanner behaviour is configured in `config/repos.json`, keyed by `"owner/repo"`.
   "owner/repo": {
     "semgrep":    { "enabled": true, "extraArgs": ["--config", "p/owasp-top-ten"] },
     "trufflehog": { "enabled": true, "extraArgs": ["--only-verified"] },
-    "claude":     { "enabled": true, "model": "claude-haiku-4-5-20251001" }
+    "claude":     { "enabled": true, "model": "claude-haiku-4-5-20251001", "prompt": "Custom system prompt…" }
   }
 }
 ```
 
-Defaults: Semgrep and Trufflehog are enabled with no extra args; Claude is disabled. `extraArgs` fully replaces the default (not extended). The `claude` block uses `model` instead of `extraArgs`.
+Defaults: Semgrep and Trufflehog are enabled with no extra args; Claude is disabled. `extraArgs` fully replaces the default (not extended). The `claude` block uses `model` instead of `extraArgs`. The optional `prompt` field overrides the built-in system prompt; omit it to use the default malicious-intent detection prompt.
 
 **Important:** `config/repos.json` must be present in the Docker image — the Dockerfile explicitly copies it with `COPY config/ ./config/`. If it's missing from the image, all repos silently fall back to defaults.
 
