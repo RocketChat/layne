@@ -1,0 +1,32 @@
+{
+  "action": "synchronize",
+  "number": 1,
+  "pull_request": {
+    "number": 1,
+    "title": "Add user authentication",
+    "html_url": "https://github.com/your-org/your-repo/pull/1",
+    "head": {
+      "sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "ref": "feature/add-auth",
+      "repo": {
+        "clone_url": "https://github.com/your-org/your-repo.git"
+      }
+    },
+    "base": {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "main"
+    },
+    "labels": []
+  },
+  "repository": {
+    "name": "your-repo",
+    "full_name": "your-org/your-repo",
+    "clone_url": "https://github.com/your-org/your-repo.git",
+    "owner": {
+      "login": "your-org"
+    }
+  },
+  "installation": {
+    "id": 12345678
+  }
+}

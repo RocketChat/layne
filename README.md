@@ -336,6 +336,7 @@ To disable, remove or set `DEBUG_MODE=false` and restart.
 
 ## Further Documentation
 
+- [**Local Development**](docs/local-development.md) — set up a local dev environment, replay webhooks, and debug without deploying
 - [**Configuration**](docs/configuration.md) — per-repo scanner settings, PR labels, and chat notifications
 - [**Metrics**](docs/metrics.md) — Prometheus metrics and the bundled Grafana dashboard
 - [**Extending Layne**](docs/extending.md) — adding new scanners and notification providers

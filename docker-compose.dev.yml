@@ -1,0 +1,31 @@
+# docker-compose.dev.yml — lightweight local development stack.
+#
+# Starts only Redis. Run the server and worker directly on your machine:
+#
+#   npm start        (terminal 1)
+#   npm run worker   (terminal 2)
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d     # start Redis
+#   docker compose -f docker-compose.dev.yml down      # stop and remove containers
+#
+# Or use the package.json shortcuts:
+#   npm run dev:redis   # start
+#   npm run dev:stop    # stop
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-dev-data:
