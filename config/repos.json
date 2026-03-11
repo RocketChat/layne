@@ -5,6 +5,12 @@
         "enabled": true,
         "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
       }
+    },
+    "labels": {
+      "onFailure":       ["needs-security-review"],
+      "removeOnSuccess": ["needs-security-review"],
+      "onSuccess":       [],
+      "removeOnFailure": []
     }
   },
   "acme/frontend": {

@@ -19,6 +19,8 @@ vi.mock('../auth.js', () => ({
 vi.mock('../github.js', () => ({
   startCheckRun:    vi.fn().mockResolvedValue(undefined),
   completeCheckRun: vi.fn().mockResolvedValue(undefined),
+  ensureLabelsExist: vi.fn().mockResolvedValue(undefined),
+  setLabels:         vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../fetcher.js', () => ({
@@ -47,6 +49,7 @@ vi.mock('../config.js', () => ({
     trufflehog:    { enabled: true, extraArgs: [] },
     claude:        { enabled: false, model: 'claude-haiku-4-5-20251001' },
     notifications: {},
+    labels:        {},
   }),
 }));
 
@@ -56,7 +59,7 @@ vi.mock('../notifiers/index.js', () => ({
 
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
-const { startCheckRun, completeCheckRun } = await import('../github.js');
+const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } = await import('../github.js');
 const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
 const { loadScanConfig }                  = await import('../config.js');
@@ -421,6 +424,74 @@ describe('processJob()', () => {
     it('calls loadScanConfig with owner and repo from the job', async () => {
       await processJob(baseJob);
       expect(loadScanConfig).toHaveBeenCalledWith({ owner: 'org', repo: 'repo' });
+    });
+  });
+
+  describe('label management', () => {
+    it('does not call setLabels when labels config is empty', async () => {
+      await processJob(baseJob);
+      expect(setLabels).not.toHaveBeenCalled();
+    });
+
+    it('adds onFailure labels and removes removeOnFailure labels when conclusion is failure', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {},
+        labels: { onFailure: ['needs-security-review'], removeOnFailure: ['security-ok'] },
+      });
+      // reporter returns failure
+      const { buildAnnotations } = await import('../reporter.js');
+      buildAnnotations.mockReturnValueOnce({ annotations: [], conclusion: 'failure', summary: 'Issues found.' });
+
+      await processJob(baseJob);
+
+      expect(ensureLabelsExist).toHaveBeenCalledWith(expect.objectContaining({
+        labelNames: ['needs-security-review'],
+      }));
+      expect(setLabels).toHaveBeenCalledWith(expect.objectContaining({
+        add:    ['needs-security-review'],
+        remove: ['security-ok'],
+        owner:  'org',
+        repo:   'repo',
+        prNumber: 7,
+      }));
+    });
+
+    it('adds onSuccess labels and removes removeOnSuccess labels when conclusion is success', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {},
+        labels: { onSuccess: ['security-ok'], removeOnSuccess: ['needs-security-review'] },
+      });
+
+      await processJob(baseJob);
+
+      expect(setLabels).toHaveBeenCalledWith(expect.objectContaining({
+        add:    ['security-ok'],
+        remove: ['needs-security-review'],
+      }));
+    });
+
+    it('does not call setLabels when both add and remove arrays are empty for the conclusion', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {},
+        labels: { onFailure: ['needs-security-review'] }, // only onFailure; conclusion is success
+      });
+
+      await processJob(baseJob); // conclusion defaults to success
+      expect(setLabels).not.toHaveBeenCalled();
+    });
+
+    it('scan still completes when setLabels throws', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {},
+        labels: { onSuccess: ['security-ok'], removeOnSuccess: ['needs-security-review'] },
+      });
+      setLabels.mockRejectedValueOnce(new Error('GitHub API down'));
+
+      await expect(processJob(baseJob)).resolves.toBeUndefined();
     });
   });
 });

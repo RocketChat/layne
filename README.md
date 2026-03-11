@@ -4,7 +4,7 @@
   <img src="assets/layne-logo.png" alt="Layne logo" width="160" />
 </p>
 
-> Layne is a self-hosted GitHub App that centralises security scanning across our repositories. Since we don't use commercial SAST/secrets scanning tools, nor we have access to GitHub Enterprise, it can get hard to maintain different GitHub Actions workflow files across different repositories - especially as such repositories grow in number. Instead, we install Layne once and it listens for pull request events, runs our security tools server-side, and posts the results back as native GitHub Check Run annotations.
+> Layne is a self-hosted GitHub App that centralises security scanning across our repositories. Since we don't use commercial SAST/secrets scanning tools, nor we have access to GitHub Enterprise, it can get hard to maintain different GitHub Actions workflow files across different repositories - especially as such repositories grow in number. Instead, we install Layne once and it listens for pull request events, runs our security tools server-side, posts the results back as native GitHub Check Run annotations, and notifies our security team's security notifications channel.
 
 This tool was based on [Reddit's Implementation](https://web.archive.org/web/20250801064657/https://www.reddit.com/r/RedditEng/comments/1hks4f3/how_we_are_self_hosting_code_scanning_at_reddit/).
 
@@ -219,6 +219,67 @@ trufflehog filesystem --json --no-update <extraArgs> <absolute-file-paths...>
 ```
 
 Arguments are passed directly via `execFile` — **not** through a shell — so no quoting or escaping is needed and shell injection is not possible.
+
+---
+
+## Labels
+
+Layne can automatically add and remove GitHub labels on a PR based on the scan result. This gives at-a-glance triage context directly in the PR list view without opening each PR.
+
+Labels are applied **after** the Check Run is completed. Errors never affect the scan result or the Check Run.
+
+### Configuration
+
+Add a `labels` key to `$global` or to any repo entry in `config/repos.json`:
+
+```json
+{
+  "$global": {
+    "labels": {
+      "onFailure":       ["needs-security-review"],
+      "removeOnFailure": ["security-ok"],
+      "onSuccess":       ["security-ok"],
+      "removeOnSuccess": ["needs-security-review"]
+    }
+  }
+}
+```
+
+| Key | When applied | Description |
+|-----|-------------|-------------|
+| `onFailure` | Scan conclusion is `failure` | Labels to add to the PR |
+| `removeOnFailure` | Scan conclusion is `failure` | Labels to remove from the PR |
+| `onSuccess` | Scan conclusion is `success` | Labels to add to the PR |
+| `removeOnSuccess` | Scan conclusion is `success` | Labels to remove from the PR |
+
+All four keys are optional. Omitting a key is equivalent to an empty array (no-op).
+
+### Label auto-creation
+
+If a label listed in `onFailure` or `onSuccess` does not exist on the repository, Layne creates it automatically with a neutral gray color (`#ededed`). You do not need to pre-create labels.
+
+### Global vs per-repo
+
+The same inheritance rules as notifications apply: `$global.labels` is the base; a per-repo `labels` block replaces the global config at the whole-key level.
+
+```json
+{
+  "$global": {
+    "labels": {
+      "onFailure":       ["needs-security-review"],
+      "removeOnSuccess": ["needs-security-review"]
+    }
+  },
+  "acme/payments": {
+    "labels": {
+      "onFailure":       ["security-critical"],
+      "removeOnSuccess": ["security-critical"]
+    }
+  }
+}
+```
+
+If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo.
 
 ---
 

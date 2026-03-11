@@ -172,4 +172,49 @@ describe('loadScanConfig()', () => {
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.notifications).toEqual({});
   });
+
+  // --- labels ---
+
+  it('returns an empty labels object when no $global and no repo labels block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.labels).toEqual({});
+  });
+
+  it('returns an empty labels object for an unknown repo with no $global', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'unknown' });
+    expect(config.labels).toEqual({});
+  });
+
+  it('inherits $global labels when the repo has no labels block', async () => {
+    const globalLabels = { onFailure: ['needs-security-review'], removeOnSuccess: ['needs-security-review'] };
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { labels: globalLabels },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.labels).toEqual(globalLabels);
+  });
+
+  it('per-repo labels override $global at the whole-key level', async () => {
+    const globalLabels = { onFailure: ['needs-security-review'], removeOnSuccess: ['needs-security-review'] };
+    const repoLabels   = { onFailure: ['security-critical'],     removeOnSuccess: ['security-critical'] };
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { labels: globalLabels },
+      'acme/payments': { labels: repoLabels },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.labels).toEqual(repoLabels);
+  });
+
+  it('$global without a labels key does not affect config', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global': { notifications: { rocketchat: { enabled: true } } },
+    }));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.labels).toEqual({});
+  });
 });

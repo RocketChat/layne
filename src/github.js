@@ -87,6 +87,65 @@ export async function completeCheckRun({
   }
 }
 
+/**
+ * Ensures all label names exist on the repository, creating any that are missing.
+ * Missing labels are created with a neutral gray color.
+ * Errors are logged and swallowed — never throws.
+ */
+export async function ensureLabelsExist({ installationId, owner, repo, labelNames }) {
+  if (!labelNames.length) return;
+  const octokit = await getInstallationOctokit(installationId);
+
+  for (const name of labelNames) {
+    try {
+      await octokit.issues.getLabel({ owner, repo, name });
+    } catch (err) {
+      if (err.status === 404) {
+        try {
+          await octokit.issues.createLabel({ owner, repo, name, color: 'ededed' });
+          debug('github', `created label "${name}" on ${owner}/${repo}`);
+        } catch (createErr) {
+          console.error(`[github] Failed to create label "${name}": ${createErr.message}`);
+        }
+      } else {
+        console.error(`[github] Failed to check label "${name}": ${err.message}`);
+      }
+    }
+  }
+}
+
+/**
+ * Adds and removes labels on a PR.
+ * Errors are logged and swallowed — never throws.
+ *
+ * @param {object} params
+ * @param {string[]} params.add    - Label names to add
+ * @param {string[]} params.remove - Label names to remove
+ */
+export async function setLabels({ installationId, owner, repo, prNumber, add, remove }) {
+  const octokit = await getInstallationOctokit(installationId);
+
+  if (add.length) {
+    try {
+      await octokit.issues.addLabels({ owner, repo, issue_number: prNumber, labels: add });
+      debug('github', `added labels [${add.join(', ')}] to ${owner}/${repo}#${prNumber}`);
+    } catch (err) {
+      console.error(`[github] Failed to add labels: ${err.message}`);
+    }
+  }
+
+  for (const name of remove) {
+    try {
+      await octokit.issues.removeLabel({ owner, repo, issue_number: prNumber, name });
+      debug('github', `removed label "${name}" from ${owner}/${repo}#${prNumber}`);
+    } catch (err) {
+      if (err.status !== 404) {
+        console.error(`[github] Failed to remove label "${name}": ${err.message}`);
+      }
+    }
+  }
+}
+
 function chunkArray(arr, size) {
   const chunks = [];
   for (let i = 0; i < arr.length; i += size) {

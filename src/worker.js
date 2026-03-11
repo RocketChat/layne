@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { Worker } from 'bullmq';
 import { redis } from './queue.js';
 import { getInstallationToken } from './auth.js';
-import { startCheckRun, completeCheckRun } from './github.js';
+import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } from './github.js';
 import { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
 import { buildAnnotations } from './reporter.js';
@@ -142,6 +142,22 @@ async function runScan(job) {
     await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations, summary });
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
+
+    // Label management — errors never affect the scan result.
+    const { labels: labelConfig } = scanConfig;
+    const toAdd    = conclusion === 'failure'
+      ? (labelConfig.onFailure       ?? [])
+      : (labelConfig.onSuccess       ?? []);
+    const toRemove = conclusion === 'failure'
+      ? (labelConfig.removeOnFailure ?? [])
+      : (labelConfig.removeOnSuccess ?? []);
+
+    if (toAdd.length || toRemove.length) {
+      await ensureLabelsExist({ installationId, owner, repo, labelNames: toAdd })
+        .catch(err => console.error('[worker] ensureLabelsExist error:', err.message));
+      await setLabels({ installationId, owner, repo, prNumber, add: toAdd, remove: toRemove })
+        .catch(err => console.error('[worker] setLabels error:', err.message));
+    }
 
     const prevCount = await getNotifyCount(owner, repo, prNumber);
     await setNotifyCount(owner, repo, prNumber, findings.length);

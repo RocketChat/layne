@@ -19,6 +19,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     model:   'claude-haiku-4-5-20251001',
     prompt:  null,
   }),
+  labels: Object.freeze({}),
 });
 
 // Cached after first read — repos.json is loaded once per worker process.
@@ -46,10 +47,15 @@ export async function loadScanConfig({ owner, repo }) {
   const globalNotifications = reposConfig['$global']?.notifications ?? {};
   const repoNotifications   = repoOverrides.notifications ?? {};
 
+  // Labels merge: per-repo labels override global at the whole-key level.
+  const globalLabels = reposConfig['$global']?.labels ?? {};
+  const repoLabels   = repoOverrides.labels ?? {};
+
   return {
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
     claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
     notifications: { ...globalNotifications, ...repoNotifications },
+    labels:        { ...globalLabels, ...repoLabels },
   };
 }
