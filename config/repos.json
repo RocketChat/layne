@@ -52,5 +52,13 @@
     "claude": {
       "enabled": true
     }
+  },
+  "RocketChat/Rocket.Chat.ReactNative": {
+    "semgrep": {
+      "extraArgs": ["--severity", "ERROR"]
+    },
+    "claude": {
+      "enabled": false
+    }
   }
 }
