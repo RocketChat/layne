@@ -13,7 +13,7 @@ Thanks for your interest in contributing. This document covers the branch model,
 
 **Release flow:**
 1. As PRs merge to `develop`, the changeset bot opens and maintains a **"chore: release vX.Y.Z"** PR targeting `main`
-2. Merging that PR to `main` triggers a deploy and creates a GitHub release automatically
+2. Merging that PR to `main` creates a GitHub release automatically
 3. A **"chore: sync main → develop"** PR is then opened automatically — merge it to keep `develop` up to date
 
 ---

@@ -1,6 +1,6 @@
 # Configuration
 
-Scanner behaviour, labels, and notifications are all configured in `config/repos.json`. Layne reads this file once at worker startup — **restart the worker to pick up changes** (the automated deploy pipeline does this automatically).
+Scanner behaviour, labels, and notifications are all configured in `config/repos.json`. Layne reads this file once at worker startup — **restart the worker to pick up changes**.
 
 ---
 
