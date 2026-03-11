@@ -1,7 +1,8 @@
 import 'dotenv/config';
+import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { Worker } from 'bullmq';
-import { redis } from './queue.js';
+import { redis, scanQueue } from './queue.js';
 import { getInstallationToken } from './auth.js';
 import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } from './github.js';
 import { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } from './fetcher.js';
@@ -11,9 +12,23 @@ import { loadScanConfig } from './config.js';
 import { notify } from './notifiers/index.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
+import {
+  registry,
+  scanTotal,
+  scanDuration,
+  scanTimeoutsTotal,
+  scanRetriesTotal,
+  findingTotal,
+  findingsPerScan,
+  queueWaiting,
+  queueActive,
+  queueFailed,
+} from './metrics.js';
 
-const SCAN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const SCAN_TIMEOUT_MS  = 10 * 60 * 1000; // 10 minutes
 const NOTIFY_COUNT_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+const METRICS_ENABLED  = process.env.METRICS_ENABLED === 'true';
+const METRICS_PORT     = parseInt(process.env.METRICS_PORT ?? '9091', 10);
 
 function notifyCountKey(owner, repo, prNumber) {
   return `layne:scan:count:${owner}/${repo}#${prNumber}`;
@@ -63,6 +78,7 @@ export async function processJob(job) {
     const result = await Promise.race([runScan(job).then(() => null), timeoutPromise]);
 
     if (result === timeoutSentinel) {
+      scanTimeoutsTotal.inc();
       throw new Error(`Scan timed out after ${SCAN_TIMEOUT_MS / 60000} minutes`);
     }
   } catch (err) {
@@ -77,10 +93,11 @@ export async function processJob(job) {
       `${safeMessage}${retryMessage}`
     );
 
-    // Keep the check run open for retryable failures so the next attempt can update it
-    // rather than flipping it to failed prematurely.
     if (finalAttempt) {
       const { installationId, owner, repo, checkRunId } = job.data;
+      scanTotal.inc({ conclusion: 'failure', owner, repo });
+      // Keep the check run open for retryable failures so the next attempt can update it
+      // rather than flipping it to failed prematurely.
       await completeCheckRun({
         installationId,
         owner,
@@ -90,6 +107,8 @@ export async function processJob(job) {
         annotations: [],
         summary:     `Layne encountered an internal error: ${safeMessage}`,
       }).catch(() => {});
+    } else {
+      scanRetriesTotal.inc();
     }
 
     throw err;
@@ -113,6 +132,8 @@ async function runScan(job) {
   } = job.data;
 
   let workspacePath = null;
+  let conclusion    = 'failure'; // updated to actual value after buildAnnotations
+  const stopTimer   = scanDuration.startTimer();
 
   try {
     debug('worker', `starting scan: ${owner}/${repo} PR #${prNumber} head=${headSha} base=${baseRef}`);
@@ -136,12 +157,18 @@ async function runScan(job) {
     console.log(`[worker] ${findings.length} total finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
     for (const f of findings) {
       console.log(`[worker]   ${f.tool} ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
+      findingTotal.inc({ severity: f.severity, tool: f.tool, owner, repo });
     }
-    const { annotations, conclusion, summary } = buildAnnotations(findings);
 
-    await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations, summary });
+    const result = buildAnnotations(findings);
+    conclusion = result.conclusion;
+
+    await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations: result.annotations, summary: result.summary });
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
+
+    scanTotal.inc({ conclusion, owner, repo });
+    findingsPerScan.observe({ conclusion }, findings.length);
 
     // Label management — errors never affect the scan result.
     const { labels: labelConfig } = scanConfig;
@@ -170,6 +197,7 @@ async function runScan(job) {
     if (workspacePath) {
       await cleanupWorkspace(workspacePath);
     }
+    stopTimer({ conclusion });
   }
 }
 
@@ -188,12 +216,41 @@ worker.on('failed', (job, err) => {
   console.error(`[worker] Job ${job?.id} permanently failed:`, err.message);
 });
 
+// --- metrics HTTP server (only when METRICS_ENABLED=true) ---
+
+let metricsServer = null;
+let queuePoller   = null;
+
+if (METRICS_ENABLED) {
+  metricsServer = createServer(async (_req, res) => {
+    res.setHeader('Content-Type', registry.contentType);
+    res.end(await registry.metrics());
+  });
+  metricsServer.listen(METRICS_PORT, () => {
+    console.log(`[worker] Metrics server listening on port ${METRICS_PORT}`);
+  });
+
+  // Poll BullMQ queue counts every 15 seconds to keep the gauges up to date.
+  queuePoller = setInterval(async () => {
+    try {
+      const counts = await scanQueue.getJobCounts('wait', 'active', 'failed');
+      queueWaiting.set(counts.wait   ?? 0);
+      queueActive.set(counts.active  ?? 0);
+      queueFailed.set(counts.failed  ?? 0);
+    } catch {
+      // Metrics are best-effort — a Redis hiccup should not crash the worker.
+    }
+  }, 15_000);
+}
+
 // Gracefully stops the worker — finishes any in-flight job before exiting.
 // Called on SIGTERM (Docker stop) and SIGINT (Ctrl-C) so that PR check runs are
 // never left stuck in "in_progress" due to a hard kill.
 export async function shutdown() {
   console.log('[worker] Shutting down gracefully…');
+  if (queuePoller) clearInterval(queuePoller);
   await worker.close();
+  if (metricsServer) await new Promise(resolve => metricsServer.close(resolve));
 }
 
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);

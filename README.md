@@ -16,6 +16,7 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 - [Per-Repo Configuration](#per-repo-configuration)
 - [Labels](#labels)
 - [Notifications](#notifications)
+- [Metrics](#metrics)
 - [Deployment](#deployment)
   - [Prerequisites](#prerequisites)
   - [Step 1 — Create the GitHub App](#step-1--create-the-github-app)
@@ -445,6 +446,57 @@ Adding a new chat provider (e.g. Slack) requires three steps and no changes to c
 1. Create `src/notifiers/slack.js` exporting `async function notify({ findings, owner, repo, prNumber, toolConfig })`. The function must never throw — catch all errors internally.
 2. In `src/notifiers/index.js`, add the import and add `slack` to the `NOTIFIERS` object.
 3. Create `src/__tests__/notifiers/slack.test.js`.
+
+---
+
+## Metrics
+
+Layne can expose Prometheus metrics for operational and security visibility. Metrics are **disabled by default** and opt-in via environment variable — no Prometheus or Grafana infrastructure is required for a basic deployment.
+
+### Enabling metrics
+
+Set `METRICS_ENABLED=true` in your environment (or `.env` file). The worker will start a lightweight HTTP server on `METRICS_PORT` (default: `9091`); the server exposes an additional `GET /metrics` endpoint on its existing port.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `METRICS_ENABLED` | `false` | Set to `true` to enable Prometheus metrics |
+| `METRICS_PORT` | `9091` | Port for the worker metrics HTTP server |
+
+### Available metrics
+
+**Operational**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `layne_scans_total` | Counter | `conclusion`, `owner`, `repo` | Completed scans |
+| `layne_scan_duration_seconds` | Histogram | `conclusion` | End-to-end scan duration |
+| `layne_scan_timeouts_total` | Counter | — | Scans killed by the 10-minute timeout |
+| `layne_scan_retries_total` | Counter | — | Jobs that were retried |
+| `layne_queue_waiting` | Gauge | — | Jobs waiting in the BullMQ queue |
+| `layne_queue_active` | Gauge | — | Jobs currently processing |
+| `layne_queue_failed` | Gauge | — | Jobs in the failed state |
+| `layne_webhooks_total` | Counter | `action`, `deduplicated` | Webhook events received |
+
+**Security / product**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `layne_findings_total` | Counter | `severity`, `tool`, `owner`, `repo` | Cumulative findings across all scans |
+| `layne_findings_per_scan` | Histogram | `conclusion` | Distribution of findings count per scan |
+
+Node.js process metrics (heap, GC, event loop lag) are also collected automatically via `prom-client`'s `collectDefaultMetrics`.
+
+### Deploying with Prometheus and Grafana
+
+The `monitoring/` directory contains ready-to-use configuration. Use the `monitoring` Docker Compose profile to bring up the full stack:
+
+```bash
+METRICS_ENABLED=true docker compose --profile monitoring up
+```
+
+This starts Prometheus (scraping both the server on `:3000/metrics` and the worker on `:9091/metrics`) and Grafana (available at `http://localhost:3001`). Grafana is pre-provisioned with the Prometheus datasource and a Layne dashboard — no manual setup required. Both Prometheus (30-day retention) and Grafana state persist in named Docker volumes.
+
+For production, Prometheus and Grafana should sit behind the same Nginx reverse proxy as the rest of Layne, or on an internal network not exposed to the public internet.
 
 ---
 

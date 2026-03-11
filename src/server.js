@@ -9,6 +9,9 @@ import { redis, scanQueue } from './queue.js';
 import { createCheckRun, completeCheckRun } from './github.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
+import { registry, webhooksTotal } from './metrics.js';
+
+const METRICS_ENABLED = process.env.METRICS_ENABLED === 'true';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,6 +21,13 @@ const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 const WEBHOOK_LOCK_TTL_SECONDS = 30;
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+if (METRICS_ENABLED) {
+  app.get('/metrics', async (_req, res) => {
+    res.setHeader('Content-Type', registry.contentType);
+    res.end(await registry.metrics());
+  });
+}
 
 app.get('/assets/layne-logo.png', (_req, res) => {
   res.sendFile(join(__dirname, '..', 'assets', 'layne-logo.png'));
@@ -99,6 +109,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
 
   if (await scanQueue.getJob(jobId)) {
     debug('server', `duplicate webhook ignored: job already exists for ${jobId}`);
+    webhooksTotal.inc({ action, deduplicated: 'true' });
     return ACCEPTED_RESPONSE;
   }
 
@@ -113,6 +124,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
   try {
     if (await scanQueue.getJob(jobId)) {
       debug('server', `duplicate webhook ignored after lock: job already exists for ${jobId}`);
+      webhooksTotal.inc({ action, deduplicated: 'true' });
       return ACCEPTED_RESPONSE;
     }
 
@@ -141,6 +153,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     });
 
     console.log(`[server] Enqueued scan for ${repository.full_name} PR #${prNumber}`);
+    webhooksTotal.inc({ action, deduplicated: 'false' });
     return ACCEPTED_RESPONSE;
   } catch (err) {
     console.error('[server] Failed to enqueue scan job:', err);

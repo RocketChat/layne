@@ -58,6 +58,8 @@ jobs:
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ROCKETCHAT_WEBHOOK_URL: ${{ secrets.ROCKETCHAT_WEBHOOK_URL }}
+          METRICS_ENABLED: ${{ vars.METRICS_ENABLED }}
+          METRICS_PORT: ${{ vars.METRICS_PORT }}
         run: |
           {
             printf 'GITHUB_APP_ID=%s\n'             "$GH_APP_ID"
@@ -67,6 +69,8 @@ jobs:
             printf 'LETSENCRYPT_EMAIL=%s\n'         "$LETSENCRYPT_EMAIL"
             printf 'ANTHROPIC_API_KEY=%s\n'         "$ANTHROPIC_API_KEY"
             printf 'ROCKETCHAT_WEBHOOK_URL=%s\n'    "$ROCKETCHAT_WEBHOOK_URL"
+            printf 'METRICS_ENABLED=%s\n'           "${METRICS_ENABLED:-false}"
+            printf 'METRICS_PORT=%s\n'              "${METRICS_PORT:-9091}"
           } | ssh -F "$HOME/.ssh/config" deploy-target \
               'cat > /home/ubuntu/layne/layne/.env'
 

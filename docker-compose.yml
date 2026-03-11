@@ -32,10 +32,44 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL:       "redis://redis:6379"
+      METRICS_ENABLED: "${METRICS_ENABLED:-false}"
+      METRICS_PORT:    "${METRICS_PORT:-9091}"
+    ports:
+      - "${METRICS_PORT:-9091}:${METRICS_PORT:-9091}"
     depends_on:
       redis:
         condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    depends_on:
+      - server
+      - worker
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
 
   nginx:
     image: nginx:1.27-alpine
@@ -60,3 +94,5 @@ services:
 
 volumes:
   redis-data:
+  prometheus-data:
+  grafana-data:

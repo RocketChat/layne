@@ -6,7 +6,29 @@ vi.mock('../queue.js', () => ({
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
   },
+  scanQueue: {
+    getJobCounts: vi.fn().mockResolvedValue({ wait: 0, active: 0, failed: 0 }),
+  },
 }));
+
+vi.mock('../metrics.js', () => {
+  const makeCounter   = () => ({ inc: vi.fn() });
+  const makeHistogram = () => ({ observe: vi.fn(), startTimer: vi.fn(() => vi.fn()) });
+  const makeGauge     = () => ({ set: vi.fn() });
+  return {
+    registry:          null,
+    scanTotal:         makeCounter(),
+    scanDuration:      makeHistogram(),
+    scanTimeoutsTotal: makeCounter(),
+    scanRetriesTotal:  makeCounter(),
+    findingTotal:      makeCounter(),
+    findingsPerScan:   makeHistogram(),
+    webhooksTotal:     makeCounter(),
+    queueWaiting:      makeGauge(),
+    queueActive:       makeGauge(),
+    queueFailed:       makeGauge(),
+  };
+});
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(function() { return { on: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }; }),
@@ -60,6 +82,7 @@ vi.mock('../notifiers/index.js', () => ({
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } = await import('../github.js');
+const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingsPerScan } = await import('../metrics.js');
 const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
 const { loadScanConfig }                  = await import('../config.js');
@@ -492,6 +515,79 @@ describe('processJob()', () => {
       setLabels.mockRejectedValueOnce(new Error('GitHub API down'));
 
       await expect(processJob(baseJob)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('metrics', () => {
+    it('starts a scan duration timer on every job', async () => {
+      await processJob(baseJob);
+      expect(scanDuration.startTimer).toHaveBeenCalled();
+    });
+
+    it('increments scanTotal with conclusion=success on a successful scan', async () => {
+      await processJob(baseJob);
+      expect(scanTotal.inc).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion: 'success',
+        owner:      'org',
+        repo:       'repo',
+      }));
+    });
+
+    it('increments scanTotal with conclusion=failure on the final failed attempt', async () => {
+      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      await expect(processJob({ ...baseJob, attemptsMade: 1 })).rejects.toThrow('git clone failed');
+      expect(scanTotal.inc).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+    });
+
+    it('does not increment scanTotal on a non-final failed attempt', async () => {
+      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      await expect(processJob(baseJob)).rejects.toThrow('git clone failed');
+      expect(scanTotal.inc).not.toHaveBeenCalled();
+    });
+
+    it('increments findingTotal for each finding with severity, tool, owner, repo', async () => {
+      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+
+      expect(findingTotal.inc).toHaveBeenCalledWith({
+        severity: 'high',
+        tool:     'semgrep',
+        owner:    'org',
+        repo:     'repo',
+      });
+    });
+
+    it('records findingsPerScan with the finding count and conclusion', async () => {
+      await processJob(baseJob);
+      expect(findingsPerScan.observe).toHaveBeenCalledWith({ conclusion: 'success' }, 0);
+    });
+
+    it('increments scanTimeoutsTotal on timeout', async () => {
+      vi.useFakeTimers();
+      cloneRepo.mockImplementationOnce(() => new Promise(() => {}));
+
+      const jobPromise = processJob(baseJob);
+      const assertRejection = expect(jobPromise).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 100);
+      await assertRejection;
+
+      expect(scanTimeoutsTotal.inc).toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('increments scanRetriesTotal on a non-final failed attempt', async () => {
+      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      await expect(processJob(baseJob)).rejects.toThrow('git clone failed');
+      expect(scanRetriesTotal.inc).toHaveBeenCalled();
+    });
+
+    it('does not increment scanRetriesTotal on the final failed attempt', async () => {
+      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      await expect(processJob({ ...baseJob, attemptsMade: 1 })).rejects.toThrow('git clone failed');
+      expect(scanRetriesTotal.inc).not.toHaveBeenCalled();
     });
   });
 });

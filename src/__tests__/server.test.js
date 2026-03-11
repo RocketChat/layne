@@ -8,12 +8,18 @@ vi.mock('../queue.js', () => ({
 }));
 
 vi.mock('../github.js', () => ({
-  createCheckRun: vi.fn(),
+  createCheckRun:   vi.fn(),
   completeCheckRun: vi.fn(),
+}));
+
+vi.mock('../metrics.js', () => ({
+  registry:      null,
+  webhooksTotal: { inc: vi.fn() },
 }));
 
 const { redis, scanQueue } = await import('../queue.js');
 const { createCheckRun, completeCheckRun } = await import('../github.js');
+const { webhooksTotal } = await import('../metrics.js');
 const { app, verifySignature, processWebhookRequest } = await import('../server.js');
 
 function sign(body) {
@@ -249,5 +255,20 @@ describe('processWebhookRequest()', () => {
       conclusion:     'failure',
       summary:        expect.stringContaining('failed to accept this scan job'),
     }));
+  });
+
+  describe('metrics', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('increments webhooksTotal with deduplicated=false when a job is enqueued', async () => {
+      await processWebhookRequest(webhookRequest(prPayload('opened')));
+      expect(webhooksTotal.inc).toHaveBeenCalledWith({ action: 'opened', deduplicated: 'false' });
+    });
+
+    it('increments webhooksTotal with deduplicated=true when a duplicate webhook is received', async () => {
+      scanQueue.getJob.mockResolvedValueOnce({ id: 'existing-job' });
+      await processWebhookRequest(webhookRequest(prPayload('opened')));
+      expect(webhooksTotal.inc).toHaveBeenCalledWith({ action: 'opened', deduplicated: 'true' });
+    });
   });
 });
