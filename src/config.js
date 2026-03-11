@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { validateConfig } from './config-validator.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'repos.json');
@@ -31,8 +32,18 @@ async function loadReposConfig() {
   if (reposConfigCache) return reposConfigCache;
   try {
     const raw = JSON.parse(await readFile(REPOS_CONFIG_PATH, 'utf8'));
+    const result = validateConfig(raw);
+    if (!result.valid) {
+      console.error('[config] repos.json has validation errors — some settings may be ignored:');
+      for (const err of result.errors) console.error(`[config]   • ${err}`);
+    }
     reposConfigCache = (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) ? raw : {};
-  } catch {
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      console.error(`[config] repos.json is not valid JSON: ${err.message}`);
+    } else {
+      console.error(`[config] failed to load repos.json: ${err.message}`);
+    }
     reposConfigCache = {};
   }
   return reposConfigCache;

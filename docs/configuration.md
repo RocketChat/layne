@@ -64,7 +64,7 @@ Overrides are keyed by `"owner/repo"`. Repositories with no entry — or whose e
 
 ### Claude scanning modes
 
-Claude supports two modes of operation, selected by what you set in the `claude` block.
+Claude supports two modes of operation, selected by what you set in the `claude` block. **`skill` takes precedence over `prompt`** — if both are set, skill mode runs and `prompt` is ignored (Layne will log a warning).
 
 #### Prompt mode (default)
 

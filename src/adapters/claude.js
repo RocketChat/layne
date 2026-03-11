@@ -66,6 +66,9 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   }
 
   const mode = toolConfig.skill ? 'skill' : 'prompt';
+  if (toolConfig.skill && toolConfig.prompt) {
+    console.warn('[claude] warning — both "prompt" and "skill" are configured; "prompt" is ignored (skill mode takes precedence)');
+  }
   console.log(`[claude] scanning ${changedFiles.length} file(s) with model ${toolConfig.model} (mode: ${mode})`);
 
   // 1. Read files, skip binaries, cap at FILE_SIZE_LIMIT each
