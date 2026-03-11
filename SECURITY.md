@@ -22,3 +22,7 @@ We ask that you:
 - Act in good faith — we will do the same.
 
 Researchers who follow these guidelines will be credited in the fix unless they prefer to remain anonymous.
+
+## Security Team
+
+To learn more about how the Rocket.Chat security team operates, see the [Security team handbook](https://handbook.rocket.chat/space/SEC/6226148/SECURITY).

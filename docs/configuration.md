@@ -107,7 +107,7 @@ Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-w
 | `id` | string | — | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
 | `version` | string | `"latest"` | Skill version to use. Pin to a timestamp for reproducible behaviour |
 
-> **Beta.** API Skills are in beta and not ZDR-eligible. Requires the `code-execution-2025-08-25` and `skills-2025-10-02` beta headers, which Layne adds automatically. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
+> **Beta — expect breaking changes.** API Skills are in active development. The beta headers (`skills-2025-10-02`, `code-execution-2025-08-25`) may be superseded by Anthropic; when that happens, Layne will need to be updated to use the new headers before skill mode works again. Skill IDs (`skill_01...`) are opaque, tied to your Anthropic account, and are not portable — if Anthropic changes the Skills API in a way that invalidates existing uploads, you will need to re-upload your skill and update the `id` in `repos.json`. Skills are not ZDR-eligible. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
 
 **Uploading a skill:** Skills are managed outside of Layne. To upload one:
 ```python

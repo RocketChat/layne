@@ -113,68 +113,19 @@ Two separate Node.js processes:
 
 ## Per-repo configuration (`config/repos.json`)
 
-Keyed by `"owner/repo"`. Read once at worker startup — **restart the worker to pick up changes**.
+See [docs/configuration.md](docs/configuration.md) for the full schema and examples.
 
-Supports a reserved `$global` key for defaults inherited by all repos:
-
-```json
-{
-  "$global": {
-    "notifications": { "rocketchat": { "enabled": true, "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL" } },
-    "labels": { "onFailure": ["needs-security-review"], "removeOnSuccess": ["needs-security-review"] }
-  },
-  "owner/repo": {
-    "semgrep":       { "enabled": true, "extraArgs": ["--config", "p/owasp-top-ten"] },
-    "trufflehog":    { "enabled": true, "extraArgs": ["--only-verified"] },
-    "claude":        { "enabled": true, "model": "claude-haiku-4-5-20251001" },
-    "notifications": { "rocketchat": { "enabled": true, "webhookUrl": "$REPO_HOOK" } },
-    "labels":        { "onFailure": ["security-critical"], "removeOnSuccess": ["security-critical"] }
-  }
-}
-```
-
-**Claude scanner modes:**
-
-Prompt mode — custom system prompt, works with any model:
-```json
-"claude": { "enabled": true, "model": "claude-haiku-4-5-20251001", "prompt": "You are a..." }
-```
-
-Skill mode — uses an uploaded Anthropic API Skill (beta); `prompt` is ignored when `skill` is set:
-```json
-"claude": { "enabled": true, "model": "claude-sonnet-4-6", "skill": { "id": "skill_01...", "version": "latest" } }
-```
-
-To upload a skill, point `files_from_dir` at a folder containing a `SKILL.md` and run once:
-```python
-from anthropic import Anthropic
-from anthropic.lib import files_from_dir
-
-skill = Anthropic().beta.skills.create(
-    display_title="My Skill",
-    files=files_from_dir("/path/to/skill-folder"),
-    betas=["skills-2025-10-02"],
-)
-print(skill.id)  # skill_01...
-```
-
-Merge rules:
+Key points for code navigation:
+- Read once at worker startup — **restart the worker to pick up changes**
+- Loaded and merged by `src/config.js` → `loadScanConfig`
+- Supports `$global` key for defaults inherited by all repos
 - Scanner blocks: per-repo spread over defaults (`{ ...DEFAULT_CONFIG.semgrep, ...repoOverrides.semgrep }`)
 - `notifications` and `labels`: per-repo notifier/key wins over global; per-repo absence = inherit global entirely
 - `extraArgs` fully replaces the default (not extended)
 - `config/repos.json` must be present in the Docker image (`COPY config/ ./config/`)
-
-## Notifications
-
-- Implemented in `src/notifiers/` — modular, one file per provider
 - Notifier contract: `async function notify({ findings, owner, repo, prNumber, toolConfig })` — must never throw
-- Deduplication: notify only when `findings.length > prevCount` (stored in Redis key `layne:scan:count:{owner}/{repo}#{prNumber}`, 30-day TTL)
+- Notification dedup key: `layne:scan:count:{owner}/{repo}#{prNumber}` (Redis, 30-day TTL)
 - `webhookUrl` values starting with `$` are resolved from `process.env` at runtime
-
-## Labels
-
-- `ensureLabelsExist` creates missing labels with color `#ededed` before applying them
-- `setLabels` adds/removes labels; 404 on remove = already absent = silently ignored
 - Label errors never affect the scan result or Check Run
 
 ## Metrics

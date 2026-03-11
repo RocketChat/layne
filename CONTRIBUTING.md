@@ -59,6 +59,32 @@ For PRs that don't warrant a release entry — CI fixes, typos, documentation up
 
 ---
 
+## What makes a good PR
+
+- **One thing per PR.** If you find yourself writing "and also..." in the description, split it.
+- **Explain the why.** The diff shows what changed. The description should say why.
+- **Every behaviour change needs a test.** If you're fixing a bug, the test should fail on the old code.
+- **Security-sensitive areas get extra scrutiny** — webhook verification, auth, file path handling, scanner output parsing. Explain your threat model.
+
+**Example description:**
+
+```
+Fix scanner timeout not being applied to Claude batches
+
+The 10-minute job timeout in worker.js wraps the full runScan() call,
+but individual Claude API batches had no timeout of their own. A hung
+API call would block the worker until the top-level timeout fired,
+tying up a concurrency slot for the full 10 minutes.
+
+Added a per-batch 90-second timeout via Promise.race. Batches that
+exceed it log a warning and return { error: true } so the rest of
+the scan continues.
+
+Closes #42
+```
+
+---
+
 ## Tests and lint
 
 ```bash
