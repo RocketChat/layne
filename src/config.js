@@ -17,7 +17,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   claude: Object.freeze({
     enabled: false,
     model:   'claude-haiku-4-5-20251001',
-    prompt:  null,
+    prompt:  null,   // custom system prompt (string); mutually exclusive with skill
+    skill:   null,   // API Skill config: { id: "skill_01...", version: "latest" }
   }),
   labels: Object.freeze({}),
 });

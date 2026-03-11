@@ -15,12 +15,14 @@ const BINARY_EXTENSIONS = new Set([
 
 const FILE_SIZE_LIMIT  = 50_000;   // bytes; truncate above this
 const BATCH_CHAR_LIMIT = 100_000;  // ~25K tokens of file text per API call
+const MAX_SKILL_TURNS  = 10;       // max pause_turn continuations per batch
 
 const SYSTEM_PROMPT =
   'You are a security code reviewer. Analyse the provided source files for malicious intent: ' +
   'reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. ' +
   'Report ONLY confirmed malicious patterns with high confidence. Do not report style issues, bugs, or ' +
-  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real.' + 'Call `report_findings` with your results.';
+  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real.' +
+  'Call `report_findings` with your results.';
 
 const REPORT_FINDINGS_TOOL = {
   name: 'report_findings',
@@ -51,8 +53,10 @@ const REPORT_FINDINGS_TOOL = {
  * Runs Claude against the files changed in the PR and returns findings
  * in the common format: { file, line, severity, message, ruleId, tool }.
  *
- * Uses Claude's tool use to get back a structured list of malicious-intent
- * findings rather than parsing free-form text.
+ * Two modes, selected by repos.json config:
+ *   - prompt mode (default): single API call with a system prompt
+ *   - skill mode: Skills API + code_execution tool (requires beta headers);
+ *     set `claude.skill: { id: "skill_01...", version: "latest" }` in repos.json
  */
 export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.claude }) {
   if (!changedFiles || changedFiles.length === 0) return [];
@@ -61,7 +65,8 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
     return [];
   }
 
-  console.log(`[claude] scanning ${changedFiles.length} file(s) with model ${toolConfig.model}`);
+  const mode = toolConfig.skill ? 'skill' : 'prompt';
+  console.log(`[claude] scanning ${changedFiles.length} file(s) with model ${toolConfig.model} (mode: ${mode})`);
 
   // 1. Read files, skip binaries, cap at FILE_SIZE_LIMIT each
   const fileContents = [];
@@ -94,7 +99,10 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   const findings = [];
   let errorCount = 0;
   for (const batch of batches) {
-    const result = await scanBatch(client, batch, toolConfig.model, toolConfig.prompt ?? SYSTEM_PROMPT);
+    const result = toolConfig.skill
+      ? await scanBatchWithSkill(client, batch, toolConfig.model, toolConfig.skill)
+      : await scanBatchWithPrompt(client, batch, toolConfig.model, toolConfig.prompt ?? SYSTEM_PROMPT);
+
     if (result.error) {
       errorCount++;
     } else {
@@ -111,6 +119,107 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   }
 
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt mode — current behaviour, single API call with system prompt
+// ---------------------------------------------------------------------------
+
+async function scanBatchWithPrompt(client, files, model, prompt) {
+  const userMessage = buildUserMessage(files);
+
+  try {
+    const response = await client.messages.create({
+      model,
+      max_tokens: 1024,
+      system: prompt,
+      messages: [{ role: 'user', content: userMessage }],
+      tools: [REPORT_FINDINGS_TOOL],
+      tool_choice: { type: 'any' },
+    });
+
+    return extractFindings(response.content);
+  } catch (err) {
+    console.error('[claude] API error during scan batch (prompt mode):', err.message ?? err);
+    return { error: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill mode — Skills API + code_execution, handles pause_turn continuations
+// ---------------------------------------------------------------------------
+
+async function scanBatchWithSkill(client, files, model, skillConfig) {
+  const userMessage = buildUserMessage(files);
+  const messages = [{ role: 'user', content: userMessage }];
+
+  const containerSpec = {
+    skills: [{
+      type:     'custom',
+      skill_id: skillConfig.id,
+      version:  skillConfig.version ?? 'latest',
+    }],
+  };
+
+  const tools = [
+    { type: 'code_execution_20250825', name: 'code_execution' },
+    REPORT_FINDINGS_TOOL,
+  ];
+
+  try {
+    let response = await client.beta.messages.create({
+      model,
+      max_tokens: 4096,
+      betas:    ['code-execution-2025-08-25', 'skills-2025-10-02'],
+      container: containerSpec,
+      messages,
+      tools,
+    });
+
+    // Continue if the skill needs more turns (long-running code execution)
+    for (let i = 0; i < MAX_SKILL_TURNS && response.stop_reason === 'pause_turn'; i++) {
+      debug('claude', `pause_turn continuation ${i + 1}/${MAX_SKILL_TURNS}`);
+      messages.push({ role: 'assistant', content: response.content });
+      response = await client.beta.messages.create({
+        model,
+        max_tokens: 4096,
+        betas:    ['code-execution-2025-08-25', 'skills-2025-10-02'],
+        container: { id: response.container.id, ...containerSpec },
+        messages,
+        tools,
+      });
+    }
+
+    return extractFindings(response.content);
+  } catch (err) {
+    console.error('[claude] API error during scan batch (skill mode):', err.message ?? err);
+    return { error: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+function buildUserMessage(files) {
+  return files
+    .map(f => `### ${f.file}\n\`\`\`\n${f.content}\n\`\`\``)
+    .join('\n\n');
+}
+
+function extractFindings(content) {
+  const toolUse = content.find(
+    b => b.type === 'tool_use' && b.name === 'report_findings'
+  );
+  if (!toolUse) return { findings: [] };
+
+  return {
+    findings: (toolUse.input.findings ?? []).map(f => ({
+      ...f,
+      ruleId: `claude/${f.ruleId}`,
+      tool:   'claude',
+    })),
+  };
 }
 
 function splitIntoBatches(fileContents, charLimit) {
@@ -131,35 +240,4 @@ function splitIntoBatches(fileContents, charLimit) {
 
   if (current.length > 0) batches.push(current);
   return batches;
-}
-
-async function scanBatch(client, files, model, prompt) {
-  const userMessage = files
-    .map(f => `### ${f.file}\n\`\`\`\n${f.content}\n\`\`\``)
-    .join('\n\n');
-
-  try {
-    const response = await client.messages.create({
-      model,
-      max_tokens: 1024,
-      system: prompt,
-      messages: [{ role: 'user', content: userMessage }],
-      tools: [REPORT_FINDINGS_TOOL],
-      tool_choice: { type: 'any' },
-    });
-
-    const toolUse = response.content.find(
-      b => b.type === 'tool_use' && b.name === 'report_findings'
-    );
-    if (!toolUse) return { findings: [] };
-
-    return { findings: (toolUse.input.findings ?? []).map(f => ({
-      ...f,
-      ruleId: `claude/${f.ruleId}`,
-      tool:   'claude',
-    })) };
-  } catch (err) {
-    console.error('[claude] API error during scan batch:', err.message ?? err);
-    return { error: true };
-  }
 }

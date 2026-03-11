@@ -57,8 +57,70 @@ Overrides are keyed by `"owner/repo"`. Repositories with no entry — or whose e
 |---|---|---|---|
 | `enabled` | boolean | `false` | Must be set to `true` to enable Claude scanning for this repo |
 | `model` | string | `claude-haiku-4-5-20251001` | Claude model ID to use for analysis |
+| `prompt` | string | built-in | Custom system prompt (prompt mode only). Replaces the default malicious-intent prompt entirely |
+| `skill` | object | `null` | Anthropic API Skill to load (skill mode). See below. When set, `prompt` is ignored |
 
 > **Opt-in only.** Claude scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly set `"enabled": true`. Requires `ANTHROPIC_API_KEY` to be set in the environment.
+
+### Claude scanning modes
+
+Claude supports two modes of operation, selected by what you set in the `claude` block.
+
+#### Prompt mode (default)
+
+A single API call per file batch with a system prompt. Simple and works with any Claude model. Use this for most repos.
+
+The built-in prompt instructs Claude to look for reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. You can replace it entirely with `prompt` for domain-specific analysis:
+
+```json
+{
+  "acme/payments": {
+    "claude": {
+      "enabled": true,
+      "model": "claude-haiku-4-5-20251001",
+      "prompt": "You are a security reviewer specialising in payment systems. Analyse the provided source files for malicious intent. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
+    }
+  }
+}
+```
+
+#### Skill mode
+
+Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-with-claude/skills-guide). An uploaded skill is loaded into a sandboxed container alongside a `code_execution` tool, allowing Claude to actually **run code** during analysis — decoding base64/hex payloads, querying npm/PyPI registry metadata, and doing deeper pattern matching than static reasoning alone allows.
+
+```json
+{
+  "owner/repo": {
+    "claude": {
+      "enabled": true,
+      "model": "claude-opus-4-6",
+      "skill": { "id": "skill_01...", "version": "latest" }
+    }
+  }
+}
+```
+
+`skill` object keys:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `id` | string | — | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
+| `version` | string | `"latest"` | Skill version to use. Pin to a timestamp for reproducible behaviour |
+
+> **Beta.** API Skills are in beta and not ZDR-eligible. Requires the `code-execution-2025-08-25` and `skills-2025-10-02` beta headers, which Layne adds automatically. Use `claude-opus-4-6` or `claude-sonnet-4-6` — smaller models may not make effective use of code execution.
+
+**Uploading a skill:** Skills are managed outside of Layne. To upload one:
+```python
+from anthropic import Anthropic
+from anthropic.lib import files_from_dir
+
+skill = Anthropic().beta.skills.create(
+    display_title="Malicious Intent",
+    files=files_from_dir("/path/to/skill-folder"),  # must contain SKILL.md
+    betas=["skills-2025-10-02"],
+)
+print(skill.id)  # paste this into repos.json
+```
 
 ### How args are assembled
 
@@ -138,13 +200,27 @@ Arguments are passed directly via `execFile` — **not** through a shell — so 
 }
 ```
 
-**Use a more capable Claude model for a sensitive repo:**
+**Use a custom system prompt for domain-specific analysis:**
 ```json
 {
   "acme/payments": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6"
+      "model": "claude-opus-4-6",
+      "prompt": "You are a security reviewer specialising in payment systems. Analyse the provided source files for malicious intent: reverse shells, backdoors, credential exfiltration, and supply-chain attacks. Pay extra attention to anything that could exfiltrate card data or PII. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
+    }
+  }
+}
+```
+
+**Use an uploaded API Skill for deeper analysis (code execution, registry lookups):**
+```json
+{
+  "acme/payments": {
+    "claude": {
+      "enabled": true,
+      "model": "claude-opus-4-6",
+      "skill": { "id": "skill_01...", "version": "latest" }
     }
   }
 }
