@@ -138,7 +138,7 @@ Open `config/repos.json`. Add an entry for your test repository:
 }
 ```
 
-An empty object uses the global defaults: Semgrep and Trufflehog enabled, no Claude, no notifications, no labels. That is enough for a smoke test.
+An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/repos.json`. In the checked-in example config, Rocket.Chat notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifier will log and skip delivery.
 
 > **Important:** The worker reads `config/repos.json` once at startup. Restart it after any changes.
 
@@ -197,11 +197,16 @@ Expected output:
 
 ---
 
-## Step 5 — Receive live webhooks via smee.io
+## Step 5 — Receive live webhooks via smee.io or ngrok
 
-GitHub cannot deliver webhooks to `localhost` because it is not reachable from the internet. [smee.io](https://smee.io) is a free proxy that forwards GitHub webhook events to your local machine. Think of it as a tunnel specifically designed for this.
+GitHub cannot deliver webhooks to `localhost` because it is not reachable from the internet. You need a public URL that forwards requests to your local server.
 
-### 5.1 Get a smee channel URL
+- **Use `smee.io`** if you want the simplest setup with minimal account/config overhead.
+- **Use `ngrok`** if you want a direct public URL plus request inspection and replay tools while debugging.
+
+GitHub's GitHub App docs still recommend `smee` for local webhook development, and mention `ngrok` as an alternative.
+
+### 5.1 Option A — Use smee.io
 
 Go to https://smee.io and click **Start a new channel**. You will get a unique URL like `https://smee.io/abc123xyz`. Keep this tab open.
 
@@ -223,16 +228,38 @@ Leave this terminal running. Every time a webhook arrives at smee.io, the client
 2. In the **Webhook URL** field, paste your smee URL (e.g. `https://smee.io/abc123xyz`).
 3. Click **Save changes**.
 
-### 5.4 Trigger a scan
+### 5.4 Option B — Use ngrok instead
+
+If you prefer a direct tunnel with a request inspector, install and authenticate the ngrok agent, then expose your local server:
+
+```bash
+# Start an HTTP tunnel to your local Layne server
+ngrok http 3000
+```
+
+ngrok will print a forwarding URL such as `https://abc123.ngrok-free.app`. Use:
+
+```text
+https://abc123.ngrok-free.app/webhook
+```
+
+as the GitHub App's **Webhook URL**.
+
+Useful extras while debugging:
+
+- Open `http://127.0.0.1:4040` to inspect delivered requests.
+- You can replay a captured webhook from the ngrok UI without opening a new pull request.
+
+### 5.5 Trigger a scan
 
 Open a pull request on your test repository. Within a few seconds you should see:
 
-- The smee terminal printing an incoming event
+- The forwarding tool printing an incoming event (`smee` or `ngrok`)
 - The server terminal printing `[server] Enqueued scan for your-org/your-repo#1`
 - The worker terminal printing `[worker] starting scan: your-org/your-repo#1`
 - A **Layne Dev** check appearing on the PR on GitHub
 
-> **Duplicate deliveries:** smee replays queued events when you reconnect. If you see a scan triggered twice for the same commit, that is normal — Layne's Redis deduplication will quietly drop the second one.
+> **Duplicate deliveries:** smee may replay queued events when you reconnect. If you see a scan triggered twice for the same commit, that is normal — Layne's Redis deduplication will quietly drop the second one.
 
 ---
 
@@ -376,11 +403,21 @@ If you prefer not to install the binaries locally, you can run the worker contai
 docker compose build worker
 docker compose run --rm \
   --env-file .env \
-  -e REDIS_URL=host-gateway \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
   worker node src/worker.js
 ```
 
-> Note: the `host-gateway` trick only works on Linux. On macOS with Docker Desktop, use `host.docker.internal` instead: `-e REDIS_URL=redis://host.docker.internal:6379`.
+> On macOS with Docker Desktop, `host.docker.internal` resolves to your host automatically.
+>
+> On Linux, add a host-gateway mapping and keep `REDIS_URL` as a full URL:
+>
+> ```bash
+> docker compose run --rm \
+>   --add-host host.docker.internal:host-gateway \
+>   --env-file .env \
+>   -e REDIS_URL=redis://host.docker.internal:6379 \
+>   worker node src/worker.js
+> ```
 
 ---
 
