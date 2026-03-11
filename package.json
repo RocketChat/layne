@@ -2,6 +2,7 @@
   "name": "layne",
   "version": "1.0.0",
   "description": "Centralized appsec scanning GitHub App",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",

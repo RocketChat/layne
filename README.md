@@ -341,3 +341,11 @@ To disable, remove or set `DEBUG_MODE=false` and restart.
 - [**Metrics**](docs/metrics.md) — Prometheus metrics and the bundled Grafana dashboard
 - [**Extending Layne**](docs/extending.md) — adding new scanners and notification providers
 - [**Reference**](docs/reference.md) — environment variables, finding shape, severity levels, and queue behaviour
+
+---
+
+## License
+
+Layne is licensed under the Apache License 2.0 (`Apache-2.0`). See [LICENSE](LICENSE) for the full text.
+
+Copyright 2026 Rocket.Chat Technologies Corp.
