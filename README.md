@@ -14,6 +14,7 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 
 - [How It Works](#how-it-works)
 - [Per-Repo Configuration](#per-repo-configuration)
+- [Labels](#labels)
 - [Notifications](#notifications)
 - [Deployment](#deployment)
   - [Prerequisites](#prerequisites)
