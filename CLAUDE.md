@@ -142,7 +142,7 @@ Prompt mode — custom system prompt, works with any model:
 
 Skill mode — uses an uploaded Anthropic API Skill (beta); `prompt` is ignored when `skill` is set:
 ```json
-"claude": { "enabled": true, "model": "claude-opus-4-6", "skill": { "id": "skill_01...", "version": "latest" } }
+"claude": { "enabled": true, "model": "claude-sonnet-4-6", "skill": { "id": "skill_01...", "version": "latest" } }
 ```
 
 To upload a skill, point `files_from_dir` at a folder containing a `SKILL.md` and run once:

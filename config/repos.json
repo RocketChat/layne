@@ -37,7 +37,7 @@
   "acme/payments": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "prompt": "You are a security reviewer specialising in payment systems. Analyse the provided source files for malicious intent: reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. Pay extra attention to anything that could exfiltrate card data or PII. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
     },
     "notifications": {
@@ -51,7 +51,7 @@
   "RocketChat/security": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "skill": { "id": "skill_0187mWg6hVHB3eJHkeDmi2Eg", "version": "latest" }
     }
   },

@@ -93,7 +93,7 @@ Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-w
   "owner/repo": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "skill": { "id": "skill_01...", "version": "latest" }
     }
   }
@@ -107,7 +107,7 @@ Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-w
 | `id` | string | — | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
 | `version` | string | `"latest"` | Skill version to use. Pin to a timestamp for reproducible behaviour |
 
-> **Beta.** API Skills are in beta and not ZDR-eligible. Requires the `code-execution-2025-08-25` and `skills-2025-10-02` beta headers, which Layne adds automatically. Use `claude-opus-4-6` or `claude-sonnet-4-6` — smaller models may not make effective use of code execution.
+> **Beta.** API Skills are in beta and not ZDR-eligible. Requires the `code-execution-2025-08-25` and `skills-2025-10-02` beta headers, which Layne adds automatically. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
 
 **Uploading a skill:** Skills are managed outside of Layne. To upload one:
 ```python
@@ -206,7 +206,7 @@ Arguments are passed directly via `execFile` — **not** through a shell — so 
   "acme/payments": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "prompt": "You are a security reviewer specialising in payment systems. Analyse the provided source files for malicious intent: reverse shells, backdoors, credential exfiltration, and supply-chain attacks. Pay extra attention to anything that could exfiltrate card data or PII. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
     }
   }
@@ -219,7 +219,7 @@ Arguments are passed directly via `execFile` — **not** through a shell — so 
   "acme/payments": {
     "claude": {
       "enabled": true,
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "skill": { "id": "skill_01...", "version": "latest" }
     }
   }
