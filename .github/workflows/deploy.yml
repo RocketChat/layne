@@ -81,3 +81,15 @@ jobs:
             'cd /home/ubuntu/layne/layne &&
              docker compose up --build --no-deps -d server worker &&
              docker compose exec nginx nginx -s reload'
+
+      - name: Create GitHub release
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          if ! gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release create "$VERSION" --title "$VERSION" --generate-notes
+            echo "Created release $VERSION"
+          else
+            echo "Release $VERSION already exists, skipping."
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
