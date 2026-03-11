@@ -15,4 +15,5 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run lint
+      - run: npm run validate-config
       - run: npm test

@@ -11,6 +11,9 @@
     "dev:stop": "docker compose -f docker-compose.dev.yml down",
     "replay": "node scripts/replay-webhook.js",
     "validate-config": "node scripts/validate-config.js",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "node scripts/create-release.js",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -27,6 +30,8 @@
     "prom-client": "^15.1.3"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.3",
     "supertest": "^7.0.0",

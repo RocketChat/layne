@@ -1,0 +1,27 @@
+name: Changeset Check
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  check:
+    name: Changeset required
+    runs-on: ubuntu-latest
+    # PRs labelled 'no-changeset' are exempt (docs, CI, dependency bumps, etc.)
+    if: "!contains(github.event.pull_request.labels.*.name, 'no-changeset')"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Check for changeset
+        run: npx changeset status --since origin/${{ github.base_ref }}
