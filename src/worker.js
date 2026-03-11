@@ -7,6 +7,8 @@ import { startCheckRun, completeCheckRun } from './github.js';
 import { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
 import { buildAnnotations } from './reporter.js';
+import { loadScanConfig } from './config.js';
+import { notify } from './notifiers/index.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 
@@ -105,6 +107,8 @@ async function runScan(job) {
     const changedFiles = await getChangedFiles({ workspacePath });
     debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
+    const scanConfig = await loadScanConfig({ owner, repo });
+
     const findings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, labels, owner, repo });
     console.log(`[worker] ${findings.length} total finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
     for (const f of findings) {
@@ -115,6 +119,11 @@ async function runScan(job) {
     await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations, summary });
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
+
+    if (findings.length > 0) {
+      await notify({ findings, owner, repo, prNumber, notificationConfig: scanConfig.notifications })
+        .catch(err => console.error('[worker] notification dispatch error:', err.message));
+    }
   } finally {
     if (workspacePath) {
       await cleanupWorkspace(workspacePath);

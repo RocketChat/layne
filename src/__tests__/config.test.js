@@ -106,4 +106,70 @@ describe('loadScanConfig()', () => {
     await loadScanConfig({ owner: 'org', repo: 'b' });
     expect(vi.mocked(readFile)).toHaveBeenCalledTimes(1);
   });
+
+  // --- notifications ---
+
+  it('returns an empty notifications object when no $global and no repo notifications block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'p/owasp-top-ten'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.notifications).toEqual({});
+  });
+
+  it('returns an empty notifications object for an unknown repo with no $global', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'unknown' });
+    expect(config.notifications).toEqual({});
+  });
+
+  it('inherits $global notifications when the repo has no notifications block', async () => {
+    const globalRc = { enabled: true, webhookUrl: '$ROCKETCHAT_WEBHOOK_URL' };
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':        { notifications: { rocketchat: globalRc } },
+      'acme/frontend':  { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.notifications).toEqual({ rocketchat: globalRc });
+  });
+
+  it('repo-level notifications override $global for the same notifier key', async () => {
+    const globalRc = { enabled: true, webhookUrl: '$GLOBAL_HOOK' };
+    const repoRc   = { enabled: true, webhookUrl: '$REPO_HOOK', template: 'custom' };
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { notifications: { rocketchat: globalRc } },
+      'acme/payments': { notifications: { rocketchat: repoRc } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.notifications.rocketchat).toEqual(repoRc);
+  });
+
+  it('repo-level notifications do not affect global notifiers for different keys', async () => {
+    const globalSlack = { enabled: true, webhookUrl: '$SLACK_HOOK' };
+    const repoRc      = { enabled: true, webhookUrl: '$REPO_HOOK' };
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { notifications: { slack: globalSlack } },
+      'acme/payments': { notifications: { rocketchat: repoRc } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.notifications.slack).toEqual(globalSlack);
+    expect(config.notifications.rocketchat).toEqual(repoRc);
+  });
+
+  it('a repo can opt out of a global notifier by setting enabled: false', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { notifications: { rocketchat: { enabled: true, webhookUrl: '$GLOBAL_HOOK' } } },
+      'acme/frontend': { notifications: { rocketchat: { enabled: false } } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.notifications.rocketchat.enabled).toBe(false);
+  });
+
+  it('$global without a notifications key does not affect config', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global': { semgrep: { extraArgs: ['--config', 'p/custom'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.notifications).toEqual({});
+  });
 });

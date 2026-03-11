@@ -57,14 +57,16 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ROCKETCHAT_WEBHOOK_URL: ${{ secrets.ROCKETCHAT_WEBHOOK_URL }}
         run: |
           {
-            printf 'GITHUB_APP_ID=%s\n'          "$GH_APP_ID"
-            printf 'GITHUB_APP_PRIVATE_KEY=%s\n' "$GH_APP_PRIVATE_KEY"
-            printf 'GITHUB_WEBHOOK_SECRET=%s\n'  "$GH_WEBHOOK_SECRET"
-            printf 'DOMAIN=%s\n'                 "$DOMAIN"
-            printf 'LETSENCRYPT_EMAIL=%s\n'      "$LETSENCRYPT_EMAIL"
-            printf 'ANTHROPIC_API_KEY=%s\n'      "$ANTHROPIC_API_KEY"
+            printf 'GITHUB_APP_ID=%s\n'             "$GH_APP_ID"
+            printf 'GITHUB_APP_PRIVATE_KEY=%s\n'    "$GH_APP_PRIVATE_KEY"
+            printf 'GITHUB_WEBHOOK_SECRET=%s\n'     "$GH_WEBHOOK_SECRET"
+            printf 'DOMAIN=%s\n'                    "$DOMAIN"
+            printf 'LETSENCRYPT_EMAIL=%s\n'         "$LETSENCRYPT_EMAIL"
+            printf 'ANTHROPIC_API_KEY=%s\n'         "$ANTHROPIC_API_KEY"
+            printf 'ROCKETCHAT_WEBHOOK_URL=%s\n'    "$ROCKETCHAT_WEBHOOK_URL"
           } | ssh -F "$HOME/.ssh/config" deploy-target \
               'cat > /home/ubuntu/layne/layne/.env'
 

@@ -14,6 +14,7 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 
 - [How It Works](#how-it-works)
 - [Per-Repo Configuration](#per-repo-configuration)
+- [Notifications](#notifications)
 - [Deployment](#deployment)
   - [Prerequisites](#prerequisites)
   - [Step 1 — Create the GitHub App](#step-1--create-the-github-app)
@@ -218,6 +219,170 @@ trufflehog filesystem --json --no-update <extraArgs> <absolute-file-paths...>
 ```
 
 Arguments are passed directly via `execFile` — **not** through a shell — so no quoting or escaping is needed and shell injection is not possible.
+
+---
+
+## Notifications
+
+Layne can send a notification to a chat webhook when a scan finds issues. Notifications fire after the GitHub Check Run is fully posted — engineers see the check result first, then receive the alert.
+
+Notifications are **opt-in** and **modular**: each notifier (e.g. Rocket.Chat) is an independent module. Adding a new provider in the future (e.g. Slack) requires only adding a new notifier file and two lines in the orchestrator — no core scan logic changes.
+
+### Global vs per-repo
+
+You can define a **global** notification config that applies to all repositories, and/or a **per-repo** override for specific repositories. Both are optional — if neither is defined, no notifications are sent and nothing breaks.
+
+**Resolution rules (per notifier key):**
+- If a repo has no `notifications` block → it inherits the global config entirely.
+- If a repo defines its own `notifications` block → its keys win over the global ones for matching notifiers.
+- A repo can opt out of a specific global notifier by setting `"enabled": false` for that notifier.
+- If both global and the repo define *different* notifier keys, both are active (e.g. global Slack + repo-specific Rocket.Chat).
+
+### Schema
+
+```json
+{
+  "$global": {
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
+      }
+    }
+  },
+  "owner/repo": {
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$REPO_ROCKETCHAT_WEBHOOK_URL",
+        "template":   "optional custom message (see below)"
+      }
+    }
+  }
+}
+```
+
+### Rocket.Chat
+
+Sends a POST request to a Rocket.Chat incoming webhook URL.
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes | Must be `true` to activate this notifier |
+| `webhookUrl` | string | yes | Webhook URL, or an env var reference like `"$ROCKETCHAT_WEBHOOK_URL"` |
+| `template` | string | no | Custom message template (see below). Omit for the default grouped format |
+
+**`webhookUrl` — keeping secrets out of `repos.json`:**
+
+If the value starts with `$`, Layne treats the rest as an environment variable name and reads it at runtime. This way your webhook URL never needs to be committed to the repository.
+
+```json
+"webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
+```
+
+If the env var is not set, Layne logs a warning and skips the notification — the scan result is unaffected.
+
+**Default message format:**
+
+When no `template` is set, Layne sends a grouped message showing severity counts and all findings organised by tool:
+
+```
+:warning: *Security findings in acme/payments PR #42*
+• 1 high, 1 medium
+
+*semgrep*
+  • src/app.js:10 [HIGH] semgrep/sql-injection — User input passed to raw query
+
+*trufflehog*
+  • .env:3 [HIGH] trufflehog/aws-key — AWS access key detected
+```
+
+**Custom template:**
+
+Set `template` to a string with `{{variable}}` placeholders:
+
+| Placeholder | Value |
+|---|---|
+| `{{repo}}` | Full repo slug, e.g. `acme/payments` |
+| `{{owner}}` | Owner/org name, e.g. `acme` |
+| `{{repoName}}` | Repo name only, e.g. `payments` |
+| `{{prNumber}}` | Pull request number |
+| `{{total}}` | Total finding count |
+| `{{critical}}` | Count of critical findings |
+| `{{high}}` | Count of high findings |
+| `{{medium}}` | Count of medium findings |
+| `{{low}}` | Count of low findings |
+| `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
+
+Example:
+```json
+"template": ":rotating_light: *{{repo}} PR #{{prNumber}}* — {{total}} finding(s): {{critical}} critical, {{high}} high"
+```
+
+Custom templates do not include the per-tool grouped listing. To get the grouped format, omit `template`.
+
+### Examples
+
+**Notify all repos via a single global webhook:**
+```json
+{
+  "$global": {
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
+      }
+    }
+  }
+}
+```
+
+**Per-repo webhook with a custom message for a sensitive repo:**
+```json
+{
+  "$global": {
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
+      }
+    }
+  },
+  "acme/payments": {
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$PAYMENTS_ROCKETCHAT_WEBHOOK_URL",
+        "template":   ":rotating_light: *Payment system alert — {{repo}} PR #{{prNumber}}*\n{{total}} finding(s): {{critical}} critical, {{high}} high, {{medium}} medium, {{low}} low"
+      }
+    }
+  }
+}
+```
+
+**Opt a specific repo out of global notifications:**
+```json
+{
+  "$global": {
+    "notifications": {
+      "rocketchat": { "enabled": true, "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL" }
+    }
+  },
+  "acme/noisy-repo": {
+    "notifications": {
+      "rocketchat": { "enabled": false }
+    }
+  }
+}
+```
+
+### Adding a new notifier
+
+Adding a new chat provider (e.g. Slack) requires three steps and no changes to core scan logic:
+
+1. Create `src/notifiers/slack.js` exporting `async function notify({ findings, owner, repo, prNumber, toolConfig })`. The function must never throw — catch all errors internally.
+2. In `src/notifiers/index.js`, add the import and add `slack` to the `NOTIFIERS` object.
+3. Create `src/__tests__/notifiers/slack.test.js`.
 
 ---
 
@@ -516,6 +681,7 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 | `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude scanning (required when any repo has `claude.enabled: true`) |
+| `ROCKETCHAT_WEBHOOK_URL` | Global Rocket.Chat incoming webhook URL (required when `$global.notifications.rocketchat.webhookUrl` is set to `"$ROCKETCHAT_WEBHOOK_URL"`) |
 
 > **Note:** GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
 
@@ -604,3 +770,4 @@ To disable, remove or set `DEBUG_MODE=false` and restart.
 | `LETSENCRYPT_EMAIL` | Yes | Email for Let's Encrypt expiry notifications |
 | `PORT` | No | Port for the webhook server (default: `3000`) |
 | `DEBUG_MODE` | No | Set to `true` or `1` to enable verbose debug logging (default: off) |
+| `ROCKETCHAT_WEBHOOK_URL` | No | Rocket.Chat incoming webhook URL, referenced as `"$ROCKETCHAT_WEBHOOK_URL"` in `config/repos.json`. Add additional env vars (e.g. `PAYMENTS_ROCKETCHAT_WEBHOOK_URL`) for per-repo webhooks. |

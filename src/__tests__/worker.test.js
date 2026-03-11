@@ -38,11 +38,26 @@ vi.mock('../reporter.js', () => ({
   }),
 }));
 
+vi.mock('../config.js', () => ({
+  loadScanConfig: vi.fn().mockResolvedValue({
+    semgrep:       { enabled: true, extraArgs: ['--config', 'auto'] },
+    trufflehog:    { enabled: true, extraArgs: [] },
+    claude:        { enabled: false, model: 'claude-haiku-4-5-20251001' },
+    notifications: {},
+  }),
+}));
+
+vi.mock('../notifiers/index.js', () => ({
+  notify: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun } = await import('../github.js');
 const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
+const { loadScanConfig }                  = await import('../config.js');
+const { notify }                          = await import('../notifiers/index.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
 // ---
@@ -274,6 +289,66 @@ describe('processJob()', () => {
       getChangedFiles.mockResolvedValueOnce([]);
       await processJob(baseJob);
       expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
+    });
+  });
+
+  describe('notifications', () => {
+    it('does not call notify when there are no findings', async () => {
+      dispatch.mockResolvedValueOnce([]);
+      await processJob(baseJob);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('calls notify after completeCheckRun when there are findings', async () => {
+      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+      dispatch.mockResolvedValueOnce([finding]);
+
+      const callOrder = [];
+      completeCheckRun.mockImplementationOnce(async () => { callOrder.push('completeCheckRun'); });
+      notify.mockImplementationOnce(async () => { callOrder.push('notify'); });
+
+      await processJob(baseJob);
+
+      expect(callOrder).toEqual(['completeCheckRun', 'notify']);
+    });
+
+    it('passes findings, owner, repo, prNumber, and notificationConfig to notify', async () => {
+      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+      dispatch.mockResolvedValueOnce([finding]);
+
+      await processJob(baseJob);
+
+      expect(notify).toHaveBeenCalledWith({
+        findings:           [finding],
+        owner:              'org',
+        repo:               'repo',
+        prNumber:           7,
+        notificationConfig: {},
+      });
+    });
+
+    it('does not throw and still cleans up the workspace when notify rejects', async () => {
+      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+      dispatch.mockResolvedValueOnce([finding]);
+      notify.mockRejectedValueOnce(new Error('webhook down'));
+
+      await expect(processJob(baseJob)).resolves.toBeUndefined();
+      expect(cleanupWorkspace).toHaveBeenCalledWith('/tmp/layne-test-workspace');
+    });
+
+    it('still completes the check run before a notify failure', async () => {
+      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+      dispatch.mockResolvedValueOnce([finding]);
+      notify.mockRejectedValueOnce(new Error('webhook down'));
+
+      await processJob(baseJob);
+
+      expect(completeCheckRun).toHaveBeenCalled();
+    });
+
+    it('calls loadScanConfig with owner and repo from the job', async () => {
+      await processJob(baseJob);
+      expect(loadScanConfig).toHaveBeenCalledWith({ owner: 'org', repo: 'repo' });
     });
   });
 });

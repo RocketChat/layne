@@ -40,9 +40,16 @@ export async function loadScanConfig({ owner, repo }) {
   const reposConfig = await loadReposConfig();
   const repoOverrides = reposConfig[`${owner}/${repo}`] ?? {};
 
+  // Notifications merge: per-repo notifier keys win over global ones.
+  // A repo with no notifications block inherits the global config entirely.
+  // A repo can opt out of a specific notifier by setting its enabled: false.
+  const globalNotifications = reposConfig['$global']?.notifications ?? {};
+  const repoNotifications   = repoOverrides.notifications ?? {};
+
   return {
-    semgrep:    { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
-    trufflehog: { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
-    claude:     { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
+    semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
+    trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
+    claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
+    notifications: { ...globalNotifications, ...repoNotifications },
   };
 }
