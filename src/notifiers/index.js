@@ -9,9 +9,11 @@
  */
 
 import { notify as notifyRocketchat } from './rocketchat.js';
+import { notify as notifySlack }      from './slack.js';
 
 const NOTIFIERS = {
   rocketchat: notifyRocketchat,
+  slack:      notifySlack,
 };
 
 /**

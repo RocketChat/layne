@@ -138,7 +138,7 @@ Open `config/repos.json`. Add an entry for your test repository:
 }
 ```
 
-An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/repos.json`. In the checked-in example config, Rocket.Chat notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifier will log and skip delivery.
+An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/repos.json`. In the checked-in example config, Rocket.Chat and Slack notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifiers will log and skip delivery.
 
 > **Important:** The worker reads `config/repos.json` once at startup. Restart it after any changes.
 

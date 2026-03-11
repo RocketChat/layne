@@ -16,6 +16,7 @@
 | `METRICS_ENABLED` | No | `false` | Set to `true` to enable Prometheus metrics endpoints |
 | `METRICS_PORT` | No | `9091` | Port for the worker Prometheus metrics server |
 | `ROCKETCHAT_WEBHOOK_URL` | No | — | Global Rocket.Chat webhook URL, referenced as `"$ROCKETCHAT_WEBHOOK_URL"` in `config/repos.json`. Add additional vars (e.g. `PAYMENTS_ROCKETCHAT_WEBHOOK_URL`) for per-repo webhooks. |
+| `SLACK_WEBHOOK_URL` | No | — | Global Slack incoming webhook URL, referenced as `"$SLACK_WEBHOOK_URL"` in `config/repos.json`. Add additional vars (e.g. `PAYMENTS_SLACK_WEBHOOK_URL`) for per-repo webhooks. |
 
 ## Finding Shape
 
