@@ -77,10 +77,10 @@ describe('rocketchat notify()', () => {
 
   // --- default template ---
 
-  it('default message is the PR URL and finding count', async () => {
+  it('default message contains the finding count and PR URL', async () => {
     await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toBe('https://github.com/acme/frontend/pull/42 — 1 finding(s)');
+    expect(body.text).toBe('🦴 Good boy Layne dug up 1 finding(s) in https://github.com/acme/frontend/pull/42');
   });
 
   it('default message reflects the correct total count', async () => {

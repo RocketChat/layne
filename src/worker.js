@@ -13,6 +13,29 @@ import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const NOTIFY_COUNT_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+
+function notifyCountKey(owner, repo, prNumber) {
+  return `layne:scan:count:${owner}/${repo}#${prNumber}`;
+}
+
+async function getNotifyCount(owner, repo, prNumber) {
+  try {
+    const val = await redis.get(notifyCountKey(owner, repo, prNumber));
+    return val === null ? 0 : parseInt(val, 10);
+  } catch (err) {
+    console.warn(`[worker] Failed to read notification count from Redis: ${err.message} — treating as 0`);
+    return 0;
+  }
+}
+
+async function setNotifyCount(owner, repo, prNumber, count) {
+  try {
+    await redis.set(notifyCountKey(owner, repo, prNumber), count, 'EX', NOTIFY_COUNT_TTL);
+  } catch (err) {
+    console.warn(`[worker] Failed to write notification count to Redis: ${err.message}`);
+  }
+}
 
 /**
  * Strips installation tokens from error messages before they appear in logs
@@ -120,7 +143,10 @@ async function runScan(job) {
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
 
-    if (findings.length > 0) {
+    const prevCount = await getNotifyCount(owner, repo, prNumber);
+    await setNotifyCount(owner, repo, prNumber, findings.length);
+
+    if (findings.length > prevCount) {
       await notify({ findings, owner, repo, prNumber, notificationConfig: scanConfig.notifications })
         .catch(err => console.error('[worker] notification dispatch error:', err.message));
     }

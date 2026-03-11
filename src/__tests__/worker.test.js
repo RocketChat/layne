@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock all dependencies before importing the worker module.
 vi.mock('../queue.js', () => ({
-  redis: {},
+  redis: {
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue('OK'),
+  },
 }));
 
 vi.mock('bullmq', () => ({
@@ -58,6 +61,7 @@ const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace
 const { dispatch }                        = await import('../dispatcher.js');
 const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
+const { redis }                           = await import('../queue.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
 // ---
@@ -293,15 +297,11 @@ describe('processJob()', () => {
   });
 
   describe('notifications', () => {
-    it('does not call notify when there are no findings', async () => {
-      dispatch.mockResolvedValueOnce([]);
-      await processJob(baseJob);
-      expect(notify).not.toHaveBeenCalled();
-    });
+    const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
 
-    it('calls notify after completeCheckRun when there are findings', async () => {
-      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+    it('calls notify after completeCheckRun on the first scan with findings', async () => {
       dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null); // no previous count
 
       const callOrder = [];
       completeCheckRun.mockImplementationOnce(async () => { callOrder.push('completeCheckRun'); });
@@ -312,12 +312,94 @@ describe('processJob()', () => {
       expect(callOrder).toEqual(['completeCheckRun', 'notify']);
     });
 
-    it('passes findings, owner, repo, prNumber, and notificationConfig to notify', async () => {
-      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+    it('does not notify when finding count is the same as the previous scan', async () => {
       dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce('1'); // prev count matches
 
       await processJob(baseJob);
+      expect(notify).not.toHaveBeenCalled();
+    });
 
+    it('does not notify when finding count decreases', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce('5'); // prev count was higher
+
+      await processJob(baseJob);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('notifies when finding count increases', async () => {
+      dispatch.mockResolvedValueOnce([finding, { ...finding, file: 'b.js' }]);
+      redis.get.mockResolvedValueOnce('1'); // prev count was lower
+
+      await processJob(baseJob);
+      expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('notifies when findings return after reaching zero', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce('0'); // prev count was zero
+
+      await processJob(baseJob);
+      expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('does not notify when there are no findings and no previous count', async () => {
+      dispatch.mockResolvedValueOnce([]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('always updates the stored count after a scan', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+      expect(redis.set).toHaveBeenCalledWith(
+        'layne:scan:count:org/repo#7',
+        1,
+        'EX',
+        expect.any(Number)
+      );
+    });
+
+    it('stores zero when there are no findings', async () => {
+      dispatch.mockResolvedValueOnce([]);
+      redis.get.mockResolvedValueOnce('3');
+
+      await processJob(baseJob);
+      expect(redis.set).toHaveBeenCalledWith(
+        'layne:scan:count:org/repo#7',
+        0,
+        'EX',
+        expect.any(Number)
+      );
+    });
+
+    it('treats a Redis read error as prevCount=0 and still notifies', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+      await processJob(baseJob);
+      expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('continues normally when Redis write fails', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null);
+      redis.set.mockRejectedValueOnce(new Error('Redis unavailable'));
+
+      await expect(processJob(baseJob)).resolves.toBeUndefined();
+      expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('passes findings, owner, repo, prNumber, and notificationConfig to notify', async () => {
+      dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
       expect(notify).toHaveBeenCalledWith({
         findings:           [finding],
         owner:              'org',
@@ -328,22 +410,12 @@ describe('processJob()', () => {
     });
 
     it('does not throw and still cleans up the workspace when notify rejects', async () => {
-      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
       dispatch.mockResolvedValueOnce([finding]);
+      redis.get.mockResolvedValueOnce(null);
       notify.mockRejectedValueOnce(new Error('webhook down'));
 
       await expect(processJob(baseJob)).resolves.toBeUndefined();
       expect(cleanupWorkspace).toHaveBeenCalledWith('/tmp/layne-test-workspace');
-    });
-
-    it('still completes the check run before a notify failure', async () => {
-      const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
-      dispatch.mockResolvedValueOnce([finding]);
-      notify.mockRejectedValueOnce(new Error('webhook down'));
-
-      await processJob(baseJob);
-
-      expect(completeCheckRun).toHaveBeenCalled();
     });
 
     it('calls loadScanConfig with owner and repo from the job', async () => {

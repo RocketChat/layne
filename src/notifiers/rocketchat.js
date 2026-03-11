@@ -8,7 +8,7 @@
  * failure never affects the scan result or the GitHub Check Run.
  */
 
-const DEFAULT_TEMPLATE = '{{prUrl}} — {{total}} finding(s)';
+const DEFAULT_TEMPLATE = '🦴 Good boy Layne dug up {{total}} finding(s) in {{prUrl}}';
 
 function buildContext(findings, owner, repo, prNumber) {
   const counts = { critical: 0, high: 0, medium: 0, low: 0 };

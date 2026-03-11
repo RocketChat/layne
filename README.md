@@ -290,10 +290,10 @@ The logo is served by Layne itself at `GET /assets/layne-logo.png` (e.g. `https:
 
 **Default message format:**
 
-When no `template` is set, Layne sends the PR URL and the total finding count:
+When no `template` is set, Layne sends:
 
 ```
-https://github.com/acme/payments/pull/42 — 3 finding(s)
+🦴 Good boy Layne dug up 3 finding(s) in https://github.com/acme/payments/pull/42
 ```
 
 **Custom template:**
