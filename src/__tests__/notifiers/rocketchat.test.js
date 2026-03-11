@@ -10,10 +10,6 @@ const FINDING_MEDIUM = {
   file: 'src/utils.js', line: 5, severity: 'medium',
   message: 'XSS', ruleId: 'semgrep/xss', tool: 'semgrep',
 };
-const FINDING_SECRET = {
-  file: '.env', line: 3, severity: 'high',
-  message: 'AWS key', ruleId: 'trufflehog/aws-key', tool: 'trufflehog',
-};
 
 const BASE = { owner: 'acme', repo: 'frontend', prNumber: 42 };
 
@@ -75,53 +71,31 @@ describe('rocketchat notify()', () => {
     await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
     const [, opts] = fetchMock.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.alias).toBe('Security Notifications');
+    expect(body.alias).toBe('Layne');
     expect(body).toHaveProperty('text');
   });
 
   // --- default template ---
 
-  it('default message includes the repo name', async () => {
+  it('default message is the PR URL and finding count', async () => {
     await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toContain('acme/frontend');
+    expect(body.text).toBe('https://github.com/acme/frontend/pull/42 — 1 finding(s)');
   });
 
-  it('default message includes the PR number', async () => {
-    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toContain('42');
-  });
-
-  it('default message includes each tool that has findings', async () => {
-    await notify({ ...BASE, findings: [FINDING_HIGH, FINDING_SECRET], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toContain('semgrep');
-    expect(body.text).toContain('trufflehog');
-  });
-
-  it('default message omits a tool section when that tool has no findings', async () => {
-    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).not.toContain('trufflehog');
-  });
-
-  it('default message includes severity counts', async () => {
+  it('default message reflects the correct total count', async () => {
     await notify({ ...BASE, findings: [FINDING_HIGH, FINDING_MEDIUM], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toContain('1 high');
-    expect(body.text).toContain('1 medium');
-  });
-
-  it('default message omits zero-count severities from the counts line', async () => {
-    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    // "0 medium" or "0 low" should not appear
-    expect(body.text).not.toMatch(/0 medium/);
-    expect(body.text).not.toMatch(/0 low/);
+    expect(body.text).toContain('2 finding(s)');
   });
 
   // --- custom template ---
+
+  it('substitutes {{prUrl}} in a custom template', async () => {
+    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com', template: '{{prUrl}}' } });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.text).toBe('https://github.com/acme/frontend/pull/42');
+  });
 
   it('substitutes {{repo}} in a custom template', async () => {
     await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com', template: 'Alert: {{repo}}' } });
@@ -154,6 +128,21 @@ describe('rocketchat notify()', () => {
     await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com', template: '{{repo}} {{unknownVar}}' } });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.text).toBe('acme/frontend {{unknownVar}}');
+  });
+
+  // --- avatar_url ---
+
+  it('includes icon_url when DOMAIN is set', async () => {
+    vi.stubEnv('DOMAIN', 'layne.example.com');
+    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.icon_url).toBe('https://layne.example.com/assets/layne-logo.png');
+  });
+
+  it('omits icon_url when DOMAIN is not set', async () => {
+    await notify({ ...BASE, findings: [FINDING_HIGH], toolConfig: { enabled: true, webhookUrl: 'https://hook.example.com' } });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty('icon_url');
   });
 
   // --- error handling ---

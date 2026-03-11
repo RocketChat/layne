@@ -1,7 +1,10 @@
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import express from 'express';
 import crypto from 'crypto';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import { redis, scanQueue } from './queue.js';
 import { createCheckRun, completeCheckRun } from './github.js';
 import { validateEnv } from './env.js';
@@ -15,6 +18,10 @@ const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 const WEBHOOK_LOCK_TTL_SECONDS = 30;
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+app.get('/assets/layne-logo.png', (_req, res) => {
+  res.sendFile(join(__dirname, '..', 'assets', 'layne-logo.png'));
+});
 
 app.use('/webhook', express.raw({ type: 'application/json' }));
 

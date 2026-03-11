@@ -28,6 +28,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
 COPY src/ ./src/
 COPY config/ ./config/
+COPY assets/ ./assets/
 
 # /tmp is where Layne clones repos. Declaring it as a VOLUME prevents Docker
 # from persisting scan artifacts across container restarts.

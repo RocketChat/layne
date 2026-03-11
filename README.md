@@ -282,19 +282,18 @@ If the value starts with `$`, Layne treats the rest as an environment variable n
 
 If the env var is not set, Layne logs a warning and skips the notification — the scan result is unaffected.
 
+**Message icon:**
+
+Layne automatically sets its logo as the message icon (`icon_url`) using the `DOMAIN` environment variable. No configuration is required — if `DOMAIN` is set, every Rocket.Chat notification will show the Layne logo. If `DOMAIN` is not set, Rocket.Chat falls back to its default avatar.
+
+The logo is served by Layne itself at `GET /assets/layne-logo.png` (e.g. `https://layne.example.com/assets/layne-logo.png`).
+
 **Default message format:**
 
-When no `template` is set, Layne sends a grouped message showing severity counts and all findings organised by tool:
+When no `template` is set, Layne sends the PR URL and the total finding count:
 
 ```
-:warning: *Security findings in acme/payments PR #42*
-• 1 high, 1 medium
-
-*semgrep*
-  • src/app.js:10 [HIGH] semgrep/sql-injection — User input passed to raw query
-
-*trufflehog*
-  • .env:3 [HIGH] trufflehog/aws-key — AWS access key detected
+https://github.com/acme/payments/pull/42 — 3 finding(s)
 ```
 
 **Custom template:**
@@ -303,6 +302,7 @@ Set `template` to a string with `{{variable}}` placeholders:
 
 | Placeholder | Value |
 |---|---|
+| `{{prUrl}}` | Full PR URL, e.g. `https://github.com/acme/payments/pull/42` |
 | `{{repo}}` | Full repo slug, e.g. `acme/payments` |
 | `{{owner}}` | Owner/org name, e.g. `acme` |
 | `{{repoName}}` | Repo name only, e.g. `payments` |

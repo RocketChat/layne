@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'crypto';
+import request from 'supertest';
 
 vi.mock('../queue.js', () => ({
   redis: { set: vi.fn(), eval: vi.fn() },
@@ -13,7 +14,7 @@ vi.mock('../github.js', () => ({
 
 const { redis, scanQueue } = await import('../queue.js');
 const { createCheckRun, completeCheckRun } = await import('../github.js');
-const { verifySignature, processWebhookRequest } = await import('../server.js');
+const { app, verifySignature, processWebhookRequest } = await import('../server.js');
 
 function sign(body) {
   return 'sha256=' + crypto
@@ -69,6 +70,19 @@ beforeEach(() => {
   redis.eval.mockResolvedValue(1);
   scanQueue.add.mockResolvedValue({ id: 'job-1' });
   scanQueue.getJob.mockResolvedValue(null);
+});
+
+describe('GET /assets/layne-logo.png', () => {
+  it('returns 200 with a PNG content-type', async () => {
+    const res = await request(app).get('/assets/layne-logo.png');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/image\/png/);
+  });
+
+  it('does not serve arbitrary paths under /assets/', async () => {
+    const res = await request(app).get('/assets/other-file.png');
+    expect(res.status).toBe(404);
+  });
 });
 
 describe('verifySignature()', () => {

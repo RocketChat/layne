@@ -8,6 +8,8 @@
  * failure never affects the scan result or the GitHub Check Run.
  */
 
+const DEFAULT_TEMPLATE = '{{prUrl}} — {{total}} finding(s)';
+
 function buildContext(findings, owner, repo, prNumber) {
   const counts = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const f of findings) {
@@ -24,6 +26,7 @@ function buildContext(findings, owner, repo, prNumber) {
     owner,
     repoName: repo,
     prNumber,
+    prUrl:    `https://github.com/${owner}/${repo}/pull/${prNumber}`,
     total,
     ...counts,
     summary: `Found ${total} issue(s): ${nonZero || 'none'}.`,
@@ -32,35 +35,6 @@ function buildContext(findings, owner, repo, prNumber) {
 
 function renderTemplate(template, ctx) {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => (key in ctx ? ctx[key] : `{{${key}}}`));
-}
-
-function buildDefaultMessage(findings, ctx) {
-  const { repo, prNumber, critical, high, medium, low } = ctx;
-
-  const severityCounts = [
-    critical && `${critical} critical`,
-    high     && `${high} high`,
-    medium   && `${medium} medium`,
-    low      && `${low} low`,
-  ].filter(Boolean).join(', ');
-
-  // Group findings by tool
-  const byTool = {};
-  for (const f of findings) {
-    if (!byTool[f.tool]) byTool[f.tool] = [];
-    byTool[f.tool].push(f);
-  }
-
-  const toolSections = Object.entries(byTool)
-    .map(([tool, fs]) => {
-      const lines = fs.map(
-        f => `  • ${f.file}:${f.line} [${f.severity.toUpperCase()}] ${f.ruleId} — ${f.message}`
-      );
-      return `*${tool}*\n${lines.join('\n')}`;
-    })
-    .join('\n\n');
-
-  return `:warning: *Security findings in ${repo} PR #${prNumber}*\n• ${severityCounts}\n\n${toolSections}`;
 }
 
 function resolveUrl(webhookUrl) {
@@ -84,15 +58,21 @@ export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
   if (!url) return;
 
   const ctx  = buildContext(findings, owner, repo, prNumber);
-  const text = toolConfig.template
-    ? renderTemplate(toolConfig.template, ctx)
-    : buildDefaultMessage(findings, ctx);
+  const text = renderTemplate(toolConfig.template ?? DEFAULT_TEMPLATE, ctx);
+
+  const avatarUrl = process.env.DOMAIN
+    ? `https://${process.env.DOMAIN}/assets/layne-logo.png`
+    : undefined;
 
   try {
     const res = await fetch(url, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ alias: 'Security Notifications', text }),
+      body:    JSON.stringify({
+        alias:    'Layne',
+        ...(avatarUrl && { icon_url: avatarUrl }),
+        text,
+      }),
     });
     if (!res.ok) {
       console.error(`[rocketchat] notification failed: HTTP ${res.status}`);
