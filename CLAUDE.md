@@ -59,7 +59,7 @@ Two separate Node.js processes:
 - Exported `app` and `processWebhookRequest` for use in tests
 
 **`src/worker.js` — Job processor**
-- BullMQ `Worker` consuming the `scans` queue with concurrency 3
+- BullMQ `Worker` consuming the `scans` queue with concurrency 5
 - `processJob()` is exported for direct testing without Redis
 - Per-job 10-minute timeout via `Promise.race`
 - Graceful shutdown on SIGTERM/SIGINT — finishes in-flight jobs before exiting
@@ -69,9 +69,9 @@ Two separate Node.js processes:
 1. Mark Check Run `in_progress`
 2. Authenticate as installation via `src/auth.js` → short-lived token
 3. Create temp workspace (`src/fetcher.js` → `createWorkspace`)
-4. Shallow-clone the exact head SHA (not branch name, to avoid race conditions)
-5. Fetch base ref as `FETCH_HEAD` for diff operations
-6. Get changed files via `git diff --name-only -z FETCH_HEAD`
+4. Partial-clone both head and base SHAs with `--filter=blob:none` — fetches trees/commits only, no blobs yet (`src/fetcher.js` → `setupRepo`)
+5. Diff the two commits via tree objects to get changed file paths (`getChangedFiles`)
+6. Sparse-checkout only the changed files — blobs fetched on demand (`checkoutFiles`)
 7. Load per-repo config via `src/config.js` → `loadScanConfig`
 8. Run scanners in parallel via `src/dispatcher.js` → `dispatch()`
 9. Convert findings to annotations via `src/reporter.js` → `buildAnnotations()`

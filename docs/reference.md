@@ -54,6 +54,6 @@ Duplicate webhook deliveries (same repo + PR number + commit SHA) are ignored us
 
 ## Queue
 
-Layne uses [BullMQ](https://docs.bullmq.io/) backed by Redis. The queue is named `scans`. Each worker process runs with a concurrency of 3 (3 simultaneous jobs). Scale horizontally by running additional worker containers — they all share the same Redis queue.
+Layne uses [BullMQ](https://docs.bullmq.io/) backed by Redis. The queue is named `scans`. Each worker process runs with a concurrency of 5 (5 simultaneous jobs). Scale horizontally by running additional worker containers — they all share the same Redis queue.
 
 Jobs are configured with 2 attempts. On the first failure, BullMQ retries automatically; on the second failure the job is moved to the failed set and the Check Run is marked as `failure`.

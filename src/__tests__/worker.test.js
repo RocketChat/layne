@@ -46,11 +46,11 @@ vi.mock('../github.js', () => ({
 }));
 
 vi.mock('../fetcher.js', () => ({
-  createWorkspace:   vi.fn().mockResolvedValue('/tmp/layne-test-workspace'),
-  cloneRepo:         vi.fn().mockResolvedValue(undefined),
-  fetchBase:         vi.fn().mockResolvedValue(undefined),
-  getChangedFiles:   vi.fn().mockResolvedValue(['src/app.js']),
-  cleanupWorkspace:  vi.fn().mockResolvedValue(undefined),
+  createWorkspace:  vi.fn().mockResolvedValue('/tmp/layne-test-workspace'),
+  setupRepo:        vi.fn().mockResolvedValue(undefined),
+  getChangedFiles:  vi.fn().mockResolvedValue(['src/app.js']),
+  checkoutFiles:    vi.fn().mockResolvedValue(['src/app.js']),
+  cleanupWorkspace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../dispatcher.js', () => ({
@@ -83,7 +83,7 @@ const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } = await import('../github.js');
 const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingsPerScan } = await import('../metrics.js');
-const { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } = await import('../fetcher.js');
+const { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
 const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
@@ -135,24 +135,30 @@ describe('processJob()', () => {
       expect(getInstallationToken).toHaveBeenCalledWith(1);
     });
 
-    it('creates a workspace and clones the repo into it', async () => {
+    it('creates a workspace and sets up the partial clone', async () => {
       await processJob(baseJob);
       expect(createWorkspace).toHaveBeenCalledWith('job-1');
-      expect(cloneRepo).toHaveBeenCalledWith(expect.objectContaining({
+      expect(setupRepo).toHaveBeenCalledWith(expect.objectContaining({
         token:         'fake-token',
         cloneUrl:      'https://github.com/org/repo.git',
         headSha:       'abc123',
+        baseSha:       'def456',
         workspacePath: '/tmp/layne-test-workspace',
       }));
     });
 
-    it('fetches the base branch and gets the list of changed files', async () => {
+    it('gets the changed files and checks them out sparsely', async () => {
       await processJob(baseJob);
-      expect(fetchBase).toHaveBeenCalledWith(expect.objectContaining({
+      expect(getChangedFiles).toHaveBeenCalledWith({
         workspacePath: '/tmp/layne-test-workspace',
         baseSha:       'def456',
+        headSha:       'abc123',
+      });
+      expect(checkoutFiles).toHaveBeenCalledWith(expect.objectContaining({
+        workspacePath: '/tmp/layne-test-workspace',
+        headSha:       'abc123',
+        files:         ['src/app.js'],
       }));
-      expect(getChangedFiles).toHaveBeenCalledWith({ workspacePath: '/tmp/layne-test-workspace' });
     });
 
     it('runs the dispatcher with the job context including changed files', async () => {
@@ -186,7 +192,7 @@ describe('processJob()', () => {
 
   describe('token sanitization', () => {
     it('redacts installation tokens from error messages in the check run summary', async () => {
-      cloneRepo.mockRejectedValueOnce(
+      setupRepo.mockRejectedValueOnce(
         new Error("fatal: repository 'https://x-access-token:ghs_secrettoken@github.com/org/repo.git' not found")
       );
       await expect(processJob({
@@ -202,7 +208,7 @@ describe('processJob()', () => {
   describe('scan timeout', () => {
     it('rethrows timeout errors so BullMQ can retry the job', async () => {
       vi.useFakeTimers();
-      cloneRepo.mockImplementationOnce(() => new Promise(() => {})); // never resolves
+      setupRepo.mockImplementationOnce(() => new Promise(() => {})); // never resolves
 
       const jobPromise = processJob(baseJob);
 
@@ -219,7 +225,7 @@ describe('processJob()', () => {
 
     it('fails the check run only when the timeout happens on the final attempt', async () => {
       vi.useFakeTimers();
-      cloneRepo.mockImplementationOnce(() => new Promise(() => {})); // never resolves
+      setupRepo.mockImplementationOnce(() => new Promise(() => {})); // never resolves
 
       const jobPromise = processJob({
         ...baseJob,
@@ -241,7 +247,7 @@ describe('processJob()', () => {
 
   describe('retryable failures', () => {
     beforeEach(() => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
     });
 
     it('rethrows the error so BullMQ can retry the job', async () => {
@@ -261,7 +267,7 @@ describe('processJob()', () => {
 
   describe('final-attempt failures', () => {
     beforeEach(() => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
     });
 
     it('marks the check run failed on the final attempt', async () => {
@@ -286,15 +292,15 @@ describe('processJob()', () => {
     });
   });
 
-  describe('fetchBase failure', () => {
-    it('rethrows when fetchBase throws so BullMQ can retry', async () => {
-      fetchBase.mockRejectedValueOnce(new Error('remote not found'));
+  describe('setupRepo failure', () => {
+    it('rethrows when setupRepo throws so BullMQ can retry', async () => {
+      setupRepo.mockRejectedValueOnce(new Error('remote not found'));
       await expect(processJob(baseJob)).rejects.toThrow('remote not found');
       expect(completeCheckRun).not.toHaveBeenCalled();
     });
 
-    it('still cleans up the workspace when fetchBase throws', async () => {
-      fetchBase.mockRejectedValueOnce(new Error('remote not found'));
+    it('still cleans up the workspace when setupRepo throws', async () => {
+      setupRepo.mockRejectedValueOnce(new Error('remote not found'));
       await expect(processJob(baseJob)).rejects.toThrow('remote not found');
       expect(cleanupWorkspace).toHaveBeenCalledWith('/tmp/layne-test-workspace');
     });
@@ -311,12 +317,14 @@ describe('processJob()', () => {
   describe('no changed files', () => {
     it('passes an empty changedFiles array to dispatch when the PR has no file changes', async () => {
       getChangedFiles.mockResolvedValueOnce([]);
+      checkoutFiles.mockResolvedValueOnce([]);
       await processJob(baseJob);
       expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ changedFiles: [] }));
     });
 
     it('completes the check run successfully when there are no changed files', async () => {
       getChangedFiles.mockResolvedValueOnce([]);
+      checkoutFiles.mockResolvedValueOnce([]);
       await processJob(baseJob);
       expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
     });
@@ -534,13 +542,13 @@ describe('processJob()', () => {
     });
 
     it('increments scanTotal with conclusion=failure on the final failed attempt', async () => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
       await expect(processJob({ ...baseJob, attemptsMade: 1 })).rejects.toThrow('git clone failed');
       expect(scanTotal.inc).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
     });
 
     it('does not increment scanTotal on a non-final failed attempt', async () => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
       await expect(processJob(baseJob)).rejects.toThrow('git clone failed');
       expect(scanTotal.inc).not.toHaveBeenCalled();
     });
@@ -567,7 +575,7 @@ describe('processJob()', () => {
 
     it('increments scanTimeoutsTotal on timeout', async () => {
       vi.useFakeTimers();
-      cloneRepo.mockImplementationOnce(() => new Promise(() => {}));
+      setupRepo.mockImplementationOnce(() => new Promise(() => {}));
 
       const jobPromise = processJob(baseJob);
       const assertRejection = expect(jobPromise).rejects.toThrow('timed out');
@@ -579,13 +587,13 @@ describe('processJob()', () => {
     });
 
     it('increments scanRetriesTotal on a non-final failed attempt', async () => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
       await expect(processJob(baseJob)).rejects.toThrow('git clone failed');
       expect(scanRetriesTotal.inc).toHaveBeenCalled();
     });
 
     it('does not increment scanRetriesTotal on the final failed attempt', async () => {
-      cloneRepo.mockRejectedValueOnce(new Error('git clone failed'));
+      setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
       await expect(processJob({ ...baseJob, attemptsMade: 1 })).rejects.toThrow('git clone failed');
       expect(scanRetriesTotal.inc).not.toHaveBeenCalled();
     });

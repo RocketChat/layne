@@ -5,7 +5,7 @@ import { Worker } from 'bullmq';
 import { redis, scanQueue } from './queue.js';
 import { getInstallationToken } from './auth.js';
 import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } from './github.js';
-import { createWorkspace, cloneRepo, fetchBase, getChangedFiles, cleanupWorkspace } from './fetcher.js';
+import { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
 import { buildAnnotations } from './reporter.js';
 import { loadScanConfig } from './config.js';
@@ -146,9 +146,9 @@ async function runScan(job) {
 
     workspacePath = await createWorkspace(job.id);
 
-    await cloneRepo({ token, cloneUrl, headSha, workspacePath });
-    await fetchBase({ workspacePath, baseSha });
-    const changedFiles = await getChangedFiles({ workspacePath });
+    await setupRepo({ token, cloneUrl, headSha, baseSha, workspacePath });
+    const rawChanged   = await getChangedFiles({ workspacePath, baseSha, headSha });
+    const changedFiles = await checkoutFiles({ workspacePath, headSha, files: rawChanged });
     debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
     const scanConfig = await loadScanConfig({ owner, repo });
@@ -209,7 +209,7 @@ function isFinalAttempt(job) {
 
 const worker = new Worker('scans', processJob, {
   connection:  redis,
-  concurrency: 3,
+  concurrency: 5,
 });
 
 worker.on('failed', (job, err) => {
@@ -258,5 +258,5 @@ if (isMain) {
   validateEnv();
   process.on('SIGTERM', shutdown);
   process.on('SIGINT',  shutdown);
-  console.log('[worker] Layne worker started — concurrency: 3');
+  console.log('[worker] Layne worker started — concurrency: 5');
 }

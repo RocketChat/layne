@@ -270,7 +270,7 @@ The workflow uses a GitHub [**environment**](https://docs.github.com/en/actions/
 
 ### Scaling Workers
 
-The worker runs with `concurrency: 3` by default (3 jobs per process). To handle more simultaneous PRs, run additional worker containers:
+The worker runs with `concurrency: 5` by default (5 jobs per process). To handle more simultaneous PRs, run additional worker containers:
 
 ```bash
 docker compose up --scale worker=3 -d

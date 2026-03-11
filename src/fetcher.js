@@ -26,73 +26,59 @@ export async function createWorkspace(jobId) {
   return path;
 }
 
-// Clones exactly the commit that triggered the check run. We fetch by SHA rather than branch
-// name to avoid a race condition: if a new commit is pushed between webhook delivery and the
-// actual clone, fetching by branch would scan the wrong commit and misalign annotations.
+// Sets up a partial clone of the repository. Fetches both the head and base commits
+// using --filter=blob:none so only tree and commit objects are downloaded — no file
+// blobs yet. Sparse checkout is armed but no files are written to disk until
+// checkoutFiles() is called.
+//
+// This replaces the old cloneRepo + fetchBase pair. The new call order in worker.js is:
+//   setupRepo → getChangedFiles → checkoutFiles
+//
+// We clone by SHA rather than branch name to avoid a race condition: if a new commit
+// is pushed between webhook delivery and the actual clone, fetching by branch would
+// scan the wrong commit and misalign annotations.
 // The installation token is injected into the HTTPS URL — it is never written to disk.
-export async function cloneRepo({ token, cloneUrl, headSha, workspacePath }) {
+export async function setupRepo({ token, cloneUrl, headSha, baseSha, workspacePath }) {
   const authenticatedUrl = cloneUrl.replace(
     'https://',
     `https://x-access-token:${token}@`
   );
 
-  debug('fetcher', `cloning ${cloneUrl} at ${headSha}`);
+  debug('fetcher', `setting up partial clone of ${cloneUrl} at ${headSha}`);
 
   await git(['init', workspacePath]);
   await git(['-C', workspacePath, 'remote', 'add', 'origin', authenticatedUrl]);
-  await git(['-C', workspacePath, 'fetch', '--depth', '1', 'origin', headSha]);
-  await git(['-C', workspacePath, 'checkout', 'FETCH_HEAD']);
 
-  debug('fetcher', 'clone complete');
+  // Fetch the head commit — trees and commits only, no blobs.
+  // protocol.version=2 is required for --filter to be accepted by the server.
+  await git(['-C', workspacePath, '-c', 'protocol.version=2', 'fetch',
+    '--depth', '1', '--filter=blob:none', 'origin', headSha]);
+
+  // Fetch the base commit for diff — also blobless.
+  await git(['-C', workspacePath, '-c', 'protocol.version=2', 'fetch',
+    '--depth', '1', '--filter=blob:none', 'origin', baseSha]);
+
+  // Arm sparse checkout in no-cone mode (exact file paths, not directory prefixes).
+  // Blobs for the selected files are fetched lazily when checkoutFiles() runs.
+  await git(['-C', workspacePath, 'sparse-checkout', 'init', '--no-cone']);
+
+  debug('fetcher', 'repo setup complete (no blobs fetched yet)');
 }
 
-// Fetches the base commit into the workspace as FETCH_HEAD for diff operations.
-// Must be called after cloneRepo(). The remote already has the authenticated URL from the clone.
-export async function fetchBase({ workspacePath, baseSha }) {
-  debug('fetcher', `fetching base sha: ${baseSha}`);
-  await git(['-C', workspacePath, 'fetch', '--depth', '1', 'origin', baseSha]);
-  debug('fetcher', 'base fetch complete');
-}
-
-export async function getChangedFiles({ workspacePath }) {
+// Diffs the two commits using their tree objects and returns the list of changed files.
+// Must be called after setupRepo() and before checkoutFiles() — files are not on disk yet.
+// String-only path validation is applied here; the stat/realpath validation (symlink escape
+// detection) is deferred to checkoutFiles() once the files are materialised on disk.
+export async function getChangedFiles({ workspacePath, baseSha, headSha }) {
   // -z uses NUL as the record separator so filenames with spaces are handled correctly.
-  const stdout = await git(['-C', workspacePath, 'diff', '--name-only', '-z', 'FETCH_HEAD', 'HEAD']);
-  const files = stdout.split('\0').filter(Boolean);
-  const workspaceReal = await realpath(workspacePath);
-  const safe = [];
+  const stdout = await git(['-C', workspacePath, 'diff', '--name-only', '-z', baseSha, headSha]);
+  const files  = stdout.split('\0').filter(Boolean);
+  const safe   = [];
 
   for (const file of files) {
-    if (file.startsWith('/') || file.split('/').includes('..')) {
-      continue;
-    }
-
+    if (file.startsWith('/') || file.split('/').includes('..')) continue;
     const candidate = resolve(workspacePath, file);
-    if (!isWithinPath(candidate, workspacePath)) {
-      continue;
-    }
-
-    let resolved;
-    try {
-      resolved = await realpath(candidate);
-    } catch {
-      continue;
-    }
-
-    if (!isWithinPath(resolved, workspaceReal)) {
-      continue;
-    }
-
-    let fileStat;
-    try {
-      fileStat = await stat(candidate);
-    } catch {
-      continue;
-    }
-
-    if (!fileStat.isFile()) {
-      continue;
-    }
-
+    if (!isWithinPath(candidate, workspacePath)) continue;
     safe.push(file);
   }
 
@@ -101,6 +87,50 @@ export async function getChangedFiles({ workspacePath }) {
   }
   debug('fetcher', `${safe.length} changed file(s)${safe.length ? ': ' + safe.join(', ') : ''}`);
   return safe;
+}
+
+// Materialises only the changed files on disk. git sparse-checkout restricts the working
+// tree to the listed paths, then checkout fetches the blobs for exactly those files.
+// Post-checkout realpath and stat validation is applied to catch symlink escapes and
+// non-regular files before the list is handed to the scanners.
+export async function checkoutFiles({ workspacePath, headSha, files }) {
+  if (files.length === 0) return [];
+
+  // Set the sparse checkout list, then checkout — this is where blobs are fetched.
+  await git(['-C', workspacePath, 'sparse-checkout', 'set', ...files]);
+  await git(['-C', workspacePath, 'checkout', headSha]);
+
+  // Post-checkout validation: symlink escape detection and regular-file check.
+  const workspaceReal = await realpath(workspacePath);
+  const validated     = [];
+
+  for (const file of files) {
+    const candidate = resolve(workspacePath, file);
+
+    let resolved;
+    try {
+      resolved = await realpath(candidate);
+    } catch {
+      continue; // broken symlink or file absent despite sparse checkout
+    }
+    if (!isWithinPath(resolved, workspaceReal)) continue;
+
+    let fileStat;
+    try {
+      fileStat = await stat(candidate);
+    } catch {
+      continue;
+    }
+    if (!fileStat.isFile()) continue;
+
+    validated.push(file);
+  }
+
+  if (validated.length !== files.length) {
+    console.warn(`[fetcher] Dropped ${files.length - validated.length} path(s) after checkout validation`);
+  }
+  debug('fetcher', `${validated.length} file(s) checked out`);
+  return validated;
 }
 
 export async function cleanupWorkspace(workspacePath) {
