@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Build a mock Octokit instance with spies for the methods we use.
-const mockChecksCreate  = vi.fn().mockResolvedValue({ data: { id: 42 } });
-const mockChecksUpdate  = vi.fn().mockResolvedValue({});
-const mockGetLabel      = vi.fn().mockResolvedValue({});
-const mockCreateLabel   = vi.fn().mockResolvedValue({});
-const mockAddLabels     = vi.fn().mockResolvedValue({});
-const mockRemoveLabel   = vi.fn().mockResolvedValue({});
+const mockChecksCreate          = vi.fn().mockResolvedValue({ data: { id: 42 } });
+const mockChecksUpdate          = vi.fn().mockResolvedValue({});
+const mockGetLabel               = vi.fn().mockResolvedValue({});
+const mockCreateLabel            = vi.fn().mockResolvedValue({});
+const mockAddLabels              = vi.fn().mockResolvedValue({});
+const mockRemoveLabel            = vi.fn().mockResolvedValue({});
+const mockListPRsForCommit       = vi.fn().mockResolvedValue({ data: [] });
 
 const mockOctokit = {
   checks: {
@@ -19,13 +20,20 @@ const mockOctokit = {
     addLabels:   mockAddLabels,
     removeLabel: mockRemoveLabel,
   },
+  repos: {
+    listPullRequestsAssociatedWithCommit: mockListPRsForCommit,
+  },
 };
 
 vi.mock('../auth.js', () => ({
   getInstallationOctokit: vi.fn().mockResolvedValue(mockOctokit),
 }));
 
-const { createCheckRun, startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } = await import('../github.js');
+const {
+  createCheckRun, startCheckRun, completeCheckRun,
+  skipCheckRun, findPullRequestBySha,
+  ensureLabelsExist, setLabels,
+} = await import('../github.js');
 
 const BASE = {
   installationId: 1,
@@ -128,6 +136,62 @@ describe('completeCheckRun()', () => {
     const [firstCall, secondCall] = mockChecksUpdate.mock.calls;
     expect(firstCall[0].status).toBe('in_progress');
     expect(secondCall[0].status).toBe('completed');
+  });
+});
+
+describe('skipCheckRun()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('creates a check run in completed/skipped state in a single API call', async () => {
+    await skipCheckRun({ ...BASE, headSha: 'sha123', summary: 'Waiting for CI.' });
+
+    expect(mockChecksCreate).toHaveBeenCalledOnce();
+    expect(mockChecksCreate).toHaveBeenCalledWith(expect.objectContaining({
+      owner:      'org',
+      repo:       'repo',
+      head_sha:   'sha123',
+      status:     'completed',
+      conclusion: 'skipped',
+    }));
+  });
+
+  it('includes the summary in the check run output', async () => {
+    await skipCheckRun({ ...BASE, headSha: 'sha123', summary: 'Deferred — waiting for Tests Done.' });
+
+    expect(mockChecksCreate).toHaveBeenCalledWith(expect.objectContaining({
+      output: expect.objectContaining({ summary: 'Deferred — waiting for Tests Done.' }),
+    }));
+  });
+});
+
+describe('findPullRequestBySha()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('calls listPullRequestsAssociatedWithCommit with the correct params', async () => {
+    await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
+
+    expect(mockListPRsForCommit).toHaveBeenCalledWith(expect.objectContaining({
+      owner:      'org',
+      repo:       'repo',
+      commit_sha: 'sha123',
+    }));
+  });
+
+  it('returns the first PR when results are found', async () => {
+    const pr = { number: 7, head: { ref: 'feat/x', sha: 'sha123' }, base: { ref: 'main', sha: 'base1' }, labels: [] };
+    mockListPRsForCommit.mockResolvedValueOnce({ data: [pr, { number: 8 }] });
+
+    const result = await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
+
+    expect(result).toBe(pr);
+  });
+
+  it('returns null when no PRs are associated with the commit', async () => {
+    mockListPRsForCommit.mockResolvedValueOnce({ data: [] });
+
+    const result = await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
+
+    expect(result).toBeNull();
   });
 });
 

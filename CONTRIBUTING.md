@@ -91,7 +91,7 @@ Closes #42
 npm test                  # run the full test suite
 npm run test:watch        # watch mode during development
 npm run lint              # ESLint
-npm run validate-config   # validate config/repos.json schema
+npm run validate-config   # validate config/layne.json schema
 ```
 
 All four must pass before a PR can be merged.

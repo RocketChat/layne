@@ -1,5 +1,5 @@
 /**
- * Validates the structure of a parsed repos.json object.
+ * Validates the structure of a parsed layne.json object.
  *
  * Returns { valid: true } if the config is acceptable, or
  * { valid: false, errors: string[] } listing every problem found.
@@ -8,8 +8,10 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels']);
-const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels']);
+const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger']);
+const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger']);
+const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run']);
+const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS      = /^claude-/;
 const REPO_KEY_RE        = /^[^/]+\/[^/]+$/;
 
@@ -17,7 +19,7 @@ export function validateConfig(config) {
   const errors = [];
 
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-    return { valid: false, errors: ['repos.json must be a JSON object'] };
+    return { valid: false, errors: ['layne.json must be a JSON object'] };
   }
 
   for (const [key, value] of Object.entries(config)) {
@@ -49,7 +51,8 @@ function validateGlobal(block, ctx, errors) {
     }
   }
   if (block.notifications !== undefined) validateNotifications(block.notifications, `${ctx}.notifications`, errors);
-  if (block.labels       !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
+  if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
+  if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
 }
 
 function validateRepo(block, ctx, errors) {
@@ -63,6 +66,7 @@ function validateRepo(block, ctx, errors) {
   if (block.claude        !== undefined) validateClaude(block.claude,       `${ctx}.claude`,     errors);
   if (block.notifications !== undefined) validateNotifications(block.notifications, `${ctx}.notifications`, errors);
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
+  if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
 }
 
 function validateScanner(block, ctx, errors) {
@@ -106,6 +110,40 @@ function validateClaude(block, ctx, errors) {
 
   if (block.prompt && block.skill) {
     errors.push(`${ctx}: "prompt" and "skill" are mutually exclusive — remove one`);
+  }
+}
+
+function validateTrigger(block, ctx, errors) {
+  if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
+
+  if (block.on !== undefined) {
+    if (!VALID_TRIGGER_ONS.has(block.on))
+      errors.push(`${ctx}.on: must be "pull_request" or "workflow_run", got "${block.on}"`);
+  }
+
+  const on = block.on ?? 'pull_request';
+
+  if (on === 'workflow_run') {
+    if (block.workflow === undefined || block.workflow === null)
+      errors.push(`${ctx}.workflow: required when "on" is "workflow_run"`);
+    else if (typeof block.workflow !== 'string' || block.workflow.trim() === '')
+      errors.push(`${ctx}.workflow: must be a non-empty string`);
+  } else {
+    if (block.workflow !== undefined)
+      errors.push(`${ctx}.workflow: only valid when "on" is "workflow_run"`);
+  }
+
+  if (block.conclusions !== undefined) {
+    if (!Array.isArray(block.conclusions))
+      errors.push(`${ctx}.conclusions: must be an array`);
+    else if (block.conclusions.length === 0)
+      errors.push(`${ctx}.conclusions: must not be empty`);
+    else {
+      for (const c of block.conclusions) {
+        if (typeof c !== 'string' || !VALID_CONCLUSIONS.has(c))
+          errors.push(`${ctx}.conclusions: "${c}" is not a valid GitHub workflow conclusion`);
+      }
+    }
   }
 }
 

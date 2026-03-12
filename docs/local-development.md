@@ -130,7 +130,7 @@ Everything else in `.env.example` is commented out with sensible defaults — yo
 
 ### 3.3 Add your test repo to the scanner config
 
-Open `config/repos.json`. Add an entry for your test repository:
+Open `config/layne.json`. Add an entry for your test repository:
 
 ```json
 {
@@ -138,9 +138,9 @@ Open `config/repos.json`. Add an entry for your test repository:
 }
 ```
 
-An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/repos.json`. In the checked-in example config, Rocket.Chat notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifier will log and skip delivery.
+An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/layne.json`. In the checked-in example config, Rocket.Chat notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifier will log and skip delivery.
 
-> **Important:** The worker reads `config/repos.json` once at startup. Restart it after any changes.
+> **Important:** Both the server and worker read `config/layne.json` once at startup. Restart both after any changes.
 
 ---
 
@@ -446,4 +446,4 @@ npm run dev:stop
 | `[replay] Error: could not reach the server` | Server is not running | `npm start` in another terminal |
 | `[replay] response → 401 Invalid signature` | `GITHUB_WEBHOOK_SECRET` in `.env` does not match what the server expects | They must be identical — both processes load the same `.env` |
 | Check Run never appears on GitHub | The worker failed to authenticate | Check worker logs for `getInstallationToken` errors; verify `GITHUB_APP_PRIVATE_KEY` is a valid single-line PEM |
-| Config changes not picked up by the worker | Worker caches `config/repos.json` at startup | Restart the worker: `Ctrl-C` then `npm run worker` |
+| Config changes not picked up | Server and worker each cache `config/layne.json` at startup | Restart both: `Ctrl-C` on each, then `npm start` and `npm run worker` |

@@ -18,28 +18,28 @@ describe('loadScanConfig()', () => {
     DEFAULT_CONFIG = configMod.DEFAULT_CONFIG;
   });
 
-  it('returns defaults when repos.json is missing (readFile throws)', async () => {
+  it('returns defaults when layne.json is missing (readFile throws)', async () => {
     vi.mocked(readFile).mockRejectedValueOnce(new Error('ENOENT'));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.semgrep).toEqual(DEFAULT_CONFIG.semgrep);
     expect(config.trufflehog).toEqual(DEFAULT_CONFIG.trufflehog);
   });
 
-  it('returns defaults when repos.json contains malformed JSON', async () => {
+  it('returns defaults when layne.json contains malformed JSON', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('not valid json {{{');
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.semgrep).toEqual(DEFAULT_CONFIG.semgrep);
     expect(config.trufflehog).toEqual(DEFAULT_CONFIG.trufflehog);
   });
 
-  it('returns defaults when repos.json top-level value is an array', async () => {
+  it('returns defaults when layne.json top-level value is an array', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify([{ foo: 'bar' }]));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.semgrep).toEqual(DEFAULT_CONFIG.semgrep);
     expect(config.trufflehog).toEqual(DEFAULT_CONFIG.trufflehog);
   });
 
-  it('returns defaults when repos.json top-level value is a number', async () => {
+  it('returns defaults when layne.json top-level value is a number', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('42');
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.semgrep).toEqual(DEFAULT_CONFIG.semgrep);
@@ -100,7 +100,7 @@ describe('loadScanConfig()', () => {
     expect(config.trufflehog.extraArgs).toEqual([]);
   });
 
-  it('reads repos.json only once across two loadScanConfig calls (cache)', async () => {
+  it('reads layne.json only once across two loadScanConfig calls (cache)', async () => {
     vi.mocked(readFile).mockResolvedValue(JSON.stringify({}));
     await loadScanConfig({ owner: 'org', repo: 'a' });
     await loadScanConfig({ owner: 'org', repo: 'b' });
@@ -216,5 +216,51 @@ describe('loadScanConfig()', () => {
     }));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
     expect(config.labels).toEqual({});
+  });
+
+  // --- trigger ---
+
+  it('returns the default pull_request trigger when no trigger is configured', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.trigger).toEqual({ on: 'pull_request' });
+  });
+
+  it('returns a workflow_run trigger configured at the repo level', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/frontend': {
+        trigger: { on: 'workflow_run', workflow: 'Tests Done' },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.trigger).toEqual({ on: 'workflow_run', workflow: 'Tests Done' });
+  });
+
+  it('inherits $global trigger when the repo has no trigger block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { trigger: { on: 'workflow_run', workflow: 'CI' } },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.trigger).toEqual({ on: 'workflow_run', workflow: 'CI' });
+  });
+
+  it('repo-level trigger overrides $global trigger', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { trigger: { on: 'workflow_run', workflow: 'CI' } },
+      'acme/frontend': { trigger: { on: 'pull_request' } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.trigger.on).toBe('pull_request');
+  });
+
+  it('preserves custom conclusions in the trigger', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/frontend': {
+        trigger: { on: 'workflow_run', workflow: 'CI', conclusions: ['success', 'failure'] },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.trigger.conclusions).toEqual(['success', 'failure']);
   });
 });
