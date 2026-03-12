@@ -13,6 +13,7 @@
     "validate-config": "node scripts/validate-config.js",
     "changeset": "changeset",
     "version": "changeset version",
+    "release": "changeset tag",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
