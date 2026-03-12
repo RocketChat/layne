@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -27,18 +27,19 @@ jobs:
 
       - run: npm ci
 
-      - name: Create Version Packages PR
+      - name: Create Version Packages PR or Publish
         id: changesets
         uses: changesets/action@v1
         with:
           version: npm run version
+          publish: npm run release
           title: "chore: release"
           commit: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Retarget PR to main and update title with version
-        if: steps.changesets.outputs.pullRequestNumber != ''
+        if: steps.changesets.outputs.pullRequestNumber != '' && github.ref == 'refs/heads/develop'
         run: |
           git fetch origin changeset-release/develop
           VERSION=$(git show origin/changeset-release/develop:package.json | jq -r '.version')
