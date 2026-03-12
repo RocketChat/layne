@@ -30,8 +30,9 @@ const { loadScanConfig }                             = await import('../config.j
 const { webhooksTotal }                              = await import('../metrics.js');
 const { app, verifySignature, processWebhookRequest } = await import('../server.js');
 
-const PR_TRIGGER_CONFIG       = { trigger: { on: 'pull_request' } };
-const WORKFLOW_TRIGGER_CONFIG = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'] } };
+const PR_TRIGGER_CONFIG          = { trigger: { on: 'pull_request' } };
+const WORKFLOW_TRIGGER_CONFIG    = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'] } };
+const WORKFLOW_JOB_TRIGGER_CONFIG = { trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success'] } };
 
 function sign(body) {
   return 'sha256=' + crypto
@@ -70,6 +71,29 @@ function workflowRunPayload({
     action,
     workflow_run: {
       name:       workflowName,
+      conclusion,
+      head_sha:   headSha,
+    },
+    repository: {
+      name:       'my-repo',
+      full_name:  'org/my-repo',
+      clone_url:  'https://github.com/org/my-repo.git',
+      owner:      { login: 'org' },
+    },
+    installation: { id: 987 },
+  });
+}
+
+function workflowJobPayload({
+  action   = 'completed',
+  jobName  = 'security-scan',
+  conclusion = 'success',
+  headSha  = 'abc123',
+} = {}) {
+  return JSON.stringify({
+    action,
+    workflow_job: {
+      name:       jobName,
       conclusion,
       head_sha:   headSha,
     },
@@ -162,7 +186,7 @@ describe('processWebhookRequest()', () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
-  it('ignores non-pull_request / non-workflow_run events', async () => {
+  it('ignores events that are not pull_request, workflow_run, or workflow_job', async () => {
     const res = await processWebhookRequest(webhookRequest(JSON.stringify({ action: 'created' }), {
       event: 'push',
     }));
@@ -521,6 +545,221 @@ describe('workflow_run trigger — workflow_run event', () => {
 
     const res = await processWebhookRequest(webhookRequest(
       workflowRunPayload({ conclusion: 'failure' }), { event: 'workflow_run' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workflow_job trigger — pull_request events deferred
+// ---------------------------------------------------------------------------
+
+describe('workflow_job trigger — pull_request event', () => {
+  beforeEach(() => {
+    loadScanConfig.mockResolvedValue(WORKFLOW_JOB_TRIGGER_CONFIG);
+  });
+
+  it('does not enqueue a scan when the repo uses workflow_job trigger', async () => {
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Deferred' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+    expect(createCheckRun).not.toHaveBeenCalled();
+  });
+
+  it('caches PR metadata in Redis with a 7-day TTL', async () => {
+    await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(redis.set).toHaveBeenCalledWith(
+      'layne:pr:org/my-repo:abc123',
+      expect.any(String),
+      'EX',
+      7 * 24 * 60 * 60
+    );
+
+    const cached = JSON.parse(redis.set.mock.calls[0][1]);
+    expect(cached).toMatchObject({
+      prNumber:       42,
+      headSha:        'abc123',
+      headRef:        'feature/login',
+      baseSha:        'def456',
+      baseRef:        'main',
+      labels:         ['bug'],
+      installationId: 987,
+    });
+  });
+
+  it('creates a skipped check run with the configured job name in the summary', async () => {
+    await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(skipCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+      installationId: 987,
+      owner:          'org',
+      repo:           'my-repo',
+      headSha:        'abc123',
+      summary:        expect.stringContaining('security-scan'),
+    }));
+  });
+
+  it('still returns Deferred even if skipCheckRun throws', async () => {
+    skipCheckRun.mockRejectedValueOnce(new Error('GitHub API error'));
+
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Deferred' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workflow_job trigger — workflow_job events
+// ---------------------------------------------------------------------------
+
+describe('workflow_job trigger — workflow_job event', () => {
+  const CACHED_PR = JSON.stringify({
+    prNumber:       42,
+    headSha:        'abc123',
+    headRef:        'feature/login',
+    baseSha:        'def456',
+    baseRef:        'main',
+    labels:         ['bug'],
+    installationId: 987,
+    cloneUrl:       'https://github.com/org/my-repo.git',
+    repoFullName:   'org/my-repo',
+  });
+
+  beforeEach(() => {
+    loadScanConfig.mockResolvedValue(WORKFLOW_JOB_TRIGGER_CONFIG);
+    redis.get.mockResolvedValue(CACHED_PR);
+  });
+
+  it('enqueues a scan when the workflow job matches config', async () => {
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('enqueues with the correct job payload from the cached PR data', async () => {
+    await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    const [, jobData] = scanQueue.add.mock.calls[0];
+    expect(jobData).toMatchObject({
+      owner:          'org',
+      repo:           'my-repo',
+      headSha:        'abc123',
+      headRef:        'feature/login',
+      baseSha:        'def456',
+      baseRef:        'main',
+      prNumber:       42,
+      labels:         ['bug'],
+      installationId: 987,
+      checkRunId:     99,
+    });
+  });
+
+  it('uses the correct job ID for deduplication', async () => {
+    await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    const [, , opts] = scanQueue.add.mock.calls[0];
+    expect(opts.jobId).toBe('org/my-repo#42@abc123');
+  });
+
+  it('ignores workflow_job events where action is not "completed"', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      workflowJobPayload({ action: 'in_progress' }), { event: 'workflow_job' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores workflow_job events for a different job name', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      workflowJobPayload({ jobName: 'lint' }), { event: 'workflow_job' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores workflow_job events with a non-matching conclusion', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      workflowJobPayload({ conclusion: 'failure' }), { event: 'workflow_job' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores workflow_job events when the repo uses pull_request trigger', async () => {
+    loadScanConfig.mockResolvedValue(PR_TRIGGER_CONFIG);
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates: does not enqueue when the job already exists', async () => {
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123' });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 with "PR not found" when cache is cold and GitHub API returns nothing', async () => {
+    redis.get.mockResolvedValue(null);
+    findPullRequestBySha.mockResolvedValue(null);
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('falls back to GitHub API when cache is cold and enqueues from API data', async () => {
+    redis.get.mockResolvedValue(null);
+    findPullRequestBySha.mockResolvedValue({
+      number: 42,
+      head:   { ref: 'feature/login', sha: 'abc123' },
+      base:   { ref: 'main',          sha: 'def456' },
+      labels: [{ name: 'bug' }],
+    });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(findPullRequestBySha).toHaveBeenCalledWith(expect.objectContaining({
+      owner:   'org',
+      repo:    'my-repo',
+      headSha: 'abc123',
+    }));
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('returns "PR not found" when cache is cold and GitHub API throws', async () => {
+    redis.get.mockResolvedValue(null);
+    findPullRequestBySha.mockRejectedValue(new Error('API error'));
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('enqueues with configured non-default conclusions', async () => {
+    loadScanConfig.mockResolvedValue({
+      trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success', 'failure'] },
+    });
+
+    const res = await processWebhookRequest(webhookRequest(
+      workflowJobPayload({ conclusion: 'failure' }), { event: 'workflow_job' }
     ));
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });

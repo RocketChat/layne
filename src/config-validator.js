@@ -10,7 +10,7 @@
 
 const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger']);
 const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger']);
-const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run']);
+const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS      = /^claude-/;
 const REPO_KEY_RE        = /^[^/]+\/[^/]+$/;
@@ -118,7 +118,7 @@ function validateTrigger(block, ctx, errors) {
 
   if (block.on !== undefined) {
     if (!VALID_TRIGGER_ONS.has(block.on))
-      errors.push(`${ctx}.on: must be "pull_request" or "workflow_run", got "${block.on}"`);
+      errors.push(`${ctx}.on: must be "pull_request", "workflow_run", or "workflow_job", got "${block.on}"`);
   }
 
   const on = block.on ?? 'pull_request';
@@ -131,6 +131,16 @@ function validateTrigger(block, ctx, errors) {
   } else {
     if (block.workflow !== undefined)
       errors.push(`${ctx}.workflow: only valid when "on" is "workflow_run"`);
+  }
+
+  if (on === 'workflow_job') {
+    if (block.job === undefined || block.job === null)
+      errors.push(`${ctx}.job: required when "on" is "workflow_job"`);
+    else if (typeof block.job !== 'string' || block.job.trim() === '')
+      errors.push(`${ctx}.job: must be a non-empty string`);
+  } else {
+    if (block.job !== undefined)
+      errors.push(`${ctx}.job: only valid when "on" is "workflow_job"`);
   }
 
   if (block.conclusions !== undefined) {

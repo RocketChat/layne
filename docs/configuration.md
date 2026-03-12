@@ -291,7 +291,34 @@ If neither `$global` nor the repo defines a `labels` key, the feature is a no-op
 
 ## Trigger
 
-By default Layne scans every pull request immediately when it is opened, synchronised, or reopened. The `trigger` block lets you defer scanning until a specific CI workflow completes — useful for open-source repositories where workflows from external contributors require maintainer approval before they run.
+By default Layne scans every pull request immediately when it is opened, synchronised, or reopened (`pull_request` trigger). This is the right choice for private or internal repositories where all contributors are trusted and every PR is worth scanning.
+
+For public repositories, two problems arise:
+
+**1. GitHub workflow approval gates.** GitHub requires maintainer approval before running Actions workflows for first-time external contributors. This means Layne's `pull_request` event fires and the scan starts running — spawning Semgrep processes, Trufflehog processes, and Anthropic API calls — on code that may never actually execute in CI because a maintainer hasn't approved it yet. You end up scanning throwaway spam PRs, bot noise, and low-effort contributions that will be closed without review.
+
+**2. Wasted spend on failing code.** Even for trusted contributors, a PR that immediately breaks CI is unlikely to be merged. Scanning it early means burning Semgrep CPU time, Trufflehog I/O, and — most importantly — Anthropic API credits on code that will need to be revised anyway. If CI runs for 5 minutes and fails on a type error, the security scan result is moot.
+
+The `workflow_run` and `workflow_job` triggers solve both problems by deferring the scan until after CI has already run. You only scan code that cleared your quality gate, which is almost always the only code that will ever land in your main branch.
+
+### Cost impact
+
+The Claude adapter makes Anthropic API calls charged per token. On a busy public repository, the difference between scanning every PR immediately and scanning only after CI passes can be significant:
+
+- Repositories with high external contributor volume often receive many low-quality PRs (spam, trivial fixes, automated dependency bumps that fail tests). These will never merge and don't need security scanning.
+- PRs that fail CI within the first few minutes consume scan compute for a result no one will act on. A 30-second CI failure gate that rejects 40% of PRs saves 40% of scan costs immediately.
+- Semgrep and Trufflehog are cheap (CPU only), but the Claude adapter is billed per token at Anthropic API rates. On a repo with many PRs per day, this adds up quickly. Deferring to after CI passes is the single most effective cost control available.
+
+The deferred triggers do not reduce security coverage for PRs that pass CI — the scan still runs on every commit that clears the gate, before merge.
+
+### Choosing between `workflow_run` and `workflow_job`
+
+| | `workflow_run` | `workflow_job` |
+|---|---|---|
+| Gates on | An entire workflow completing | A single named job completing |
+| Use when | You want CI fully done before scanning | You have a fast early gate (e.g. lint, approval job) and want to scan sooner |
+| Latency | Scan starts after the longest job in the workflow | Scan starts as soon as the named job finishes |
+| Typical setup | One CI workflow, wait for all of it | A dedicated `security-gate` job that runs approval checks early |
 
 ### Modes
 
@@ -299,9 +326,11 @@ By default Layne scans every pull request immediately when it is opened, synchro
 |---|---|
 | `pull_request` | *(default)* Scan fires immediately on `opened`, `synchronize`, and `reopened` events |
 | `workflow_run` | Scan fires when the named CI workflow completes with a matching conclusion |
+| `workflow_job` | Scan fires when the named CI job completes with a matching conclusion |
 
 ### Schema
 
+**`workflow_run`:**
 ```json
 {
   "owner/repo": {
@@ -314,24 +343,38 @@ By default Layne scans every pull request immediately when it is opened, synchro
 }
 ```
 
+**`workflow_job`:**
+```json
+{
+  "owner/repo": {
+    "trigger": {
+      "on":          "workflow_job",
+      "job":         "security-gate",
+      "conclusions": ["success"]
+    }
+  }
+}
+```
+
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `on` | `"pull_request"` \| `"workflow_run"` | `"pull_request"` | When to trigger the scan |
+| `on` | `"pull_request"` \| `"workflow_run"` \| `"workflow_job"` | `"pull_request"` | When to trigger the scan |
 | `workflow` | string | — | Name of the GitHub Actions workflow to watch. Required when `on` is `"workflow_run"` |
-| `conclusions` | string[] | `["success"]` | Workflow conclusions that trigger the scan. Valid values: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required` |
+| `job` | string | — | Name of the GitHub Actions job to watch. Required when `on` is `"workflow_job"` |
+| `conclusions` | string[] | `["success"]` | Conclusions that trigger the scan. Valid values: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required` |
 
 > **`trigger` can be set globally.** Set it under `$global` to apply to all repos, then override per-repo as needed.
 
-### How `workflow_run` works
+### How deferred triggers work
 
-When `on: workflow_run` is configured for a repo:
+Both `workflow_run` and `workflow_job` follow the same two-stage pattern:
 
 1. **On `pull_request`** — Layne caches the PR metadata in Redis (7-day TTL) and creates a `skipped` Check Run so the deferral is visible in the PR status UI. No scan is enqueued yet.
-2. **On `workflow_run completed`** — When the named workflow finishes with a matching conclusion, Layne looks up the cached PR metadata and enqueues the scan. If the cache is cold (e.g. Layne was offline when the PR was opened), Layne falls back to the GitHub API to find the associated PR.
+2. **On the trigger event completing** — When the named workflow or job finishes with a matching conclusion, Layne looks up the cached PR metadata and enqueues the scan. If the cache is cold (e.g. Layne was offline when the PR was opened), Layne falls back to the GitHub API to find the associated PR.
 
 ### Failure mode
 
-If the watched workflow is renamed or removed, Layne never receives the `workflow_run` event and the scan never runs. To fail **closed** (safe) rather than **open** (silent), make Layne's Check Run a **required status check** in branch protection — then a missing check blocks merging and the absence is immediately visible.
+If the watched workflow or job is renamed or removed, Layne never receives the event and the scan never runs. To fail **closed** (safe) rather than **open** (silent), make Layne's Check Run a **required status check** in branch protection — then a missing check blocks merging and the absence is immediately visible.
 
 ### Examples
 
@@ -342,6 +385,18 @@ If the watched workflow is renamed or removed, Layne never receives the `workflo
     "trigger": {
       "on":       "workflow_run",
       "workflow": "Tests Done"
+    }
+  }
+}
+```
+
+**Scan after a specific job completes (finer-grained than a whole workflow):**
+```json
+{
+  "owner/repo": {
+    "trigger": {
+      "on":  "workflow_job",
+      "job": "security-gate"
     }
   }
 }

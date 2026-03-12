@@ -91,7 +91,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     return { status: 401, body: 'Invalid signature' };
   }
 
-  if (event !== 'pull_request' && event !== 'workflow_run') {
+  if (event !== 'pull_request' && event !== 'workflow_run' && event !== 'workflow_job') {
     return { status: 200, body: 'Event ignored' };
   }
 
@@ -104,6 +104,9 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
 
   if (event === 'pull_request') {
     return handlePullRequest(payload);
+  }
+  if (event === 'workflow_job') {
+    return handleWorkflowJob(payload);
   }
   return handleWorkflowRun(payload);
 }
@@ -127,7 +130,7 @@ async function handlePullRequest(payload) {
 
   const config = await loadScanConfig({ owner: repository.owner.login, repo: repository.name });
 
-  if (config.trigger.on === 'workflow_run') {
+  if (config.trigger.on === 'workflow_run' || config.trigger.on === 'workflow_job') {
     return deferPullRequest({ pull_request, repository, installation, config });
   }
 
@@ -150,17 +153,24 @@ async function deferPullRequest({ pull_request, repository, installation, config
     repoFullName:   repository.full_name,
   }), 'EX', PR_CACHE_TTL_SECONDS);
 
+  const deferSummary = config.trigger.on === 'workflow_job'
+    ? `Scan deferred — waiting for CI job "${config.trigger.job}" to complete.`
+    : `Scan deferred — waiting for CI workflow "${config.trigger.workflow}" to complete.`;
+
   await skipCheckRun({
     installationId: installation.id,
     owner:          repository.owner.login,
     repo:           repository.name,
     headSha,
-    summary:        `Scan deferred — waiting for CI workflow "${config.trigger.workflow}" to complete.`,
+    summary:        deferSummary,
   }).catch(err => {
     console.error(`[server] Failed to create skipped check run: ${err.message}`);
   });
 
-  debug('server', `deferred scan for ${repository.full_name} PR #${pull_request.number}: waiting for workflow "${config.trigger.workflow}"`);
+  const deferTarget = config.trigger.on === 'workflow_job'
+    ? `job "${config.trigger.job}"`
+    : `workflow "${config.trigger.workflow}"`;
+  debug('server', `deferred scan for ${repository.full_name} PR #${pull_request.number}: waiting for ${deferTarget}`);
   return { status: 200, body: 'Deferred' };
 }
 
@@ -216,6 +226,61 @@ async function handleWorkflowRun(payload) {
     installation: { id: prData.installationId },
     jobId,
     action: 'workflow_run',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// workflow_job handler
+// ---------------------------------------------------------------------------
+
+async function handleWorkflowJob(payload) {
+  const { action, workflow_job, repository, installation } = payload;
+
+  debug('server', `workflow_job webhook: action=${action} job="${workflow_job?.name}" repo=${repository.full_name} conclusion=${workflow_job?.conclusion}`);
+
+  if (action !== 'completed') {
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const config = await loadScanConfig({ owner: repository.owner.login, repo: repository.name });
+
+  if (config.trigger.on !== 'workflow_job') {
+    debug('server', `ignoring workflow_job: repo ${repository.full_name} uses "${config.trigger.on}" trigger`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  if (workflow_job.name !== config.trigger.job) {
+    debug('server', `ignoring workflow_job: "${workflow_job.name}" doesn't match configured "${config.trigger.job}"`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const conclusions = config.trigger.conclusions ?? ['success'];
+  if (!conclusions.includes(workflow_job.conclusion)) {
+    debug('server', `ignoring workflow_job: conclusion "${workflow_job.conclusion}" not in [${conclusions.join(', ')}]`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const headSha = workflow_job.head_sha;
+  const prData  = await resolvePrData({ installation, repository, headSha });
+
+  if (!prData) {
+    console.warn(`[server] workflow_job: could not find PR for ${repository.full_name}@${headSha} — scan skipped`);
+    return { status: 200, body: 'PR not found' };
+  }
+
+  const jobId = getJobId(repository.full_name, prData.prNumber, headSha);
+
+  return enqueueScan({
+    pull_request: {
+      number: prData.prNumber,
+      head:   { sha: headSha, ref: prData.headRef },
+      base:   { sha: prData.baseSha, ref: prData.baseRef },
+      labels: prData.labels.map(name => ({ name })),
+    },
+    repository,
+    installation: { id: prData.installationId },
+    jobId,
+    action: 'workflow_job',
   });
 }
 
