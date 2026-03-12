@@ -112,14 +112,14 @@ Pin the version so builds are reproducible. Pass `--build-arg MYTOOL_VERSION=x.y
 
 ## Adding a New Notification Provider
 
-Notifications are **modular**: each provider is an independent file in `src/notifiers/`. Adding a new provider (e.g. Slack) requires three steps and no changes to core scan logic.
+Notifications are **modular**: each provider is an independent file in `src/notifiers/`. Adding a new provider (e.g. PagerDuty) requires three steps and no changes to core scan logic.
 
 ### 1. Write the notifier
 
-Create `src/notifiers/slack.js` exporting a `notify` function. The function must **never throw** — catch all errors internally so a notification failure never affects the scan result.
+Create `src/notifiers/pagerduty.js` exporting a `notify` function. The function must **never throw** — catch all errors internally so a notification failure never affects the scan result.
 
 ```js
-// src/notifiers/slack.js
+// src/notifiers/pagerduty.js
 
 export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
   const url = toolConfig.webhookUrl;
@@ -130,14 +130,14 @@ export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        text: `${findings.length} finding(s) in ${owner}/${repo} PR #${prNumber}`,
+        summary: `${findings.length} finding(s) in ${owner}/${repo} PR #${prNumber}`,
       }),
     });
     if (!res.ok) {
-      console.error(`[slack] notification failed: HTTP ${res.status}`);
+      console.error(`[pagerduty] notification failed: HTTP ${res.status}`);
     }
   } catch (err) {
-    console.error(`[slack] notification failed: ${err.message}`);
+    console.error(`[pagerduty] notification failed: ${err.message}`);
   }
 }
 ```
@@ -148,16 +148,18 @@ Open `src/notifiers/index.js` and add two lines:
 
 ```js
 import { notify as notifyRocketchat } from './rocketchat.js';
-import { notify as notifySlack }      from './slack.js';        // add this
+import { notify as notifySlack }      from './slack.js';
+import { notify as notifyPagerduty }  from './pagerduty.js';    // add this
 
 const NOTIFIERS = {
   rocketchat: notifyRocketchat,
-  slack:      notifySlack,                                      // add this
+  slack:      notifySlack,
+  pagerduty:  notifyPagerduty,                                  // add this
 };
 ```
 
-The notifier key (`slack`) is what operators use in `config/layne.json` under `notifications`.
+The notifier key (`pagerduty`) is what operators use in `config/layne.json` under `notifications`.
 
 ### 3. Write tests
 
-Create `src/__tests__/notifiers/slack.test.js` following the same pattern as the Rocket.Chat test file. Use `vi.stubGlobal('fetch', vi.fn())` to mock HTTP calls.
+Create `src/__tests__/notifiers/pagerduty.test.js` following the same pattern as the Rocket.Chat or Slack test files. Use `vi.stubGlobal('fetch', vi.fn())` to mock HTTP calls.

@@ -230,14 +230,100 @@ Open a pull request on one of the repos where Layne is installed. Within a few s
 
 ### Automated Deployment
 
-Layne ships with a GitHub Actions workflow (`.github/workflows/deploy.yml`) that runs tests and then deploys to your EC2 instance on every push to `main`. It can also be triggered manually from the Actions tab via `workflow_dispatch`.
+Here is the GitHub Actions workflow we use internally to deploy Layne to an EC2 instance on every push to `main`. Copy it into your own repository's `.github/workflows/deploy.yml` and configure the secrets below.
 
-**What the workflow does:**
+The workflow:
 
 1. Runs the full test suite — the deploy step is skipped if tests fail
 2. Rsyncs the repository to `/home/ubuntu/layne/layne/` on the server, preserving `data/` (certbot certificates) and never touching `.env`
 3. Writes a fresh `.env` file from GitHub secrets
 4. Runs `docker compose up --build --no-deps -d server worker` — rebuilds and restarts only the server and worker, leaving Redis (and the BullMQ queue) untouched
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run validate-config
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "Host deploy-target"                       >> ~/.ssh/config
+          echo "  HostName ${{ secrets.EC2_HOST }}"       >> ~/.ssh/config
+          echo "  User ubuntu"                            >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/deploy_key"         >> ~/.ssh/config
+          echo "  StrictHostKeyChecking no"               >> ~/.ssh/config
+          echo "  UserKnownHostsFile /dev/null"           >> ~/.ssh/config
+
+      - name: Sync code to server
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='data' \
+            --exclude='coverage' \
+            -e "ssh -F $HOME/.ssh/config" \
+            ./ deploy-target:/home/ubuntu/layne/layne/
+
+      - name: Write .env from secrets
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ROCKETCHAT_WEBHOOK_URL: ${{ secrets.ROCKETCHAT_WEBHOOK_URL }}
+          METRICS_ENABLED: ${{ vars.METRICS_ENABLED }}
+          METRICS_PORT: ${{ vars.METRICS_PORT }}
+        run: |
+          {
+            printf 'GITHUB_APP_ID=%s\n'             "$GH_APP_ID"
+            printf 'GITHUB_APP_PRIVATE_KEY=%s\n'    "$GH_APP_PRIVATE_KEY"
+            printf 'GITHUB_WEBHOOK_SECRET=%s\n'     "$GH_WEBHOOK_SECRET"
+            printf 'DOMAIN=%s\n'                    "$DOMAIN"
+            printf 'LETSENCRYPT_EMAIL=%s\n'         "$LETSENCRYPT_EMAIL"
+            printf 'ANTHROPIC_API_KEY=%s\n'         "$ANTHROPIC_API_KEY"
+            printf 'ROCKETCHAT_WEBHOOK_URL=%s\n'    "$ROCKETCHAT_WEBHOOK_URL"
+            printf 'METRICS_ENABLED=%s\n'           "${METRICS_ENABLED:-false}"
+            printf 'METRICS_PORT=%s\n'              "${METRICS_PORT:-9091}"
+          } | ssh -F "$HOME/.ssh/config" deploy-target \
+              'cat > /home/ubuntu/layne/layne/.env'
+
+      - name: Rebuild and restart server and worker
+        run: |
+          ssh -F "$HOME/.ssh/config" deploy-target \
+            'cd /home/ubuntu/layne/layne &&
+             docker compose up --build --no-deps -d server worker &&
+             docker compose exec nginx nginx -s reload'
+```
 
 **Required GitHub secrets:**
 
@@ -264,7 +350,7 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 
 > **Note:** GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
 
-The workflow uses a GitHub [**environment**](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) named `production`. You can configure deployment protection rules on that environment (e.g. require a manual approval before deploying to production).
+The workflow uses a GitHub [**environment**](https://docs.github.com/en/actions/deployment/targeting-different-deployment-environments) named `production`. You can configure deployment protection rules on that environment (e.g. require a manual approval before deploying to production).
 
 ---
 
