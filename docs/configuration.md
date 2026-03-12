@@ -386,6 +386,46 @@ Example:
 "template": ":rotating_light: *{{repo}} PR #{{prNumber}}* — {{total}} finding(s): {{critical}} critical, {{high}} high"
 ```
 
+### Slack
+
+Sends a POST request to a Slack incoming webhook URL.
+
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes | Must be `true` to activate this notifier |
+| `webhookUrl` | string | yes | Webhook URL, or an env var reference like `"$SLACK_WEBHOOK_URL"` |
+| `template` | string | no | Custom message template (see below). Omit for the default format |
+
+**Setting up a Slack incoming webhook:**
+
+Create a Slack app, enable Incoming Webhooks, and add a webhook for your channel. Copy the resulting `https://hooks.slack.com/services/...` URL.
+
+**`webhookUrl` — keeping secrets out of `repos.json`:**
+
+Same `$ENV_VAR` resolution as Rocket.Chat — if the value starts with `$`, Layne reads it from the environment at runtime.
+
+```json
+"webhookUrl": "$SLACK_WEBHOOK_URL"
+```
+
+**Default message format:**
+
+```
+🦴 Good boy Layne dug up 3 finding(s) in <https://github.com/acme/payments/pull/42|acme/payments #42>
+```
+
+The PR link uses Slack's `<url|label>` syntax so it renders as a clickable hyperlink.
+
+**Custom template:**
+
+Same `{{variable}}` placeholders as Rocket.Chat (see table above). You can use Slack's mrkdwn formatting in your template:
+
+```json
+"template": ":rotating_light: *{{repo}} PR #{{prNumber}}* — {{total}} finding(s): {{critical}} critical, {{high}} high"
+```
+
+---
+
 ### Examples
 
 **Notify all repos via a single global webhook:**
