@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { validateConfig } from './config-validator.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'repos.json');
+const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'layne.json');
 
 export const DEFAULT_CONFIG = Object.freeze({
   semgrep: Object.freeze({
@@ -21,11 +21,12 @@ export const DEFAULT_CONFIG = Object.freeze({
     prompt:  null,   // custom system prompt (string); mutually exclusive with skill
     skill:   null,   // API Skill config: { id: "skill_01...", version: "latest" }
   }),
-  labels: Object.freeze({}),
+  labels:  Object.freeze({}),
+  trigger: Object.freeze({ on: 'pull_request' }),
 });
 
-// Cached after first read — repos.json is loaded once per worker process.
-// Restart Layne to pick up config changes (same lifecycle as code deploys).
+// Cached after first read — layne.json is loaded once per process.
+// Restart both server and worker to pick up config changes (same lifecycle as code deploys).
 let reposConfigCache = null;
 
 async function loadReposConfig() {
@@ -34,15 +35,15 @@ async function loadReposConfig() {
     const raw = JSON.parse(await readFile(REPOS_CONFIG_PATH, 'utf8'));
     const result = validateConfig(raw);
     if (!result.valid) {
-      console.error('[config] repos.json has validation errors — some settings may be ignored:');
+      console.error('[config] layne.json has validation errors — some settings may be ignored:');
       for (const err of result.errors) console.error(`[config]   • ${err}`);
     }
     reposConfigCache = (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) ? raw : {};
   } catch (err) {
     if (err instanceof SyntaxError) {
-      console.error(`[config] repos.json is not valid JSON: ${err.message}`);
+      console.error(`[config] layne.json is not valid JSON: ${err.message}`);
     } else {
-      console.error(`[config] failed to load repos.json: ${err.message}`);
+      console.error(`[config] failed to load layne.json: ${err.message}`);
     }
     reposConfigCache = {};
   }
@@ -63,11 +64,14 @@ export async function loadScanConfig({ owner, repo }) {
   const globalLabels = reposConfig['$global']?.labels ?? {};
   const repoLabels   = repoOverrides.labels ?? {};
 
+  const globalTrigger = reposConfig['$global']?.trigger ?? {};
+
   return {
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
     claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
     notifications: { ...globalNotifications, ...repoNotifications },
     labels:        { ...globalLabels, ...repoLabels },
+    trigger:       { ...DEFAULT_CONFIG.trigger, ...globalTrigger, ...(repoOverrides.trigger ?? {}) },
   };
 }

@@ -54,7 +54,9 @@ Two separate Node.js processes:
 **`src/server.js` — Webhook receiver**
 - Express app with `POST /webhook`, `GET /health`, `GET /metrics` (when enabled), `GET /assets/layne-logo.png`
 - Verifies GitHub HMAC signature before processing
-- On a qualifying `pull_request` event (opened/synchronize/reopened), creates a GitHub Check Run in `queued` state, then enqueues a BullMQ job and returns 200
+- Handles two event types: `pull_request` and `workflow_run`
+- **`pull_request` trigger (default):** on opened/synchronize/reopened, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
+- **`workflow_run` trigger:** on `pull_request` events, caches PR metadata in Redis (TTL 7 days) and creates a `skipped` Check Run; on `workflow_run completed` events matching the configured workflow name and conclusion, looks up cached PR metadata (falls back to GitHub API if cache is cold) then enqueues the scan
 - Job ID is deduplicated by `{repo}#{pr}@{sha}` — duplicate webhook deliveries are no-ops (Redis lock + queue check)
 - Exported `app` and `processWebhookRequest` for use in tests
 
@@ -103,7 +105,7 @@ Two separate Node.js processes:
 
 | Module | Purpose |
 |--------|---------|
-| `src/config.js` | Loads and merges `config/repos.json`; cached after first read |
+| `src/config.js` | Loads and merges `config/layne.json`; cached after first read |
 | `src/github.js` | Check Run CRUD + label management (`ensureLabelsExist`, `setLabels`) |
 | `src/metrics.js` | Prometheus metric definitions; exports no-op stubs when `METRICS_ENABLED` is not `true` |
 | `src/notifiers/index.js` | Notification orchestrator; iterates registered notifiers |
@@ -111,18 +113,19 @@ Two separate Node.js processes:
 | `src/queue.js` | Shared Redis + BullMQ queue instance |
 | `src/debug.js` | Conditional debug logging via `DEBUG_MODE` |
 
-## Per-repo configuration (`config/repos.json`)
+## Per-repo configuration (`config/layne.json`)
 
 See [docs/configuration.md](docs/configuration.md) for the full schema and examples.
 
 Key points for code navigation:
-- Read once at worker startup — **restart the worker to pick up changes**
+- Read once per process startup — **restart both server and worker to pick up changes**
 - Loaded and merged by `src/config.js` → `loadScanConfig`
 - Supports `$global` key for defaults inherited by all repos
 - Scanner blocks: per-repo spread over defaults (`{ ...DEFAULT_CONFIG.semgrep, ...repoOverrides.semgrep }`)
+- `trigger`: controls when scanning fires — `pull_request` (default, immediate) or `workflow_run` (deferred until a named CI workflow completes); global default → per-repo override
 - `notifications` and `labels`: per-repo notifier/key wins over global; per-repo absence = inherit global entirely
 - `extraArgs` fully replaces the default (not extended)
-- `config/repos.json` must be present in the Docker image (`COPY config/ ./config/`)
+- `config/layne.json` must be present in the Docker image (`COPY config/ ./config/`)
 - Notifier contract: `async function notify({ findings, owner, repo, prNumber, toolConfig })` — must never throw
 - Notification dedup key: `layne:scan:count:{owner}/{repo}#{prNumber}` (Redis, 30-day TTL)
 - `webhookUrl` values starting with `$` are resolved from `process.env` at runtime

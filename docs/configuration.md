@@ -1,6 +1,6 @@
 # Configuration
 
-Scanner behaviour, labels, and notifications are all configured in `config/repos.json`. Layne reads this file once at worker startup — **restart the worker to pick up changes**.
+Scanner behaviour, labels, notifications, and trigger conditions are all configured in `config/layne.json`. Layne reads this file once per process startup — **restart both server and worker to pick up changes** (the automated deploy pipeline does this automatically).
 
 ---
 
@@ -119,7 +119,7 @@ skill = Anthropic().beta.skills.create(
     files=files_from_dir("/path/to/skill-folder"),  # must contain SKILL.md
     betas=["skills-2025-10-02"],
 )
-print(skill.id)  # paste this into repos.json
+print(skill.id)  # paste this into layne.json
 ```
 
 ### How args are assembled
@@ -236,7 +236,7 @@ Labels are applied **after** the Check Run is completed. Errors never affect the
 
 ### Configuration
 
-Add a `labels` key to `$global` or to any repo entry in `config/repos.json`:
+Add a `labels` key to `$global` or to any repo entry in `config/layne.json`:
 
 ```json
 {
@@ -286,6 +286,91 @@ If a label listed in `onFailure` or `onSuccess` does not exist on the repository
 ```
 
 If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo.
+
+---
+
+## Trigger
+
+By default Layne scans every pull request immediately when it is opened, synchronised, or reopened. The `trigger` block lets you defer scanning until a specific CI workflow completes — useful for open-source repositories where workflows from external contributors require maintainer approval before they run.
+
+### Modes
+
+| `on` | Behaviour |
+|---|---|
+| `pull_request` | *(default)* Scan fires immediately on `opened`, `synchronize`, and `reopened` events |
+| `workflow_run` | Scan fires when the named CI workflow completes with a matching conclusion |
+
+### Schema
+
+```json
+{
+  "owner/repo": {
+    "trigger": {
+      "on":          "workflow_run",
+      "workflow":    "Tests Done",
+      "conclusions": ["success"]
+    }
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `on` | `"pull_request"` \| `"workflow_run"` | `"pull_request"` | When to trigger the scan |
+| `workflow` | string | — | Name of the GitHub Actions workflow to watch. Required when `on` is `"workflow_run"` |
+| `conclusions` | string[] | `["success"]` | Workflow conclusions that trigger the scan. Valid values: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required` |
+
+> **`trigger` can be set globally.** Set it under `$global` to apply to all repos, then override per-repo as needed.
+
+### How `workflow_run` works
+
+When `on: workflow_run` is configured for a repo:
+
+1. **On `pull_request`** — Layne caches the PR metadata in Redis (7-day TTL) and creates a `skipped` Check Run so the deferral is visible in the PR status UI. No scan is enqueued yet.
+2. **On `workflow_run completed`** — When the named workflow finishes with a matching conclusion, Layne looks up the cached PR metadata and enqueues the scan. If the cache is cold (e.g. Layne was offline when the PR was opened), Layne falls back to the GitHub API to find the associated PR.
+
+### Failure mode
+
+If the watched workflow is renamed or removed, Layne never receives the `workflow_run` event and the scan never runs. To fail **closed** (safe) rather than **open** (silent), make Layne's Check Run a **required status check** in branch protection — then a missing check blocks merging and the absence is immediately visible.
+
+### Examples
+
+**Scan only after CI passes (mirrors GitHub's "require approval for workflows" gate):**
+```json
+{
+  "owner/repo": {
+    "trigger": {
+      "on":       "workflow_run",
+      "workflow": "Tests Done"
+    }
+  }
+}
+```
+
+**Scan regardless of whether CI passes or fails (workflow was approved, code is worth scanning):**
+```json
+{
+  "owner/repo": {
+    "trigger": {
+      "on":          "workflow_run",
+      "workflow":    "Tests Done",
+      "conclusions": ["success", "failure"]
+    }
+  }
+}
+```
+
+**Apply workflow_run trigger to all repos globally:**
+```json
+{
+  "$global": {
+    "trigger": {
+      "on":       "workflow_run",
+      "workflow": "CI"
+    }
+  }
+}
+```
 
 ---
 

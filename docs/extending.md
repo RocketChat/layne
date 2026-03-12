@@ -158,7 +158,7 @@ const NOTIFIERS = {
 };
 ```
 
-The notifier key (`pagerduty`) is what operators use in `config/repos.json` under `notifications`.
+The notifier key (`pagerduty`) is what operators use in `config/layne.json` under `notifications`.
 
 ### 3. Write tests
 

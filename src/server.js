@@ -6,7 +6,8 @@ import crypto from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import { redis, scanQueue } from './queue.js';
-import { createCheckRun, completeCheckRun } from './github.js';
+import { createCheckRun, completeCheckRun, skipCheckRun, findPullRequestBySha } from './github.js';
+import { loadScanConfig } from './config.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 import { registry, webhooksTotal } from './metrics.js';
@@ -16,9 +17,10 @@ const METRICS_ENABLED = process.env.METRICS_ENABLED === 'true';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const ACCEPTED_RESPONSE = { status: 200, body: 'Accepted' };
-const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
-const WEBHOOK_LOCK_TTL_SECONDS = 30;
+const ACCEPTED_RESPONSE          = { status: 200, body: 'Accepted' };
+const HANDLED_PR_ACTIONS         = new Set(['opened', 'synchronize', 'reopened']);
+const WEBHOOK_LOCK_TTL_SECONDS   = 30;
+const PR_CACHE_TTL_SECONDS       = 7 * 24 * 60 * 60; // 7 days
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -61,6 +63,10 @@ function getJobId(repositoryFullName, prNumber, headSha) {
   return `${repositoryFullName}#${prNumber}@${headSha}`;
 }
 
+function prCacheKey(repoFullName, headSha) {
+  return `layne:pr:${repoFullName}:${headSha}`;
+}
+
 async function acquireWebhookLock(jobId) {
   const key = `layne:webhook:${jobId}`;
   const token = crypto.randomUUID();
@@ -85,7 +91,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     return { status: 401, body: 'Invalid signature' };
   }
 
-  if (event !== 'pull_request') {
+  if (event !== 'pull_request' && event !== 'workflow_run') {
     return { status: 200, body: 'Event ignored' };
   }
 
@@ -96,17 +102,167 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     return { status: 400, body: 'Invalid JSON payload' };
   }
 
+  if (event === 'pull_request') {
+    return handlePullRequest(payload);
+  }
+  return handleWorkflowRun(payload);
+}
+
+// ---------------------------------------------------------------------------
+// pull_request handler
+// ---------------------------------------------------------------------------
+
+async function handlePullRequest(payload) {
   const { action, pull_request, repository, installation } = payload;
   const prNumber = pull_request.number;
-  const jobId = getJobId(repository.full_name, prNumber, pull_request.head.sha);
+  const headSha  = pull_request.head.sha;
+  const jobId    = getJobId(repository.full_name, prNumber, headSha);
 
-  debug('server', `webhook received: ${event} action=${action} repo=${repository.full_name} PR #${prNumber} sha=${pull_request.head.sha}`);
+  debug('server', `pull_request webhook: action=${action} repo=${repository.full_name} PR #${prNumber} sha=${headSha}`);
 
-  if (!HANDLED_ACTIONS.has(action)) {
+  if (!HANDLED_PR_ACTIONS.has(action)) {
     debug('server', `ignoring action: ${action}`);
     return { status: 200, body: 'Action ignored' };
   }
 
+  const config = await loadScanConfig({ owner: repository.owner.login, repo: repository.name });
+
+  if (config.trigger.on === 'workflow_run') {
+    return deferPullRequest({ pull_request, repository, installation, config });
+  }
+
+  return enqueueScan({ pull_request, repository, installation, jobId, action });
+}
+
+async function deferPullRequest({ pull_request, repository, installation, config }) {
+  const headSha  = pull_request.head.sha;
+  const cacheKey = prCacheKey(repository.full_name, headSha);
+
+  await redis.set(cacheKey, JSON.stringify({
+    prNumber:       pull_request.number,
+    headSha,
+    headRef:        pull_request.head.ref,
+    baseSha:        pull_request.base.sha,
+    baseRef:        pull_request.base.ref,
+    labels:         pull_request.labels?.map(l => l.name) ?? [],
+    installationId: installation.id,
+    cloneUrl:       repository.clone_url,
+    repoFullName:   repository.full_name,
+  }), 'EX', PR_CACHE_TTL_SECONDS);
+
+  await skipCheckRun({
+    installationId: installation.id,
+    owner:          repository.owner.login,
+    repo:           repository.name,
+    headSha,
+    summary:        `Scan deferred — waiting for CI workflow "${config.trigger.workflow}" to complete.`,
+  }).catch(err => {
+    console.error(`[server] Failed to create skipped check run: ${err.message}`);
+  });
+
+  debug('server', `deferred scan for ${repository.full_name} PR #${pull_request.number}: waiting for workflow "${config.trigger.workflow}"`);
+  return { status: 200, body: 'Deferred' };
+}
+
+// ---------------------------------------------------------------------------
+// workflow_run handler
+// ---------------------------------------------------------------------------
+
+async function handleWorkflowRun(payload) {
+  const { action, workflow_run, repository, installation } = payload;
+
+  debug('server', `workflow_run webhook: action=${action} workflow="${workflow_run?.name}" repo=${repository.full_name} conclusion=${workflow_run?.conclusion}`);
+
+  if (action !== 'completed') {
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const config = await loadScanConfig({ owner: repository.owner.login, repo: repository.name });
+
+  if (config.trigger.on !== 'workflow_run') {
+    debug('server', `ignoring workflow_run: repo ${repository.full_name} uses "${config.trigger.on}" trigger`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  if (workflow_run.name !== config.trigger.workflow) {
+    debug('server', `ignoring workflow_run: "${workflow_run.name}" doesn't match configured "${config.trigger.workflow}"`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const conclusions = config.trigger.conclusions ?? ['success'];
+  if (!conclusions.includes(workflow_run.conclusion)) {
+    debug('server', `ignoring workflow_run: conclusion "${workflow_run.conclusion}" not in [${conclusions.join(', ')}]`);
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const headSha  = workflow_run.head_sha;
+  const prData   = await resolvePrData({ installation, repository, headSha });
+
+  if (!prData) {
+    console.warn(`[server] workflow_run: could not find PR for ${repository.full_name}@${headSha} — scan skipped`);
+    return { status: 200, body: 'PR not found' };
+  }
+
+  const jobId = getJobId(repository.full_name, prData.prNumber, headSha);
+
+  return enqueueScan({
+    pull_request: {
+      number: prData.prNumber,
+      head:   { sha: headSha, ref: prData.headRef },
+      base:   { sha: prData.baseSha, ref: prData.baseRef },
+      labels: prData.labels.map(name => ({ name })),
+    },
+    repository,
+    installation: { id: prData.installationId },
+    jobId,
+    action: 'workflow_run',
+  });
+}
+
+async function resolvePrData({ installation, repository, headSha }) {
+  const cacheKey = prCacheKey(repository.full_name, headSha);
+  const cached   = await redis.get(cacheKey);
+
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  // Cache miss: Layne may have been offline when the PR was opened, or Redis
+  // was cleared. Fall back to the GitHub API to find the associated PR.
+  debug('server', `PR cache miss for ${repository.full_name}@${headSha} — querying GitHub API`);
+
+  try {
+    const pr = await findPullRequestBySha({
+      installationId: installation.id,
+      owner:          repository.owner.login,
+      repo:           repository.name,
+      headSha,
+    });
+
+    if (!pr) return null;
+
+    return {
+      prNumber:       pr.number,
+      headSha,
+      headRef:        pr.head.ref,
+      baseSha:        pr.base.sha,
+      baseRef:        pr.base.ref,
+      labels:         pr.labels?.map(l => l.name) ?? [],
+      installationId: installation.id,
+      cloneUrl:       repository.clone_url,
+      repoFullName:   repository.full_name,
+    };
+  } catch (err) {
+    console.error(`[server] Failed to recover PR from GitHub API: ${err.message}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared enqueue path (used by both pull_request and workflow_run triggers)
+// ---------------------------------------------------------------------------
+
+async function enqueueScan({ pull_request, repository, installation, jobId, action }) {
   if (await scanQueue.getJob(jobId)) {
     debug('server', `duplicate webhook ignored: job already exists for ${jobId}`);
     webhooksTotal.inc({ action, deduplicated: 'true' });
@@ -145,14 +301,14 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
       headRef:        pull_request.head.ref,
       baseSha:        pull_request.base.sha,
       baseRef:        pull_request.base.ref,
-      prNumber,
+      prNumber:       pull_request.number,
       labels:         pull_request.labels?.map(l => l.name) ?? [],
       checkRunId,
     }, {
       jobId,
     });
 
-    console.log(`[server] Enqueued scan for ${repository.full_name} PR #${prNumber}`);
+    console.log(`[server] Enqueued scan for ${repository.full_name} PR #${pull_request.number}`);
     webhooksTotal.inc({ action, deduplicated: 'false' });
     return ACCEPTED_RESPONSE;
   } catch (err) {

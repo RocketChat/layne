@@ -53,10 +53,10 @@ const REPORT_FINDINGS_TOOL = {
  * Runs Claude against the files changed in the PR and returns findings
  * in the common format: { file, line, severity, message, ruleId, tool }.
  *
- * Two modes, selected by repos.json config:
+ * Two modes, selected by layne.json config:
  *   - prompt mode (default): single API call with a system prompt
  *   - skill mode: Skills API + code_execution tool (requires beta headers);
- *     set `claude.skill: { id: "skill_01...", version: "latest" }` in repos.json
+ *     set `claude.skill: { id: "skill_01...", version: "latest" }` in layne.json
  */
 export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.claude }) {
   if (!changedFiles || changedFiles.length === 0) return [];

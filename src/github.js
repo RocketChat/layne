@@ -88,6 +88,50 @@ export async function completeCheckRun({
 }
 
 /**
+ * Creates a Check Run in completed/skipped state immediately.
+ * Used when a scan is deferred (workflow_run trigger) to make the deferral
+ * visible in the PR status UI.
+ */
+export async function skipCheckRun({ installationId, owner, repo, headSha, summary }) {
+  debug('github', `creating skipped check run for ${owner}/${repo} sha=${headSha}`);
+
+  const octokit = await getInstallationOctokit(installationId);
+
+  await octokit.checks.create({
+    owner,
+    repo,
+    name:         CHECK_NAME,
+    head_sha:     headSha,
+    status:       'completed',
+    conclusion:   'skipped',
+    completed_at: new Date().toISOString(),
+    output: {
+      title:   'Layne — deferred',
+      summary,
+    },
+  });
+}
+
+/**
+ * Returns the first open pull request associated with a commit SHA,
+ * or null if none is found. Used as a fallback when the PR metadata
+ * cache is cold (e.g. Layne was offline when the PR was opened).
+ */
+export async function findPullRequestBySha({ installationId, owner, repo, headSha }) {
+  debug('github', `looking up PR for ${owner}/${repo} sha=${headSha}`);
+
+  const octokit = await getInstallationOctokit(installationId);
+
+  const { data } = await octokit.repos.listPullRequestsAssociatedWithCommit({
+    owner,
+    repo,
+    commit_sha: headSha,
+  });
+
+  return data[0] ?? null;
+}
+
+/**
  * Ensures all label names exist on the repository, creating any that are missing.
  * Missing labels are created with a neutral gray color.
  * Errors are logged and swallowed — never throws.
