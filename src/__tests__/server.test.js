@@ -273,14 +273,38 @@ describe('processWebhookRequest()', () => {
     expect(opts.jobId).toBe('org/my-repo#42@abc123');
   });
 
-  it('does not create a second check run when the job already exists', async () => {
-    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123' });
+  it('does not create a second check run when the job is already active', async () => {
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('waiting') });
 
     const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).not.toHaveBeenCalled();
     expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('removes the old job and re-enqueues when the existing job is already completed (re-run scenario)', async () => {
+    const mockRemove = vi.fn().mockResolvedValue(undefined);
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('completed'), remove: mockRemove });
+
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(mockRemove).toHaveBeenCalled();
+    expect(createCheckRun).toHaveBeenCalled();
+    expect(scanQueue.add).toHaveBeenCalled();
+  });
+
+  it('removes the old job and re-enqueues when the existing job is in a failed state (re-run scenario)', async () => {
+    const mockRemove = vi.fn().mockResolvedValue(undefined);
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('failed'), remove: mockRemove });
+
+    const res = await processWebhookRequest(webhookRequest(prPayload('opened')));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(mockRemove).toHaveBeenCalled();
+    expect(createCheckRun).toHaveBeenCalled();
+    expect(scanQueue.add).toHaveBeenCalled();
   });
 
   it('does not create a second check run while another request is accepting the same webhook', async () => {
@@ -330,7 +354,7 @@ describe('processWebhookRequest()', () => {
 
     it('increments webhooksTotal with deduplicated=true when a duplicate webhook is received', async () => {
       loadScanConfig.mockResolvedValue(PR_TRIGGER_CONFIG);
-      scanQueue.getJob.mockResolvedValueOnce({ id: 'existing-job' });
+      scanQueue.getJob.mockResolvedValueOnce({ id: 'existing-job', getState: vi.fn().mockResolvedValue('waiting') });
       await processWebhookRequest(webhookRequest(prPayload('opened')));
       expect(webhooksTotal.inc).toHaveBeenCalledWith({ action: 'opened', deduplicated: 'true' });
     });
@@ -488,14 +512,26 @@ describe('workflow_run trigger — workflow_run event', () => {
     expect(scanQueue.add).not.toHaveBeenCalled();
   });
 
-  it('deduplicates: does not enqueue when the job already exists', async () => {
-    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123' });
+  it('deduplicates: does not enqueue when the job is already active', async () => {
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('active') });
 
     const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).not.toHaveBeenCalled();
     expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('removes the old job and re-enqueues when the existing job has already completed (re-run scenario)', async () => {
+    const mockRemove = vi.fn().mockResolvedValue(undefined);
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('completed'), remove: mockRemove });
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(mockRemove).toHaveBeenCalled();
+    expect(createCheckRun).toHaveBeenCalled();
+    expect(scanQueue.add).toHaveBeenCalled();
   });
 
   it('returns 200 with "PR not found" when cache is cold and GitHub API returns nothing', async () => {
@@ -703,14 +739,26 @@ describe('workflow_job trigger — workflow_job event', () => {
     expect(scanQueue.add).not.toHaveBeenCalled();
   });
 
-  it('deduplicates: does not enqueue when the job already exists', async () => {
-    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123' });
+  it('deduplicates: does not enqueue when the job is already active', async () => {
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('active') });
 
     const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).not.toHaveBeenCalled();
     expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('removes the old job and re-enqueues when the existing job has already completed (re-run scenario)', async () => {
+    const mockRemove = vi.fn().mockResolvedValue(undefined);
+    scanQueue.getJob.mockResolvedValueOnce({ id: 'org/my-repo#42@abc123', getState: vi.fn().mockResolvedValue('completed'), remove: mockRemove });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(mockRemove).toHaveBeenCalled();
+    expect(createCheckRun).toHaveBeenCalled();
+    expect(scanQueue.add).toHaveBeenCalled();
   });
 
   it('returns 200 with "PR not found" when cache is cold and GitHub API returns nothing', async () => {
