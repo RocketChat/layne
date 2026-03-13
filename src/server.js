@@ -327,9 +327,23 @@ async function resolvePrData({ installation, repository, headSha }) {
 // Shared enqueue path (used by both pull_request and workflow_run triggers)
 // ---------------------------------------------------------------------------
 
+// Returns true if the job is waiting/active/delayed (a real duplicate).
+// If the job is in a terminal state (completed/failed), removes it from BullMQ
+// so the next scanQueue.add() call with the same jobId isn't silently dropped
+// by BullMQ's duplicate-key Lua check.
+async function isJobActive(jobId) {
+  const job = await scanQueue.getJob(jobId);
+  if (!job) return false;
+  const state = await job.getState();
+  if (state === 'waiting' || state === 'active' || state === 'delayed') return true;
+  await job.remove();
+  debug('server', `removed ${state} job ${jobId} to allow re-scan`);
+  return false;
+}
+
 async function enqueueScan({ pull_request, repository, installation, jobId, action }) {
-  if (await scanQueue.getJob(jobId)) {
-    debug('server', `duplicate webhook ignored: job already exists for ${jobId}`);
+  if (await isJobActive(jobId)) {
+    debug('server', `duplicate webhook ignored: job already active for ${jobId}`);
     webhooksTotal.inc({ action, deduplicated: 'true' });
     return ACCEPTED_RESPONSE;
   }
@@ -343,8 +357,8 @@ async function enqueueScan({ pull_request, repository, installation, jobId, acti
   let checkRunId = null;
 
   try {
-    if (await scanQueue.getJob(jobId)) {
-      debug('server', `duplicate webhook ignored after lock: job already exists for ${jobId}`);
+    if (await isJobActive(jobId)) {
+      debug('server', `duplicate webhook ignored after lock: job already active for ${jobId}`);
       webhooksTotal.inc({ action, deduplicated: 'true' });
       return ACCEPTED_RESPONSE;
     }
