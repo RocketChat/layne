@@ -8,6 +8,7 @@ const mockCreateLabel            = vi.fn().mockResolvedValue({});
 const mockAddLabels              = vi.fn().mockResolvedValue({});
 const mockRemoveLabel            = vi.fn().mockResolvedValue({});
 const mockListPRsForCommit       = vi.fn().mockResolvedValue({ data: [] });
+const mockCompareCommits         = vi.fn().mockResolvedValue({ data: { merge_base_commit: { sha: 'merge-base-sha' } } });
 
 const mockOctokit = {
   checks: {
@@ -22,6 +23,7 @@ const mockOctokit = {
   },
   repos: {
     listPullRequestsAssociatedWithCommit: mockListPRsForCommit,
+    compareCommits:                       mockCompareCommits,
   },
 };
 
@@ -31,7 +33,7 @@ vi.mock('../auth.js', () => ({
 
 const {
   createCheckRun, startCheckRun, completeCheckRun,
-  skipCheckRun, findPullRequestBySha,
+  skipCheckRun, findPullRequestBySha, getMergeBaseSha,
   ensureLabelsExist, setLabels,
 } = await import('../github.js');
 
@@ -161,6 +163,26 @@ describe('skipCheckRun()', () => {
     expect(mockChecksCreate).toHaveBeenCalledWith(expect.objectContaining({
       output: expect.objectContaining({ summary: 'Deferred — waiting for Tests Done.' }),
     }));
+  });
+});
+
+describe('getMergeBaseSha()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('calls compareCommits with base and head', async () => {
+    await getMergeBaseSha({ ...BASE, base: 'base-sha', head: 'head-sha' });
+
+    expect(mockCompareCommits).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'org',
+      repo:  'repo',
+      base:  'base-sha',
+      head:  'head-sha',
+    }));
+  });
+
+  it('returns the merge_base_commit SHA from the API response', async () => {
+    const result = await getMergeBaseSha({ ...BASE, base: 'base-sha', head: 'head-sha' });
+    expect(result).toBe('merge-base-sha');
   });
 });
 
