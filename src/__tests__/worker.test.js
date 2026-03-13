@@ -43,6 +43,7 @@ vi.mock('../github.js', () => ({
   completeCheckRun: vi.fn().mockResolvedValue(undefined),
   ensureLabelsExist: vi.fn().mockResolvedValue(undefined),
   setLabels:         vi.fn().mockResolvedValue(undefined),
+  getMergeBaseSha:   vi.fn().mockResolvedValue('merge-base-sha'),
 }));
 
 vi.mock('../fetcher.js', () => ({
@@ -81,7 +82,7 @@ vi.mock('../notifiers/index.js', () => ({
 
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
-const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } = await import('../github.js');
+const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } = await import('../github.js');
 const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingsPerScan } = await import('../metrics.js');
 const { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
@@ -135,14 +136,25 @@ describe('processJob()', () => {
       expect(getInstallationToken).toHaveBeenCalledWith(1);
     });
 
-    it('creates a workspace and sets up the partial clone', async () => {
+    it('resolves the merge base before setting up the repo', async () => {
+      await processJob(baseJob);
+      expect(getMergeBaseSha).toHaveBeenCalledWith({
+        installationId: 1,
+        owner:          'org',
+        repo:           'repo',
+        base:           'def456',
+        head:           'abc123',
+      });
+    });
+
+    it('creates a workspace and sets up the partial clone using the merge base', async () => {
       await processJob(baseJob);
       expect(createWorkspace).toHaveBeenCalledWith('job-1');
       expect(setupRepo).toHaveBeenCalledWith(expect.objectContaining({
         token:         'fake-token',
         cloneUrl:      'https://github.com/org/repo.git',
         headSha:       'abc123',
-        baseSha:       'def456',
+        baseSha:       'merge-base-sha',
         workspacePath: '/tmp/layne-test-workspace',
       }));
     });
@@ -151,7 +163,7 @@ describe('processJob()', () => {
       await processJob(baseJob);
       expect(getChangedFiles).toHaveBeenCalledWith({
         workspacePath: '/tmp/layne-test-workspace',
-        baseSha:       'def456',
+        baseSha:       'merge-base-sha',
         headSha:       'abc123',
       });
       expect(checkoutFiles).toHaveBeenCalledWith(expect.objectContaining({

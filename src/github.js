@@ -113,6 +113,19 @@ export async function skipCheckRun({ installationId, owner, repo, headSha, summa
 }
 
 /**
+ * Returns the merge base SHA between a base and head commit.
+ * This matches GitHub's PR diff (three-dot / merge-base diff), ensuring Layne
+ * only scans files the PR itself changed rather than files that differ because
+ * the base branch advanced after the PR was opened.
+ */
+export async function getMergeBaseSha({ installationId, owner, repo, base, head }) {
+  debug('github', `resolving merge base for ${owner}/${repo}: ${base}...${head}`);
+  const octokit = await getInstallationOctokit(installationId);
+  const { data } = await octokit.repos.compareCommits({ owner, repo, base, head });
+  return data.merge_base_commit.sha;
+}
+
+/**
  * Returns the first open pull request associated with a commit SHA,
  * or null if none is found. Used as a fallback when the PR metadata
  * cache is cold (e.g. Layne was offline when the PR was opened).
