@@ -230,7 +230,7 @@ Open a pull request on one of the repos where Layne is installed. Within a few s
 
 ### Automated Deployment
 
-Here is the GitHub Actions workflow we use internally to deploy Layne to an EC2 instance on every push to `main`. Copy it into your own repository's `.github/workflows/deploy.yml` and configure the secrets below.
+Here is the GitHub Actions workflow we use internally to deploy Layne to an EC2 instance on every push to `develop`. Copy it into your own repository's `.github/workflows/deploy.yml` and configure the secrets below.
 
 The workflow:
 
@@ -244,7 +244,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
   workflow_dispatch:
 
 jobs:

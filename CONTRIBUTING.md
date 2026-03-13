@@ -8,13 +8,11 @@ Thanks for your interest in contributing. This document covers the branch model,
 
 | Branch | Purpose |
 |---|---|
-| `develop` | Default branch. All PRs target here. |
-| `main` | Releases only. Never commit directly. |
+| `develop` | Default branch. All PRs and releases flow through here. |
 
 **Release flow:**
-1. As PRs merge to `develop`, the changeset bot opens and maintains a **"chore: release vX.Y.Z"** PR targeting `main`
-2. Merging that PR to `main` creates a GitHub release automatically
-3. A **"chore: sync main → develop"** PR is then opened automatically — merge it to keep `develop` up to date
+1. As PRs merge to `develop`, the changeset bot opens and maintains a **"chore: release vX.Y.Z"** PR targeting `develop`
+2. Merging that PR to `develop` creates a GitHub release automatically
 
 ---
 
