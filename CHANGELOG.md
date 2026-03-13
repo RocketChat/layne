@@ -1,5 +1,17 @@
 # layne
 
+## 1.2.0
+
+### Minor Changes
+
+- [#6](https://github.com/RocketChat/layne/pull/6) [`a11a412`](https://github.com/RocketChat/layne/commit/a11a412371973a812e90a563152cf7ac6c0c7f43) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds support for workflow jobs alongside workflow runs
+
+### Patch Changes
+
+- [#8](https://github.com/RocketChat/layne/pull/8) [`62af89e`](https://github.com/RocketChat/layne/commit/62af89e72a98c597d8524e8d88bcf67c29954a16) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Fixes a bug in which Layne ends up scanning files that are unrelated to the PR
+
+- [#10](https://github.com/RocketChat/layne/pull/10) [`cafaf75`](https://github.com/RocketChat/layne/commit/cafaf7584beb145977aa5ebcce7672273098fdee) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Fixes an issue that wouldn't reschedule a Layne scan if there's an existing failed scan
+
 ## 1.1.0
 
 ### Minor Changes
