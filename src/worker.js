@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { Worker } from 'bullmq';
 import { redis, scanQueue } from './queue.js';
 import { getInstallationToken } from './auth.js';
-import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels } from './github.js';
+import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } from './github.js';
 import { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
 import { buildAnnotations } from './reporter.js';
@@ -144,10 +144,17 @@ async function runScan(job) {
     const token = await getInstallationToken(installationId);
     debug('worker', 'installation token acquired');
 
+    // Resolve the merge base so the diff matches GitHub's PR view (three-dot diff).
+    // pull_request.base.sha is the tip of the base branch, which may have advanced
+    // since the PR was opened — diffing directly against it would include files
+    // changed in the base branch that the PR never touched.
+    const mergeBaseSha = await getMergeBaseSha({ installationId, owner, repo, base: baseSha, head: headSha });
+    debug('worker', `merge base resolved: ${mergeBaseSha}`);
+
     workspacePath = await createWorkspace(job.id);
 
-    await setupRepo({ token, cloneUrl, headSha, baseSha, workspacePath });
-    const rawChanged   = await getChangedFiles({ workspacePath, baseSha, headSha });
+    await setupRepo({ token, cloneUrl, headSha, baseSha: mergeBaseSha, workspacePath });
+    const rawChanged   = await getChangedFiles({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedFiles = await checkoutFiles({ workspacePath, headSha, files: rawChanged });
     debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
