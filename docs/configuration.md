@@ -107,7 +107,9 @@ Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-w
 | `id` | string | — | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
 | `version` | string | `"latest"` | Skill version to use. Pin to a timestamp for reproducible behaviour |
 
-> **Beta — expect breaking changes.** API Skills are in active development. The beta headers (`skills-2025-10-02`, `code-execution-2025-08-25`) may be superseded by Anthropic; when that happens, Layne will need to be updated to use the new headers before skill mode works again. Skill IDs (`skill_01...`) are opaque, tied to your Anthropic account, and are not portable — if Anthropic changes the Skills API in a way that invalidates existing uploads, you will need to re-upload your skill and update the `id` in `repos.json`. Skills are not ZDR-eligible. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
+> **Beta — expect breaking changes.** API Skills are in active development. The beta headers (`skills-2025-10-02`, `code-execution-2025-08-25`) may be superseded by Anthropic; when that happens, Layne will need to be updated to use the new headers before skill mode works again. Skill IDs (`skill_01...`) are opaque, tied to your Anthropic account, and are not portable — if Anthropic changes the Skills API in a way that invalidates existing uploads, you will need to re-upload your skill and update the `id` in `config/layne.json`.
+>
+> **Skills are not ZDR-eligible.** ZDR (Zero Data Retention) is an Anthropic compliance feature that guarantees prompts and outputs are not retained after the API call. Skills require data retention to function, so they cannot be used with ZDR-enabled Anthropic organizations. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
 
 **Uploading a skill:** Skills are managed outside of Layne. To upload one:
 ```python
@@ -483,7 +485,7 @@ Sends a POST request to a Rocket.Chat incoming webhook URL.
 | `webhookUrl` | string | yes | Webhook URL, or an env var reference like `"$ROCKETCHAT_WEBHOOK_URL"` |
 | `template` | string | no | Custom message template (see below). Omit for the default format |
 
-**`webhookUrl` — keeping secrets out of `repos.json`:**
+**`webhookUrl` — keeping secrets out of `config/layne.json`:**
 
 If the value starts with `$`, Layne treats the rest as an environment variable name and reads it at runtime. This way your webhook URL never needs to be committed to the repository.
 
@@ -540,7 +542,7 @@ Sends a POST request to a Slack incoming webhook URL.
 
 Create a Slack app, enable Incoming Webhooks, and add a webhook for your channel. Copy the resulting `https://hooks.slack.com/services/...` URL.
 
-**`webhookUrl` — keeping secrets out of `repos.json`:**
+**`webhookUrl` — keeping secrets out of `config/layne.json`:**
 
 Same `$ENV_VAR` resolution as Rocket.Chat — if the value starts with `$`, Layne reads it from the environment at runtime.
 

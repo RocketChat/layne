@@ -24,22 +24,15 @@ All scanners produce findings in a common format:
 ```js
 {
   file:     'src/app.js',      // repo-root-relative path
+  severity: 'high',            // 'critical' | 'high' | 'medium' | 'low' | 'info'
   line:     42,                // line number
-  severity: 'high',            // 'critical' | 'high' | 'medium' | 'low'
   message:  'SQL injection',   // annotation body text
   ruleId:   'semgrep/rule-id', // stable rule identifier
   tool:     'semgrep',         // scanner name
 }
 ```
 
-## Severity → GitHub annotation level
-
-| Severity | GitHub level | Effect |
-|---|---|---|
-| `critical` | `failure` | Blocks merge |
-| `high` | `failure` | Blocks merge |
-| `medium` | `warning` | Visible warning |
-| `low` | `notice` | Informational |
+For how findings are converted to GitHub annotations and how severities affect PR status, see [Extending Layne — How Findings Become GitHub Annotations](extending.md#how-findings-become-github-annotations).
 
 ## Scan timeout
 

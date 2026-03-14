@@ -41,7 +41,7 @@ Used only when a repo has `claude.enabled: true`. The key is passed directly to 
 
 ### Notification webhook URLs (`webhookUrl`)
 
-Rocket.Chat webhook URLs can be stored as environment variable references (e.g. `"$ROCKETCHAT_WEBHOOK_URL"`) in `repos.json` rather than as plaintext values. Layne resolves them at runtime from `process.env`. This keeps secrets out of the repository.
+Rocket.Chat webhook URLs can be stored as environment variable references (e.g. `"$ROCKETCHAT_WEBHOOK_URL"`) in `config/layne.json` rather than as plaintext values. Layne resolves them at runtime from `process.env`. This keeps secrets out of the repository.
 
 ---
 

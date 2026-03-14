@@ -93,7 +93,7 @@ After installation, look at the URL of the page you land on:
 https://github.com/settings/installations/NNNNNNNN
 ```
 
-Note that number — it is your **installation ID**. You will need it to update the fixture files later.
+**Installation ID:** The number in the URL (`NNNNNNNN`) is your installation ID. You will need it to update the fixture files later.
 
 ---
 
