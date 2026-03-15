@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   }),
   labels:  Object.freeze({}),
   trigger: Object.freeze({ on: 'pull_request' }),
+  comment: Object.freeze({ enabled: false, template: null }),
 });
 
 // Cached after first read — layne.json is loaded once per process.
@@ -64,7 +65,9 @@ export async function loadScanConfig({ owner, repo }) {
   const globalLabels = reposConfig['$global']?.labels ?? {};
   const repoLabels   = repoOverrides.labels ?? {};
 
-  const globalTrigger = reposConfig['$global']?.trigger ?? {};
+  const globalTrigger  = reposConfig['$global']?.trigger ?? {};
+  const globalComment  = reposConfig['$global']?.comment ?? {};
+  const repoComment    = repoOverrides.comment ?? {};
 
   return {
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
@@ -73,5 +76,6 @@ export async function loadScanConfig({ owner, repo }) {
     notifications: { ...globalNotifications, ...repoNotifications },
     labels:        { ...globalLabels, ...repoLabels },
     trigger:       { ...DEFAULT_CONFIG.trigger, ...globalTrigger, ...(repoOverrides.trigger ?? {}) },
+    comment:       { ...DEFAULT_CONFIG.comment, ...globalComment, ...repoComment },
   };
 }

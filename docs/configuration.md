@@ -679,3 +679,102 @@ Same `{{variable}}` placeholders as Rocket.Chat (see table above). You can use S
   }
 }
 ```
+
+---
+
+## PR Comments
+
+Layne can post a comment directly on the PR when a scan finds security issues. The comment appears inline in the PR thread and is updated in-place on each re-push — Layne never creates duplicate comments.
+
+**On success after failure:** If a subsequent push clears all findings, Layne updates the existing comment to show "scan passed". If the scan passes and there was no prior failure comment, nothing is posted.
+
+### Configuration
+
+Add a `comment` key to `$global` or to any repo entry in `config/layne.json`:
+
+```json
+{
+  "$global": {
+    "comment": {
+      "enabled": false,
+      "template": null
+    }
+  },
+  "owner/repo": {
+    "comment": { "enabled": true }
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Must be `true` to post PR comments for this repo |
+| `template` | string \| null | `null` | Custom Markdown template for the failure comment. Omit (or set to `null`) for the default format |
+
+### Global vs per-repo
+
+Same merge rules as notifications: a repo with no `comment` block inherits the global config entirely; per-repo keys win over global ones for any key that is set.
+
+```json
+{
+  "$global": {
+    "comment": { "enabled": true }
+  },
+  "acme/low-signal-repo": {
+    "comment": { "enabled": false }
+  }
+}
+```
+
+### Default comment format
+
+When a scan finds issues, Layne posts:
+
+```markdown
+<!-- layne-security-scan -->
+## 🔴 Layne — 3 finding(s)
+
+Found 3 issue(s): 1 high, 2 medium.
+```
+
+On a subsequent clean push, Layne updates that comment to:
+
+```markdown
+<!-- layne-security-scan -->
+✅ **Layne — scan passed**
+
+No security issues found on latest push.
+```
+
+### Custom template
+
+Set `template` to a Markdown string with `{{variable}}` placeholders:
+
+| Placeholder | Value |
+|---|---|
+| `{{prUrl}}` | Full PR URL, e.g. `https://github.com/acme/payments/pull/42` |
+| `{{repo}}` | Full repo slug, e.g. `acme/payments` |
+| `{{owner}}` | Owner/org name, e.g. `acme` |
+| `{{repoName}}` | Repo name only, e.g. `payments` |
+| `{{prNumber}}` | Pull request number |
+| `{{total}}` | Total finding count |
+| `{{critical}}` | Count of critical findings |
+| `{{high}}` | Count of high findings |
+| `{{medium}}` | Count of medium findings |
+| `{{low}}` | Count of low findings |
+| `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
+
+> **Important:** The `<!-- layne-security-scan -->` HTML comment must be present in any custom template. Layne uses it as a marker to find and update the existing comment on re-pushes. Without it, Layne will create a new comment on every scan.
+
+Example:
+
+```json
+{
+  "acme/payments": {
+    "comment": {
+      "enabled": true,
+      "template": "<!-- layne-security-scan -->\n## Security findings for {{repo}} PR #{{prNumber}}\n\n{{summary}}\n\nSee the [Check Run]({{prUrl}}) for details."
+    }
+  }
+}
+```

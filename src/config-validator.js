@@ -8,8 +8,8 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger']);
-const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger']);
+const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment']);
+const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger', 'comment']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS      = /^claude-/;
@@ -53,6 +53,7 @@ function validateGlobal(block, ctx, errors) {
   if (block.notifications !== undefined) validateNotifications(block.notifications, `${ctx}.notifications`, errors);
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
+  if (block.comment       !== undefined) validateComment(block.comment, `${ctx}.comment`, errors);
 }
 
 function validateRepo(block, ctx, errors) {
@@ -67,6 +68,7 @@ function validateRepo(block, ctx, errors) {
   if (block.notifications !== undefined) validateNotifications(block.notifications, `${ctx}.notifications`, errors);
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
+  if (block.comment       !== undefined) validateComment(block.comment, `${ctx}.comment`, errors);
 }
 
 function validateScanner(block, ctx, errors) {
@@ -169,6 +171,14 @@ function validateNotifications(block, ctx, errors) {
     if (cfg.template !== undefined && typeof cfg.template !== 'string')
       errors.push(`${pctx}.template: must be a string`);
   }
+}
+
+function validateComment(block, ctx, errors) {
+  if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
+  if (block.enabled !== undefined && typeof block.enabled !== 'boolean')
+    errors.push(`${ctx}.enabled: must be a boolean`);
+  if (block.template !== undefined && block.template !== null && typeof block.template !== 'string')
+    errors.push(`${ctx}.template: must be a string or null`);
 }
 
 function validateLabels(block, ctx, errors) {
