@@ -41,7 +41,7 @@ function toFinding(result, workspacePath) {
   return {
     file,                            // repo-root-relative path  (required)
     line:     result.line ?? 1,      // line number              (required)
-    severity: 'high',                // 'high' | 'medium' | 'low'
+    severity: 'high',                // 'critical' | 'high' | 'medium' | 'low' | 'info'
     message:  result.message,        // annotation body text
     ruleId:   `mytool/${result.id}`, // stable identifier for the rule
     tool:     'mytool',              // used in the check run summary
@@ -67,7 +67,7 @@ function exec(cmd, args, options = {}) {
 |---|---|---|
 | `file` | `string` | Path relative to the repo root (strip `workspacePath + '/'`) |
 | `line` | `number` | Line number for the annotation (use `1` if unavailable) |
-| `severity` | `'critical' \| 'high' \| 'medium' \| 'low'` | Controls annotation styling in the GitHub UI |
+| `severity` | `'critical' \| 'high' \| 'medium' \| 'low' \| 'info'` | Controls annotation styling and whether the check fails |
 | `message` | `string` | Body text of the inline annotation |
 | `ruleId` | `string` | Stable identifier used to deduplicate or suppress findings |
 | `tool` | `string` | Name shown in the check run summary |
@@ -110,56 +110,77 @@ Pin the version so builds are reproducible. Pass `--build-arg MYTOOL_VERSION=x.y
 
 ---
 
-## Adding a New Notification Provider
+## How Findings Become GitHub Annotations
 
-Notifications are **modular**: each provider is an independent file in `src/notifiers/`. Adding a new provider (e.g. PagerDuty) requires three steps and no changes to core scan logic.
+Adapters return findings — they don't call the reporter directly. Understanding this flow helps when debugging or adding new scanners:
 
-### 1. Write the notifier
-
-Create `src/notifiers/pagerduty.js` exporting a `notify` function. The function must **never throw** — catch all errors internally so a notification failure never affects the scan result.
-
-```js
-// src/notifiers/pagerduty.js
-
-export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
-  const url = toolConfig.webhookUrl;
-  if (!url) return;
-
-  try {
-    const res = await fetch(url, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        summary: `${findings.length} finding(s) in ${owner}/${repo} PR #${prNumber}`,
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[pagerduty] notification failed: HTTP ${res.status}`);
-    }
-  } catch (err) {
-    console.error(`[pagerduty] notification failed: ${err.message}`);
-  }
-}
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Scanner A  │     │  Scanner B  │     │  Scanner C  │     │    ...      │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │                   │
+       │ findings[]        │ findings[]        │ findings[]        │
+       └───────────────────┴───────────────────┴───────────────────┘
+                                   │
+                                   ▼
+                            ┌─────────────┐
+                            │  dispatcher │  (src/dispatcher.js)
+                            └──────┬──────┘
+                                   │
+                                   │ merged findings[]
+                                   ▼
+                            ┌─────────────┐
+                            │   reporter  │  (src/reporter.js)
+                            └──────┬──────┘
+                                   │
+                                   │ { annotations, conclusion, summary }
+                                   ▼
+                            ┌─────────────┐
+                            │  GitHub API │  (Check Runs)
+                            └─────────────┘
 ```
 
-### 2. Register the notifier in the orchestrator
+**What the dispatcher does:**
 
-Open `src/notifiers/index.js` and add two lines:
+1. Runs all scanners in parallel via `Promise.all`
+2. Merges all findings into a single array
+3. Returns the merged array to the worker
 
-```js
-import { notify as notifyRocketchat } from './rocketchat.js';
-import { notify as notifySlack }      from './slack.js';
-import { notify as notifyPagerduty }  from './pagerduty.js';    // add this
+**What the reporter does:**
 
-const NOTIFIERS = {
-  rocketchat: notifyRocketchat,
-  slack:      notifySlack,
-  pagerduty:  notifyPagerduty,                                  // add this
-};
+The reporter (`src/reporter.js`) receives the merged findings array and produces GitHub Check Run output:
+
+### Severity mapping
+
+GitHub Check Runs support three annotation levels: `failure`, `warning`, and `notice`.
+
+| Finding severity | GitHub level | Merge blocked? |
+|---|---|---|
+| `critical` | `failure` | Yes — branch protection will block merge |
+| `high` | `failure` | Yes — branch protection will block merge |
+| `medium` | `warning` | No — visible in PR files tab, yellow marker |
+| `low` | `notice` | No — informational, minimal visibility |
+| `info` | `notice` | No — informational |
+
+### Check Run conclusion
+
+The overall Check Run conclusion determines whether GitHub shows a green check or red ✗:
+
+| Condition | Conclusion |
+|---|---|
+| One or more `critical` / `high` findings | `failure` |
+| No blocking findings | `success` |
+
+When branch protection requires the Layne check, `failure` blocks the PR from merging.
+
+### Annotation summary
+
+The reporter generates a human-readable summary line shown in the Check Run header:
+
+```
+Found 3 issue(s): 0 critical, 1 high, 1 medium, 1 low.
 ```
 
-The notifier key (`pagerduty`) is what operators use in `config/layne.json` under `notifications`.
+### Annotation chunking
 
-### 3. Write tests
-
-Create `src/__tests__/notifiers/pagerduty.test.js` following the same pattern as the Rocket.Chat or Slack test files. Use `vi.stubGlobal('fetch', vi.fn())` to mock HTTP calls.
+GitHub's API limits Check Runs to 50 annotations per request. The reporter batches automatically — adapters don't need to worry about this limit. The worker posts chunked requests to GitHub, with the final request setting `status: completed`.

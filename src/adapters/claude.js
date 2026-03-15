@@ -61,7 +61,7 @@ const REPORT_FINDINGS_TOOL = {
 export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.claude }) {
   if (!changedFiles || changedFiles.length === 0) return [];
   if (!toolConfig.enabled) {
-    console.log('[claude] skipping — not enabled for this repo (set "claude": {"enabled": true} in config/repos.json)');
+    console.log('[claude] skipping — not enabled for this repo (set "claude": {"enabled": true} in config/layne.json)');
     return [];
   }
 

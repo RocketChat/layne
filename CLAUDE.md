@@ -85,7 +85,7 @@ Two separate Node.js processes:
 **Scanners (`src/adapters/`):**
 - `semgrep.js` — runs `semgrep scan --config auto --json`; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low
 - `trufflehog.js` — runs `trufflehog filesystem --json --no-update`; exit code 183 = secrets found (not an error); batched at 200 files to stay under ARG_MAX; all findings are severity `high`
-- `claude.js` — calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `repos.json`):
+- `claude.js` — calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `config/layne.json`):
   - **Prompt mode** (default): single `messages.create` call with a system prompt; use `claude.prompt` to override
   - **Skill mode**: uses the Anthropic [API Skills beta](https://platform.claude.com/docs/en/build-with-claude/skills-guide) — adds a `code_execution` tool + an uploaded skill to each batch call, enabling runtime decoding, registry lookups, and richer static analysis; set `claude.skill: { id, version }` to enable; handles `pause_turn` continuations automatically (up to 10 turns per batch)
 
