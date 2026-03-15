@@ -228,6 +228,63 @@ Arguments are passed directly via `execFile` — **not** through a shell — so 
 
 ---
 
+## Finding Suppression
+
+### Why `// nosemgrep` is disabled
+
+Layne passes `--disable-nosemgrep` to Semgrep on every scan (set in `$global.semgrep.extraArgs`). This prevents contributors from silencing findings inline without review — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate entirely.
+
+### The replacement: `// SECURITY: <reason>`
+
+Place a comment with a non-empty justification on the **same line** as the flagged code, or on the **line immediately above** it:
+
+```js
+// SECURITY: This eval call only runs trusted internal templates, never user input.
+eval(internalTemplate);
+
+const query = `SELECT * FROM users WHERE id = ${id}`; // SECURITY: id is always cast to integer by the ORM layer.
+```
+
+```yaml
+# SECURITY: This token is intentionally committed — it is a public read-only CI token with no write access.
+GITHUB_TOKEN: ghp_...
+```
+
+### The tamper-proof guarantee
+
+The suppressor reads each file at the **merge-base SHA** of the PR (the three-dot diff base) via `git show`. A `// SECURITY:` comment added in the **current PR** is invisible to the suppressor — it is not in the base. The comment must have been reviewed, approved, and merged in a **previous PR** before it takes effect.
+
+This means a contributor cannot self-approve a finding by adding the comment in their own PR.
+
+### Syntax rules
+
+- Comment style: `//` (JS/TS/Go/Java/C…) or `#` (YAML/shell/Python/Ruby…)
+- The colon must be followed by at least one non-whitespace character: `// SECURITY: reason` ✓, `// SECURITY:` ✗
+- Placement: same line as the finding **or** the line immediately above
+
+### Workflow
+
+1. Review the finding and decide it is a genuine false positive.
+2. Add a `// SECURITY: <justification>` comment explaining why.
+3. Submit a **separate PR** for the suppression comment, have it reviewed and merged.
+4. From that point forward, any PR that triggers the same finding on that line will have it suppressed automatically.
+
+### Keeping `--disable-nosemgrep` in per-repo `extraArgs`
+
+`--disable-nosemgrep` is set in `$global.semgrep.extraArgs` and must be carried into any per-repo `extraArgs` override. If you set per-repo `extraArgs` without including `--disable-nosemgrep`, the flag will be absent for that repo — `extraArgs` fully replaces the default, it does not extend it (see [Replacement, not extension](#per-repo-configuration)).
+
+```json
+{
+  "owner/repo": {
+    "semgrep": {
+      "extraArgs": ["--config", "p/owasp-top-ten", "--severity", "ERROR", "--disable-nosemgrep"]
+    }
+  }
+}
+```
+
+---
+
 ## Labels
 
 Layne can automatically add and remove GitHub labels on a PR based on the scan result. This gives at-a-glance triage context directly in the PR list view without opening each PR.

@@ -122,6 +122,16 @@ The worker container has no outbound network restrictions by default. Semgrep's 
 
 ---
 
+## Finding Suppression
+
+Semgrep's built-in `// nosemgrep` mechanism is disabled via `--disable-nosemgrep` on every scan. This prevents contributors from self-approving a finding inline — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate.
+
+The replacement is the `// SECURITY: <reason>` comment. It is tamper-proof: the suppressor (`src/suppressor.js`) reads each file at the **merge-base SHA** of the PR via `git show` and checks whether the comment existed there. A `// SECURITY:` comment introduced in the current PR is not present at the merge base, so it has no effect. The comment must have been merged in a previous PR — reviewed and approved — before it suppresses anything.
+
+The suppressor runs in the worker after `dispatch()` returns findings and before `buildAnnotations()` is called. A suppressed finding is removed from the list entirely and never appears in the GitHub Check Run.
+
+---
+
 ## Reporting a Vulnerability in Layne
 
 See [SECURITY.md](../SECURITY.md).

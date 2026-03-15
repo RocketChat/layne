@@ -80,12 +80,17 @@ vi.mock('../notifiers/index.js', () => ({
   notify: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../suppressor.js', () => ({
+  suppressFindings: vi.fn(async (findings) => findings),
+}));
+
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } = await import('../github.js');
 const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingsPerScan } = await import('../metrics.js');
 const { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
+const { suppressFindings }               = await import('../suppressor.js');
 const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
 const { redis }                           = await import('../queue.js');
@@ -184,6 +189,18 @@ describe('processJob()', () => {
         owner:         'org',
         repo:          'repo',
       }));
+    });
+
+    it('calls suppressFindings with dispatch output and mergeBaseSha', async () => {
+      const rawFindings = [{ file: 'a.js', line: 1, severity: 'high', message: 'x', ruleId: 'r/1', tool: 'semgrep' }];
+      dispatch.mockResolvedValueOnce(rawFindings);
+
+      await processJob(baseJob);
+
+      expect(suppressFindings).toHaveBeenCalledWith(rawFindings, {
+        workspacePath: '/tmp/layne-test-workspace',
+        baseSha:       'merge-base-sha',
+      });
     });
 
     it('completes the check run with the reporter output', async () => {

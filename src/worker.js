@@ -7,6 +7,7 @@ import { getInstallationToken } from './auth.js';
 import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } from './github.js';
 import { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
+import { suppressFindings } from './suppressor.js';
 import { buildAnnotations } from './reporter.js';
 import { loadScanConfig } from './config.js';
 import { notify } from './notifiers/index.js';
@@ -160,7 +161,8 @@ async function runScan(job) {
 
     const scanConfig = await loadScanConfig({ owner, repo });
 
-    const findings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, labels, owner, repo });
+    const rawFindings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, labels, owner, repo });
+    const findings    = await suppressFindings(rawFindings, { workspacePath, baseSha: mergeBaseSha });
     console.log(`[worker] ${findings.length} total finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
     for (const f of findings) {
       console.log(`[worker]   ${f.tool} ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
