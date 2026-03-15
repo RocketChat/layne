@@ -73,11 +73,16 @@ vi.mock('../config.js', () => ({
     claude:        { enabled: false, model: 'claude-haiku-4-5-20251001' },
     notifications: {},
     labels:        {},
+    comment:       { enabled: false, template: null },
   }),
 }));
 
 vi.mock('../notifiers/index.js', () => ({
   notify: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../commenter.js', () => ({
+  postComment: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../suppressor.js', () => ({
@@ -93,6 +98,7 @@ const { dispatch }                        = await import('../dispatcher.js');
 const { suppressFindings }               = await import('../suppressor.js');
 const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
+const { postComment }                     = await import('../commenter.js');
 const { redis }                           = await import('../queue.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
@@ -498,6 +504,7 @@ describe('processJob()', () => {
         semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
         claude: { enabled: false }, notifications: {},
         labels: { onFailure: ['needs-security-review'], removeOnFailure: ['security-ok'] },
+        comment: { enabled: false, template: null },
       });
       // reporter returns failure
       const { buildAnnotations } = await import('../reporter.js');
@@ -522,6 +529,7 @@ describe('processJob()', () => {
         semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
         claude: { enabled: false }, notifications: {},
         labels: { onSuccess: ['security-ok'], removeOnSuccess: ['needs-security-review'] },
+        comment: { enabled: false, template: null },
       });
 
       await processJob(baseJob);
@@ -537,6 +545,7 @@ describe('processJob()', () => {
         semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
         claude: { enabled: false }, notifications: {},
         labels: { onFailure: ['needs-security-review'] }, // only onFailure; conclusion is success
+        comment: { enabled: false, template: null },
       });
 
       await processJob(baseJob); // conclusion defaults to success
@@ -548,8 +557,61 @@ describe('processJob()', () => {
         semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
         claude: { enabled: false }, notifications: {},
         labels: { onSuccess: ['security-ok'], removeOnSuccess: ['needs-security-review'] },
+        comment: { enabled: false, template: null },
       });
       setLabels.mockRejectedValueOnce(new Error('GitHub API down'));
+
+      await expect(processJob(baseJob)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('PR comment', () => {
+    const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+
+    it('does not call postComment when comment.enabled is false (default)', async () => {
+      await processJob(baseJob);
+      expect(postComment).not.toHaveBeenCalled();
+    });
+
+    it('calls postComment when comment.enabled is true', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {},
+        comment: { enabled: true, template: null },
+      });
+
+      await processJob(baseJob);
+      expect(postComment).toHaveBeenCalledOnce();
+    });
+
+    it('passes findings, owner, repo, prNumber, installationId, conclusion, and commentConfig to postComment', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {},
+        comment: { enabled: true, template: null },
+      });
+      dispatch.mockResolvedValueOnce([finding]);
+
+      await processJob(baseJob);
+
+      expect(postComment).toHaveBeenCalledWith({
+        findings:      [finding],
+        owner:         'org',
+        repo:          'repo',
+        prNumber:      7,
+        installationId: 1,
+        conclusion:    'success',
+        commentConfig: { enabled: true, template: null },
+      });
+    });
+
+    it('does not throw and still completes when postComment rejects', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {},
+        comment: { enabled: true, template: null },
+      });
+      postComment.mockRejectedValueOnce(new Error('API down'));
 
       await expect(processJob(baseJob)).resolves.toBeUndefined();
     });

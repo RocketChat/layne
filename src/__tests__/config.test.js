@@ -263,4 +263,40 @@ describe('loadScanConfig()', () => {
     const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
     expect(config.trigger.conclusions).toEqual(['success', 'failure']);
   });
+
+  // --- comment ---
+
+  it('returns comment.enabled=false by default', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.comment).toEqual({ enabled: false, template: null });
+  });
+
+  it('inherits $global comment when the repo has no comment block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { comment: { enabled: true } },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.comment.enabled).toBe(true);
+  });
+
+  it('repo-level comment overrides $global comment', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { comment: { enabled: true, template: 'global tpl' } },
+      'acme/payments': { comment: { enabled: false } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.comment.enabled).toBe(false);
+    expect(config.comment.template).toBe('global tpl'); // inherited from global
+  });
+
+  it('repo-level template overrides $global template', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { comment: { enabled: true, template: 'global tpl' } },
+      'acme/payments': { comment: { template: 'repo tpl' } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.comment.template).toBe('repo tpl');
+  });
 });

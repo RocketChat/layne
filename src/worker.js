@@ -11,6 +11,7 @@ import { suppressFindings } from './suppressor.js';
 import { buildAnnotations } from './reporter.js';
 import { loadScanConfig } from './config.js';
 import { notify } from './notifiers/index.js';
+import { postComment } from './commenter.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 import {
@@ -175,6 +176,12 @@ async function runScan(job) {
     await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations: result.annotations, summary: result.summary });
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
+
+    const { comment: commentConfig } = scanConfig;
+    if (commentConfig.enabled) {
+      await postComment({ findings, owner, repo, prNumber, installationId, conclusion, commentConfig })
+        .catch(err => console.error('[worker] PR comment error:', err.message));
+    }
 
     scanTotal.inc({ conclusion, owner, repo });
     findingsPerScan.observe({ conclusion }, findings.length);
