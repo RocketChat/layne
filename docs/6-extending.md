@@ -1,10 +1,27 @@
 # Extending Layne
 
----
+
+## Table of Contents
+
+- [Adding a New Scanner](#adding-a-new-scanner)
+  - [1. Write the adapter](#1-write-the-adapter)
+  - [2. Register the adapter in the dispatcher](#2-register-the-adapter-in-the-dispatcher)
+  - [3. Install the tool in the Dockerfile](#3-install-the-tool-in-the-dockerfile)
+- [How Findings Become GitHub Annotations](#how-findings-become-github-annotations)
+  - [Severity mapping](#severity-mapping)
+  - [Check Run conclusion](#check-run-conclusion)
+  - [Annotation summary](#annotation-summary)
+  - [Annotation chunking](#annotation-chunking)
+- [Adding a New Notifier](#adding-a-new-notifier)
+  - [1. Write the notifier](#1-write-the-notifier)
+  - [2. Register the notifier](#2-register-the-notifier)
+  - [3. Add the notifier key to your config](#3-add-the-notifier-key-to-your-config)
+  - [4. Add the environment variable](#4-add-the-environment-variable)
+
 
 ## Adding a New Scanner
 
-Each security tool is an **adapter** — a single file in `src/adapters/` that runs the tool and converts its output to Layne's common finding format. Adding a new tool takes three steps.
+Scanners live in `src/adapters/` as individual modules. Each adapter runs a tool and converts its output to Layne's finding format. Adding a new one takes three steps.
 
 ### 1. Write the adapter
 
@@ -81,7 +98,7 @@ import { runTrufflehog } from './adapters/trufflehog.js';
 import { runSemgrep }    from './adapters/semgrep.js';
 import { runMytool }     from './adapters/mytool.js';   // add this
 
-export async function dispatch({ workspacePath, changedFiles, baseSha, baseRef, labels, owner, repo }) {
+export async function dispatch({ workspacePath, changedFiles, owner, repo }) {
   const [trufflehogFindings, semgrepFindings, mytoolFindings] = await Promise.all([
     runTrufflehog({ workspacePath, changedFiles }),
     runSemgrep({ workspacePath, changedFiles }),
@@ -92,7 +109,7 @@ export async function dispatch({ workspacePath, changedFiles, baseSha, baseRef, 
 }
 ```
 
-The `dispatch` function also receives `baseSha`, `baseRef`, `labels`, `owner`, and `repo` — pass any of these to your adapter if the tool needs them (for example, to use a custom ruleset based on repository labels).
+The `dispatch` function also receives `owner` and `repo` — pass them to your adapter if the tool needs them (for example, to load per-repo config).
 
 ### 3. Install the tool in the Dockerfile
 
@@ -108,7 +125,6 @@ RUN curl -fsSL https://github.com/example/mytool/releases/download/v${MYTOOL_VER
 
 Pin the version so builds are reproducible. Pass `--build-arg MYTOOL_VERSION=x.y.z` to `docker compose build` to upgrade.
 
----
 
 ## How Findings Become GitHub Annotations
 
@@ -184,3 +200,109 @@ Found 3 issue(s): 0 critical, 1 high, 1 medium, 1 low.
 ### Annotation chunking
 
 GitHub's API limits Check Runs to 50 annotations per request. The reporter batches automatically — adapters don't need to worry about this limit. The worker posts chunked requests to GitHub, with the final request setting `status: completed`.
+
+
+## Adding a New Notifier
+
+Notifiers live in `src/notifiers/` as individual modules. Each notifier sends findings to a chat platform or webhook. Adding a new one takes four steps.
+
+### 1. Write the notifier
+
+Create `src/notifiers/yourservice.js`. Export one async function named `notify` that matches the notifier contract. It must never throw — catch all errors internally so a notification failure never affects the scan result or Check Run.
+
+```js
+// src/notifiers/yourservice.js
+import { buildContext, renderTemplate } from './template.js';
+
+const DEFAULT_TEMPLATE = '🦴 {{total}} finding(s) in {{prUrl}}';
+
+function resolveUrl(webhookUrl) {
+  if (!webhookUrl) return null;
+  if (webhookUrl.startsWith('$')) {
+    const varName = webhookUrl.slice(1);
+    const resolved = process.env[varName];
+    if (!resolved) {
+      console.warn(`[yourservice] webhookUrl env var $${varName} is not set — skipping notification`);
+      return null;
+    }
+    return resolved;
+  }
+  return webhookUrl;
+}
+
+export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
+  const url = resolveUrl(toolConfig.webhookUrl);
+  if (!url) return;
+
+  const ctx  = buildContext(findings, owner, repo, prNumber);
+  const text = renderTemplate(toolConfig.template ?? DEFAULT_TEMPLATE, ctx);
+
+  try {
+    const res = await fetch(url, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      console.error(`[yourservice] notification failed: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error(`[yourservice] notification failed: ${err.message}`);
+  }
+}
+```
+
+**Notifier contract:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `findings` | `Array` | All findings from all scanners for this scan |
+| `owner` | `string` | GitHub org or user name |
+| `repo` | `string` | Repository name |
+| `prNumber` | `number` | Pull request number |
+| `toolConfig` | `object` | The resolved config for this notifier from `config/layne.json` |
+
+Use `buildContext(findings, owner, repo, prNumber)` to build the template context and `renderTemplate(template, ctx)` to render `{{variable}}` placeholders. See [Template variables](2-configuration.md#template-variables) for the full list.
+
+The `$ENV_VAR` resolution pattern keeps secrets out of `config/layne.json`. Any `webhookUrl` value starting with `$` is resolved from `process.env` at runtime. If the variable is not set, skip the notification and log a warning.
+
+### 2. Register the notifier
+
+Open `src/notifiers/index.js` and add two lines:
+
+```js
+import { notify as notifyYourservice } from './yourservice.js';  // add this
+
+const NOTIFIERS = {
+  rocketchat: notifyRocketchat,
+  slack:      notifySlack,
+  yourservice: notifyYourservice,  // add this
+};
+```
+
+### 3. Add the notifier key to your config
+
+Open `config/layne.json` and add the notifier under `$global` or per-repo:
+
+```json
+{
+  "$global": {
+    "notifications": {
+      "yourservice": {
+        "enabled":    true,
+        "webhookUrl": "$YOURSERVICE_WEBHOOK_URL"
+      }
+    }
+  }
+}
+```
+
+Add `YOURSERVICE_WEBHOOK_URL` to your `.env` (and to your secrets store for production).
+
+### 4. Add the environment variable
+
+Add an entry for the webhook URL to your `.env.example` so other developers know it exists:
+
+```bash
+# YOURSERVICE_WEBHOOK_URL=https://yourservice.example.com/hooks/...
+```

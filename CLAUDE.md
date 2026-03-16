@@ -115,7 +115,7 @@ Two separate Node.js processes:
 
 ## Per-repo configuration (`config/layne.json`)
 
-See [docs/configuration.md](docs/configuration.md) for the full schema and examples.
+See [docs/2-configuration.md](docs/2-configuration.md) for the full schema and examples.
 
 Key points for code navigation:
 - Read once per process startup — **restart both server and worker to pick up changes**
