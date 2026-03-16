@@ -1,6 +1,6 @@
 # Contributing to Layne
 
-Thanks for your interest in contributing. This document covers the branch model, PR workflow, and release process. For setting up a local development environment, see [docs/local-development.md](docs/local-development.md).
+Thanks for your interest in contributing. This document covers the branch model, PR workflow, and release process. For setting up a local development environment, see [docs/3-local-development.md](docs/3-local-development.md).
 
 ---
 
@@ -98,8 +98,8 @@ All four must pass before a PR can be merged.
 
 ## Extending Layne
 
-- **Adding a new scanner:** see [docs/extending.md — Adding a New Scanner](docs/extending.md#adding-a-new-scanner)
-- **Adding a notification provider:** see [docs/extending.md — Adding a New Notification Provider](docs/extending.md#adding-a-new-notification-provider)
+- **Adding a new scanner:** see [docs/6-extending.md — Adding a New Scanner](docs/6-extending.md#adding-a-new-scanner)
+- **Adding a notification provider:** see [docs/6-extending.md — Adding a New Notifier](docs/6-extending.md#adding-a-new-notifier)
 
 ---
 

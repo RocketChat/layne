@@ -1,8 +1,14 @@
 # Metrics
 
-Layne can expose Prometheus metrics for operational and security visibility. Metrics are **disabled by default** and opt-in via environment variable — no Prometheus or Grafana infrastructure is required for a basic deployment.
+Layne can expose Prometheus metrics for operational and security visibility. Metrics are disabled by default and opt-in via environment variable. No Prometheus or Grafana infrastructure is required for a basic deployment.
 
----
+
+## Table of Contents
+
+- [Enabling metrics](#enabling-metrics)
+- [Available metrics](#available-metrics)
+- [Deploying with Prometheus and Grafana](#deploying-with-prometheus-and-grafana)
+
 
 ## Enabling metrics
 
@@ -13,7 +19,6 @@ Set `METRICS_ENABLED=true` in your environment (or `.env` file). The worker will
 | `METRICS_ENABLED` | `false` | Set to `true` to enable Prometheus metrics |
 | `METRICS_PORT` | `9091` | Port for the worker metrics HTTP server |
 
----
 
 ## Available metrics
 
@@ -23,11 +28,11 @@ Set `METRICS_ENABLED=true` in your environment (or `.env` file). The worker will
 |--------|------|--------|-------------|
 | `layne_scans_total` | Counter | `conclusion`, `owner`, `repo` | Completed scans |
 | `layne_scan_duration_seconds` | Histogram | `conclusion` | End-to-end scan duration |
-| `layne_scan_timeouts_total` | Counter | — | Scans killed by the 10-minute timeout |
-| `layne_scan_retries_total` | Counter | — | Jobs that were retried |
-| `layne_queue_waiting` | Gauge | — | Jobs waiting in the BullMQ queue |
-| `layne_queue_active` | Gauge | — | Jobs currently processing |
-| `layne_queue_failed` | Gauge | — | Jobs in the failed state |
+| `layne_scan_timeouts_total` | Counter | (none) | Scans killed by the 10-minute timeout |
+| `layne_scan_retries_total` | Counter | (none) | Jobs that were retried |
+| `layne_queue_waiting` | Gauge | (none) | Jobs waiting in the BullMQ queue |
+| `layne_queue_active` | Gauge | (none) | Jobs currently processing |
+| `layne_queue_failed` | Gauge | (none) | Jobs in the failed state |
 | `layne_webhooks_total` | Counter | `action`, `deduplicated` | Webhook events received |
 
 **Security / product**
@@ -39,9 +44,8 @@ Set `METRICS_ENABLED=true` in your environment (or `.env` file). The worker will
 
 Node.js process metrics (heap, GC, event loop lag) are also collected automatically via `prom-client`'s `collectDefaultMetrics`.
 
-> **On cardinality:** `owner` and `repo` labels create one time series per repository. For a self-hosted app scanning a known, bounded set of repos this is fine and genuinely useful.
+The `owner` and `repo` labels create one time series per repository. For a self-hosted app scanning a known, bounded set of repos, this is fine and genuinely useful.
 
----
 
 ## Deploying with Prometheus and Grafana
 

@@ -1,21 +1,30 @@
 # Reference
 
+## Table of Contents
+
+- [Environment Variables](#environment-variables)
+- [Finding Shape](#finding-shape)
+- [Scan timeout](#scan-timeout)
+- [Webhook deduplication](#webhook-deduplication)
+- [Queue](#queue)
+
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_APP_ID` | Yes | — | Numeric GitHub App ID |
-| `GITHUB_APP_PRIVATE_KEY` | Yes | — | RSA private key (single line, `\n`-escaped) |
-| `GITHUB_WEBHOOK_SECRET` | Yes | — | HMAC secret for webhook signature verification |
-| `REDIS_URL` | Yes | `redis://localhost:6379` | Redis connection string (set automatically in Docker Compose) |
-| `DOMAIN` | Yes | — | Domain name for TLS and the Rocket.Chat logo URL (e.g. `layne.example.com`) |
-| `LETSENCRYPT_EMAIL` | Yes | — | Email for Let's Encrypt expiry notifications |
+| `GITHUB_APP_ID` | Yes | (none) | Numeric GitHub App ID |
+| `GITHUB_APP_PRIVATE_KEY` | Yes | (none) | RSA private key (single line, `\n`-escaped) |
+| `GITHUB_WEBHOOK_SECRET` | Yes | (none) | HMAC secret for webhook signature verification |
+| `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string (set automatically in Docker Compose) |
+| `DOMAIN` | Yes | (none) | Domain name for TLS and the Rocket.Chat logo URL (e.g. `layne.example.com`) |
+| `LETSENCRYPT_EMAIL` | Yes | (none) | Email for Let's Encrypt expiry notifications |
 | `PORT` | No | `3000` | Port for the webhook server |
-| `ANTHROPIC_API_KEY` | No | — | Required when any repo has `claude.enabled: true` |
+| `ANTHROPIC_API_KEY` | No | (none) | Required when any repo has `claude.enabled: true` |
 | `DEBUG_MODE` | No | off | Set to `true` or `1` to enable verbose debug logging |
 | `METRICS_ENABLED` | No | `false` | Set to `true` to enable Prometheus metrics endpoints |
 | `METRICS_PORT` | No | `9091` | Port for the worker Prometheus metrics server |
-| `ROCKETCHAT_WEBHOOK_URL` | No | — | Global Rocket.Chat webhook URL, referenced as `"$ROCKETCHAT_WEBHOOK_URL"` in `config/layne.json`. Add additional vars (e.g. `PAYMENTS_ROCKETCHAT_WEBHOOK_URL`) for per-repo webhooks. |
+| `ROCKETCHAT_WEBHOOK_URL` | No | (none) | Global Rocket.Chat webhook URL, referenced as `"$ROCKETCHAT_WEBHOOK_URL"` in `config/layne.json`. Add additional vars (e.g. `PAYMENTS_ROCKETCHAT_WEBHOOK_URL`) for per-repo webhooks. |
 
 ## Finding Shape
 
@@ -32,7 +41,7 @@ All scanners produce findings in a common format:
 }
 ```
 
-For how findings are converted to GitHub annotations and how severities affect PR status, see [Extending Layne — How Findings Become GitHub Annotations](extending.md#how-findings-become-github-annotations).
+For how findings are converted to GitHub annotations and how severities affect PR status, see [Extending Layne — How Findings Become GitHub Annotations](6-extending.md#how-findings-become-github-annotations).
 
 ## Scan timeout
 

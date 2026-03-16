@@ -2,7 +2,28 @@
 
 This document describes Layne's own security posture — the permissions it holds, how credentials are handled, what the exposure looks like if something is compromised, and what to do about it.
 
----
+
+## Table of Contents
+
+- [GitHub App Permissions](#github-app-permissions)
+- [Credential Handling](#credential-handling)
+  - [GitHub private key (`GITHUB_APP_PRIVATE_KEY`)](#github-private-key-github_app_private_key)
+  - [Webhook secret (`GITHUB_WEBHOOK_SECRET`)](#webhook-secret-github_webhook_secret)
+  - [Anthropic API key (`ANTHROPIC_API_KEY`)](#anthropic-api-key-anthropic_api_key)
+  - [Notification webhook URLs (`webhookUrl`)](#notification-webhook-urls-webhookurl)
+- [Data in Transit](#data-in-transit)
+  - [Code sent to Anthropic](#code-sent-to-anthropic)
+  - [Code sent to Semgrep and Trufflehog](#code-sent-to-semgrep-and-trufflehog)
+- [Network Exposure](#network-exposure)
+- [Data Retention](#data-retention)
+- [Compromise Scenarios](#compromise-scenarios)
+  - [Webhook secret leaked](#webhook-secret-leaked)
+  - [GitHub App private key leaked](#github-app-private-key-leaked)
+  - [Anthropic API key leaked](#anthropic-api-key-leaked)
+- [Scanner Isolation](#scanner-isolation)
+- [Finding Suppression](#finding-suppression)
+- [Reporting a Vulnerability in Layne](#reporting-a-vulnerability-in-layne)
+
 
 ## GitHub App Permissions
 
@@ -17,7 +38,6 @@ Layne requests the minimum permissions needed to do its job:
 
 Layne does not request write access to Contents, code, or settings — it cannot push commits or modify repository configuration.
 
----
 
 ## Credential Handling
 
@@ -43,7 +63,6 @@ Used only when a repo has `claude.enabled: true`. The key is passed directly to 
 
 Rocket.Chat webhook URLs can be stored as environment variable references (e.g. `"$ROCKETCHAT_WEBHOOK_URL"`) in `config/layne.json` rather than as plaintext values. Layne resolves them at runtime from `process.env`. This keeps secrets out of the repository.
 
----
 
 ## Data in Transit
 
@@ -51,17 +70,12 @@ Rocket.Chat webhook URLs can be stored as environment variable references (e.g. 
 
 When the Claude scanner is enabled for a repo, the content of changed source files is sent to the Anthropic API. Files are batched at 100 KB per call and capped at 50 KB per individual file. Binary files are skipped.
 
-**Implications:**
-- Source code leaves your environment and is processed by Anthropic's infrastructure.
-- This applies to all files changed in the PR, not just the lines changed.
-- If your repositories contain sensitive business logic or regulated data, consider whether enabling the Claude scanner is appropriate, or use a highly scoped custom prompt.
-- Skill mode (API Skills beta) is explicitly not ZDR (Zero Data Retention) eligible.
+Source code leaves your environment and is processed by Anthropic's infrastructure. This applies to all files changed in the PR, not just the lines changed. If your repositories contain sensitive business logic or regulated data, consider whether enabling the Claude scanner is appropriate, or use a highly scoped custom prompt. Skill mode (API Skills beta) is explicitly not ZDR (Zero Data Retention) eligible.
 
 ### Code sent to Semgrep and Trufflehog
 
 These tools run **locally** inside the Docker container. No code is sent to external services.
 
----
 
 ## Network Exposure
 
@@ -71,7 +85,6 @@ The EC2 instance exposes:
 - **Port 22 (SSH)** — restrict to your IP only
 - **Port 9091 (metrics)** — internal only; do not expose publicly. The Prometheus metrics endpoint has no authentication.
 
----
 
 ## Data Retention
 
@@ -84,7 +97,6 @@ The EC2 instance exposes:
 
 Layne does not maintain a database of findings. If Redis is lost, the only consequence is that notifications may re-fire for PRs that were previously notified (because the dedup counter is reset to zero).
 
----
 
 ## Compromise Scenarios
 
@@ -112,7 +124,6 @@ Layne does not maintain a database of findings. If Redis is lost, the only conse
 
 **Response:** Rotate the key in the Anthropic console and update `ANTHROPIC_API_KEY` in your `.env` and secrets store.
 
----
 
 ## Scanner Isolation
 
@@ -120,17 +131,15 @@ Semgrep and Trufflehog run as subprocesses inside the worker container via `exec
 
 The worker container has no outbound network restrictions by default. Semgrep's `--config auto` fetches rules from the internet; Trufflehog's `--no-update` flag prevents version checks but does not restrict its scanning behaviour. If your threat model requires network isolation, configure Docker network policies accordingly.
 
----
 
 ## Finding Suppression
 
-Semgrep's built-in `// nosemgrep` mechanism is disabled via `--disable-nosemgrep` on every scan. This prevents contributors from self-approving a finding inline — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate.
+Semgrep's built-in `// nosemgrep` mechanism is disabled via `--disable-nosem` on every scan. This prevents contributors from self-approving a finding inline — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate.
 
 The replacement is the `// SECURITY: <reason>` comment. It is tamper-proof: the suppressor (`src/suppressor.js`) reads each file at the **merge-base SHA** of the PR via `git show` and checks whether the comment existed there. A `// SECURITY:` comment introduced in the current PR is not present at the merge base, so it has no effect. The comment must have been merged in a previous PR — reviewed and approved — before it suppresses anything.
 
 The suppressor runs in the worker after `dispatch()` returns findings and before `buildAnnotations()` is called. A suppressed finding is removed from the list entirely and never appears in the GitHub Check Run.
 
----
 
 ## Reporting a Vulnerability in Layne
 

@@ -1,6 +1,79 @@
 # Configuration
 
-Scanner behaviour, labels, notifications, and trigger conditions are all configured in `config/layne.json`. Layne reads this file once per process startup — **restart both server and worker to pick up changes** (the automated deploy pipeline does this automatically).
+Scanner behaviour, labels, notifications, and trigger conditions are all configured in `config/layne.json`. Layne reads this file once per process startup. Restart both server and worker to pick up changes (the automated deploy pipeline does this automatically).
+
+
+## Table of Contents
+
+- [Global Defaults](#global-defaults)
+- [Per-Repo Configuration](#per-repo-configuration)
+- [Finding Suppression](#finding-suppression)
+- [Labels](#labels)
+- [Trigger](#trigger)
+- [Notifications](#notifications)
+- [PR Comments](#pr-comments)
+
+
+## Global Defaults
+
+`$global` is a special key in `config/layne.json` that sets organization-wide defaults. Every repository Layne scans inherits these values. A per-repo entry only needs to specify what differs — everything else falls back to `$global`.
+
+```json
+{
+  "$global": {
+    "semgrep": {
+      "extraArgs": ["--config", "auto", "--disable-nosem"]
+    },
+    "trufflehog": {
+      "extraArgs": ["--only-verified"]
+    },
+    "trigger": {
+      "on": "pull_request"
+    },
+    "labels": {
+      "onFailure":       ["needs-security-review"],
+      "removeOnFailure": ["security-ok"],
+      "onSuccess":       ["security-ok"],
+      "removeOnSuccess": ["needs-security-review"]
+    },
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL"
+      }
+    },
+    "comment": {
+      "enabled": false
+    }
+  },
+  "acme/payments": {
+    "trigger": {
+      "on":       "workflow_run",
+      "workflow": "CI"
+    },
+    "notifications": {
+      "rocketchat": {
+        "enabled":    true,
+        "webhookUrl": "$PAYMENTS_ROCKETCHAT_WEBHOOK_URL"
+      }
+    }
+  }
+}
+```
+
+In this example, every repository gets Semgrep with `--disable-nosem`, Trufflehog with `--only-verified`, the standard security labels, and a Rocket.Chat notification. `acme/payments` overrides two of those — it defers scanning until CI finishes and posts to a different webhook — while inheriting everything else unchanged.
+
+### Override behaviour by key
+
+Not all keys merge the same way:
+
+| Key | How per-repo overrides `$global` |
+|---|---|
+| `semgrep`, `trufflehog`, `claude` | Merged at the key level — per-repo values overwrite matching keys, unset keys inherit from global |
+| `trigger` | Full replacement — per-repo `trigger` replaces the global block entirely |
+| `labels` | Full replacement — per-repo `labels` replaces the global block entirely |
+| `notifications` | Per-notifier-key — per-repo `rocketchat` replaces global `rocketchat`; a per-repo `slack` entry stacks alongside a global `rocketchat` entry |
+| `comment` | Merged at the key level — per-repo values overwrite matching keys, unset keys inherit from global |
 
 ---
 
@@ -46,10 +119,10 @@ Overrides are keyed by `"owner/repo"`. Repositories with no entry — or whose e
 - Semgrep: `["--config", "auto"]`
 - Trufflehog: `[]`
 
-> **Replacement, not extension.** When you set `extraArgs`, it fully replaces the default. If you want `--config auto` _and_ a custom ruleset, include both:
-> ```json
-> "extraArgs": ["--config", "auto", "--config", "p/owasp-top-ten"]
-> ```
+When you set `extraArgs`, it replaces the default entirely. To use `--config auto` alongside a custom ruleset, include both in the array:
+```json
+"extraArgs": ["--config", "auto", "--config", "p/owasp-top-ten"]
+```
 
 **Claude keys:**
 
@@ -60,7 +133,7 @@ Overrides are keyed by `"owner/repo"`. Repositories with no entry — or whose e
 | `prompt` | string | built-in | Custom system prompt (prompt mode only). Replaces the default malicious-intent prompt entirely |
 | `skill` | object | `null` | Anthropic API Skill to load (skill mode). See below. When set, `prompt` is ignored |
 
-> **Opt-in only.** Claude scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly set `"enabled": true`. Requires `ANTHROPIC_API_KEY` to be set in the environment.
+Claude scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly set `"enabled": true`. Requires `ANTHROPIC_API_KEY` in the environment.
 
 ### Claude scanning modes
 
@@ -104,12 +177,12 @@ Uses the [Anthropic API Skills beta](https://platform.claude.com/docs/en/build-w
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `id` | string | — | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
+| `id` | string | (none) | Skill ID from the Anthropic Skills API (format: `skill_01...`) |
 | `version` | string | `"latest"` | Skill version to use. Pin to a timestamp for reproducible behaviour |
 
-> **Beta — expect breaking changes.** API Skills are in active development. The beta headers (`skills-2025-10-02`, `code-execution-2025-08-25`) may be superseded by Anthropic; when that happens, Layne will need to be updated to use the new headers before skill mode works again. Skill IDs (`skill_01...`) are opaque, tied to your Anthropic account, and are not portable — if Anthropic changes the Skills API in a way that invalidates existing uploads, you will need to re-upload your skill and update the `id` in `config/layne.json`.
->
-> **Skills are not ZDR-eligible.** ZDR (Zero Data Retention) is an Anthropic compliance feature that guarantees prompts and outputs are not retained after the API call. Skills require data retention to function, so they cannot be used with ZDR-enabled Anthropic organizations. Use `claude-sonnet-4-6` or above — smaller models may not make effective use of code execution.
+API Skills are in active development; expect breaking changes. The beta headers (`skills-2025-10-02`, `code-execution-2025-08-25`) may be superseded by Anthropic, and when that happens Layne will need to be updated before skill mode works again. Skill IDs (`skill_01...`) are opaque, tied to your Anthropic account, and are not portable. If Anthropic invalidates existing uploads, you will need to re-upload your skill and update the `id` in `config/layne.json`.
+
+Skills are not ZDR-eligible. ZDR (Zero Data Retention) is an Anthropic compliance feature that guarantees prompts and outputs are not retained after the API call. Skills require data retention to function, so they cannot be used with ZDR-enabled Anthropic organizations. Use `claude-sonnet-4-6` or above; smaller models may not make effective use of code execution.
 
 **Uploading a skill:** Skills are managed outside of Layne. To upload one:
 ```python
@@ -228,13 +301,12 @@ Arguments are passed directly via `execFile` — **not** through a shell — so 
 }
 ```
 
----
 
 ## Finding Suppression
 
 ### Why `// nosemgrep` is disabled
 
-Layne passes `--disable-nosemgrep` to Semgrep on every scan (set in `$global.semgrep.extraArgs`). This prevents contributors from silencing findings inline without review — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate entirely.
+Layne passes `--disable-nosem` to Semgrep on every scan. This is set in `$global.semgrep.extraArgs` (see [Global Defaults](#global-defaults)) and prevents contributors from silencing findings inline without review — adding `// nosemgrep` in a PR would suppress the finding in that exact PR, bypassing the security review gate entirely.
 
 ### The replacement: `// SECURITY: <reason>`
 
@@ -271,21 +343,20 @@ This means a contributor cannot self-approve a finding by adding the comment in 
 3. Submit a **separate PR** for the suppression comment, have it reviewed and merged.
 4. From that point forward, any PR that triggers the same finding on that line will have it suppressed automatically.
 
-### Keeping `--disable-nosemgrep` in per-repo `extraArgs`
+### Keeping `--disable-nosem` in per-repo `extraArgs`
 
-`--disable-nosemgrep` is set in `$global.semgrep.extraArgs` and must be carried into any per-repo `extraArgs` override. If you set per-repo `extraArgs` without including `--disable-nosemgrep`, the flag will be absent for that repo — `extraArgs` fully replaces the default, it does not extend it (see [Replacement, not extension](#per-repo-configuration)).
+`--disable-nosem` is set in `$global.semgrep.extraArgs` and must be carried into any per-repo `extraArgs` override. If you set per-repo `extraArgs` without including `--disable-nosem`, the flag will be absent for that repo — `extraArgs` fully replaces the default, it does not extend it (see [Replacement, not extension](#per-repo-configuration)).
 
 ```json
 {
   "owner/repo": {
     "semgrep": {
-      "extraArgs": ["--config", "p/owasp-top-ten", "--severity", "ERROR", "--disable-nosemgrep"]
+      "extraArgs": ["--config", "p/owasp-top-ten", "--severity", "ERROR", "--disable-nosem"]
     }
   }
 }
 ```
 
----
 
 ## Labels
 
@@ -325,28 +396,8 @@ If a label listed in `onFailure` or `onSuccess` does not exist on the repository
 
 ### Global vs per-repo
 
-`$global.labels` is the base; a per-repo `labels` block replaces the global config at the whole-key level.
+A per-repo `labels` block replaces the `$global` block entirely — it is not merged key-by-key. If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo. See [Override behaviour by key](#override-behaviour-by-key).
 
-```json
-{
-  "$global": {
-    "labels": {
-      "onFailure":       ["needs-security-review"],
-      "removeOnSuccess": ["needs-security-review"]
-    }
-  },
-  "acme/payments": {
-    "labels": {
-      "onFailure":       ["security-critical"],
-      "removeOnSuccess": ["security-critical"]
-    }
-  }
-}
-```
-
-If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo.
-
----
 
 ## Trigger
 
@@ -418,11 +469,11 @@ The deferred triggers do not reduce security coverage for PRs that pass CI — t
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `on` | `"pull_request"` \| `"workflow_run"` \| `"workflow_job"` | `"pull_request"` | When to trigger the scan |
-| `workflow` | string | — | Name of the GitHub Actions workflow to watch. Required when `on` is `"workflow_run"` |
-| `job` | string | — | Name of the GitHub Actions job to watch. Required when `on` is `"workflow_job"` |
+| `workflow` | string | (none) | Name of the GitHub Actions workflow to watch. Required when `on` is `"workflow_run"` |
+| `job` | string | (none) | Name of the GitHub Actions job to watch. Required when `on` is `"workflow_job"` |
 | `conclusions` | string[] | `["success"]` | Conclusions that trigger the scan. Valid values: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required` |
 
-> **`trigger` can be set globally.** Set it under `$global` to apply to all repos, then override per-repo as needed.
+You can set `trigger` under `$global` to apply a default to all repos, then override per-repo as needed. A per-repo `trigger` block replaces the global one entirely. See [Override behaviour by key](#override-behaviour-by-key).
 
 ### How deferred triggers work
 
@@ -486,13 +537,10 @@ If the watched workflow or job is renamed or removed, Layne never receives the e
 }
 ```
 
----
 
 ## Notifications
 
-Layne can send a notification to a chat webhook when a scan finds new issues. Notifications fire after the GitHub Check Run is fully posted — engineers see the check result first, then receive the alert.
-
-Notifications are **opt-in** and **modular**: each notifier (e.g. Rocket.Chat) is an independent module. See [Extending Layne](extending.md) for how to add a new provider.
+Layne sends a notification to a chat webhook when a scan finds new issues. Notifications fire after the GitHub Check Run is posted. Each notifier (e.g. Rocket.Chat) is an independent module. See [Extending Layne](6-extending.md) for how to add a new provider.
 
 ### Deduplication
 
@@ -500,13 +548,7 @@ Layne only notifies when the finding count **increases** compared to the previou
 
 ### Global vs per-repo
 
-You can define a **global** notification config that applies to all repositories, and/or a **per-repo** override for specific repositories. Both are optional — if neither is defined, no notifications are sent and nothing breaks.
-
-**Resolution rules (per notifier key):**
-- If a repo has no `notifications` block → it inherits the global config entirely.
-- If a repo defines its own `notifications` block → its keys win over the global ones for matching notifiers.
-- A repo can opt out of a specific global notifier by setting `"enabled": false` for that notifier.
-- If both global and the repo define *different* notifier keys, both are active (e.g. global Rocket.Chat + repo-specific Slack).
+Notifications follow per-notifier-key merging: a per-repo `rocketchat` block replaces the global `rocketchat` block, while a per-repo `slack` block stacks alongside a global `rocketchat` block — both fire. A repo can opt out of a global notifier by setting `"enabled": false` for that key. If neither `$global` nor the repo defines a `notifications` block, no notifications are sent. See [Override behaviour by key](#override-behaviour-by-key).
 
 ### Schema
 
@@ -531,6 +573,24 @@ You can define a **global** notification config that applies to all repositories
   }
 }
 ```
+
+### Template variables
+
+Set `template` to a string with `{{variable}}` placeholders. All notifiers and PR comments share the same set of variables:
+
+| Placeholder | Value |
+|---|---|
+| `{{prUrl}}` | Full PR URL, e.g. `https://github.com/acme/payments/pull/42` |
+| `{{repo}}` | Full repo slug, e.g. `acme/payments` |
+| `{{owner}}` | Owner/org name, e.g. `acme` |
+| `{{repoName}}` | Repo name only, e.g. `payments` |
+| `{{prNumber}}` | Pull request number |
+| `{{total}}` | Total finding count |
+| `{{critical}}` | Count of critical findings |
+| `{{high}}` | Count of high findings |
+| `{{medium}}` | Count of medium findings |
+| `{{low}}` | Count of low findings |
+| `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
 
 ### Rocket.Chat
 
@@ -564,21 +624,7 @@ Layne automatically sets its logo as the message icon (`icon_url`) using the `DO
 
 **Custom template:**
 
-Set `template` to a string with `{{variable}}` placeholders:
-
-| Placeholder | Value |
-|---|---|
-| `{{prUrl}}` | Full PR URL, e.g. `https://github.com/acme/payments/pull/42` |
-| `{{repo}}` | Full repo slug, e.g. `acme/payments` |
-| `{{owner}}` | Owner/org name, e.g. `acme` |
-| `{{repoName}}` | Repo name only, e.g. `payments` |
-| `{{prNumber}}` | Pull request number |
-| `{{total}}` | Total finding count |
-| `{{critical}}` | Count of critical findings |
-| `{{high}}` | Count of high findings |
-| `{{medium}}` | Count of medium findings |
-| `{{low}}` | Count of low findings |
-| `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
+See [Template variables](#template-variables) above for all available placeholders.
 
 Example:
 ```json
@@ -617,13 +663,12 @@ The PR link uses Slack's `<url|label>` syntax so it renders as a clickable hyper
 
 **Custom template:**
 
-Same `{{variable}}` placeholders as Rocket.Chat (see table above). You can use Slack's mrkdwn formatting in your template:
+See [Template variables](#template-variables) above. You can use Slack's mrkdwn formatting in your template:
 
 ```json
 "template": ":rotating_light: *{{repo}} PR #{{prNumber}}* — {{total}} finding(s): {{critical}} critical, {{high}} high"
 ```
 
----
 
 ### Examples
 
@@ -680,13 +725,10 @@ Same `{{variable}}` placeholders as Rocket.Chat (see table above). You can use S
 }
 ```
 
----
 
 ## PR Comments
 
-Layne can post a comment directly on the PR when a scan finds security issues. The comment appears inline in the PR thread and is updated in-place on each re-push — Layne never creates duplicate comments.
-
-**On success after failure:** If a subsequent push clears all findings, Layne updates the existing comment to show "scan passed". If the scan passes and there was no prior failure comment, nothing is posted.
+Layne can post a comment directly on the PR when a scan finds security issues. The comment appears inline in the PR thread and is updated in-place on each re-push. If a subsequent push clears all findings, Layne updates the existing comment to show "scan passed". If the scan passes and there was no prior failure comment, nothing is posted.
 
 ### Configuration
 
@@ -713,7 +755,7 @@ Add a `comment` key to `$global` or to any repo entry in `config/layne.json`:
 
 ### Global vs per-repo
 
-Same merge rules as notifications: a repo with no `comment` block inherits the global config entirely; per-repo keys win over global ones for any key that is set.
+Per-repo `comment` keys are merged into the global block — set only what differs. To disable comments for a specific repo when they are globally enabled:
 
 ```json
 {
@@ -748,23 +790,9 @@ No security issues found on latest push.
 
 ### Custom template
 
-Set `template` to a Markdown string with `{{variable}}` placeholders:
+Set `template` to a Markdown string with `{{variable}}` placeholders. PR comments use the same template variables as notifications — see [Template variables](#template-variables) in the Notifications section.
 
-| Placeholder | Value |
-|---|---|
-| `{{prUrl}}` | Full PR URL, e.g. `https://github.com/acme/payments/pull/42` |
-| `{{repo}}` | Full repo slug, e.g. `acme/payments` |
-| `{{owner}}` | Owner/org name, e.g. `acme` |
-| `{{repoName}}` | Repo name only, e.g. `payments` |
-| `{{prNumber}}` | Pull request number |
-| `{{total}}` | Total finding count |
-| `{{critical}}` | Count of critical findings |
-| `{{high}}` | Count of high findings |
-| `{{medium}}` | Count of medium findings |
-| `{{low}}` | Count of low findings |
-| `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
-
-> **Important:** The `<!-- layne-security-scan -->` HTML comment must be present in any custom template. Layne uses it as a marker to find and update the existing comment on re-pushes. Without it, Layne will create a new comment on every scan.
+Any custom template must include `<!-- layne-security-scan -->` as its first line. Layne uses it to find and update the existing comment on re-pushes. Without it, every scan creates a new comment.
 
 Example:
 

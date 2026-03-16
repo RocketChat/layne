@@ -2,7 +2,21 @@
 
 This guide explains how to run Layne entirely on your own machine so you can develop and test features without touching production. By the end, you will have a real GitHub App delivering live webhooks to your laptop, and a way to replay those webhooks instantly without opening a real pull request every time.
 
----
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Step 1 — Create a dev GitHub App](#step-1--create-a-dev-github-app)
+- [Step 2 — Install the App on a test repository](#step-2--install-the-app-on-a-test-repository)
+- [Step 3 — Set up the project locally](#step-3--set-up-the-project-locally)
+- [Step 4 — Start the local stack](#step-4--start-the-local-stack)
+- [Step 5 — Receive live webhooks via smee.io or ngrok](#step-5--receive-live-webhooks-via-smeeio-or-ngrok)
+- [Step 6 — Replay webhooks without GitHub](#step-6--replay-webhooks-without-github)
+- [Step 7 — Read logs and debug](#step-7--read-logs-and-debug)
+- [Installing scanners locally](#installing-scanners-locally)
+- [Stopping everything](#stopping-everything)
+- [Troubleshooting](#troubleshooting)
+
 
 ## Prerequisites
 
@@ -19,9 +33,8 @@ Install the following before you start:
 
 You also need a **GitHub account** with permission to create a GitHub App (a personal account is fine).
 
-> **macOS tip:** Install Node.js and openssl via [Homebrew](https://brew.sh): `brew install node openssl`. Docker Desktop bundles the Compose plugin automatically.
+On macOS, install Node.js and openssl via [Homebrew](https://brew.sh): `brew install node openssl`. Docker Desktop bundles the Compose plugin automatically.
 
----
 
 ## Step 1 — Create a dev GitHub App
 
@@ -76,7 +89,6 @@ awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' ~/Downloads/layne-dev.*.private-key
 
 Copy the entire output (it starts with `-----BEGIN RSA PRIVATE KEY-----\n` and ends with `-----END RSA PRIVATE KEY-----\n`). You will paste it into `.env` in the next step.
 
----
 
 ## Step 2 — Install the App on a test repository
 
@@ -95,7 +107,6 @@ https://github.com/settings/installations/NNNNNNNN
 
 **Installation ID:** The number in the URL (`NNNNNNNN`) is your installation ID. You will need it to update the fixture files later.
 
----
 
 ## Step 3 — Set up the project locally
 
@@ -140,9 +151,8 @@ Open `config/layne.json`. Add an entry for your test repository:
 
 An empty object uses the global defaults: Semgrep and Trufflehog enabled, Claude disabled, plus any global notifications and labels defined in `config/layne.json`. In the checked-in example config, Rocket.Chat notifications are enabled globally, but local development still works fine if you leave the webhook env vars unset because the notifier will log and skip delivery.
 
-> **Important:** Both the server and worker read `config/layne.json` once at startup. Restart both after any changes.
+Both the server and worker read `config/layne.json` once at startup. Restart both after any changes.
 
----
 
 ## Step 4 — Start the local stack
 
@@ -193,9 +203,8 @@ Expected output:
 [worker] Layne worker started — concurrency: 5
 ```
 
-> **Scanner binaries:** Semgrep and Trufflehog are only installed inside the Docker image. When running the worker directly on your machine, the worker will fail to run them unless you install them locally. See [Installing scanners locally](#installing-scanners-locally) below.
+Semgrep and Trufflehog are only installed inside the Docker image. When running the worker directly on your machine, the worker will fail to run them unless you install them locally. See [Installing scanners locally](#installing-scanners-locally) below.
 
----
 
 ## Step 5 — Receive live webhooks via smee.io or ngrok
 
@@ -259,9 +268,8 @@ Open a pull request on your test repository. Within a few seconds you should see
 - The worker terminal printing `[worker] starting scan: your-org/your-repo#1`
 - A **Layne Dev** check appearing on the PR on GitHub
 
-> **Duplicate deliveries:** smee may replay queued events when you reconnect. If you see a scan triggered twice for the same commit, that is normal — Layne's Redis deduplication will quietly drop the second one.
+smee may replay queued events when you reconnect. If you see a scan triggered twice for the same commit, that is normal. Layne's Redis deduplication will quietly drop the second one.
 
----
 
 ## Step 6 — Replay webhooks without GitHub
 
@@ -284,7 +292,7 @@ Open `fixtures/webhooks/pr_opened.json` and update:
 | `pull_request.head.sha` | a real commit SHA from your test repo |
 | `pull_request.base.sha` | a real base commit SHA from your test repo |
 
-> **Testing just the server?** If you only want to verify that the server parses the webhook, creates a Check Run, and enqueues a job — you do not need real SHAs or a real installation ID. The server will return `200 Accepted` and enqueue the job regardless. The worker will then fail trying to authenticate, but that is fine.
+If you only want to verify that the server parses the webhook, creates a Check Run, and enqueues a job, you do not need real SHAs or a real installation ID. The server will return `200 Accepted` and enqueue the job regardless. The worker will then fail trying to authenticate, but that is fine.
 
 ### 6.2 Run the replay script
 
@@ -309,7 +317,6 @@ Example output:
 
 You will immediately see the server and worker pick up the job in their respective terminals.
 
----
 
 ## Step 7 — Read logs and debug
 
@@ -351,7 +358,6 @@ LRANGE bull:scans:wait 0 -1
 LRANGE bull:scans:active 0 -1
 ```
 
----
 
 ## Installing scanners locally
 
@@ -371,7 +377,7 @@ pip install semgrep==1.154.0
 semgrep --version
 ```
 
-> Requires Python 3.9+. On macOS, use `pip3` if `pip` points to Python 2.
+Requires Python 3.9+. On macOS, use `pip3` if `pip` points to Python 2.
 
 **Install Trufflehog:**
 
@@ -407,19 +413,16 @@ docker compose run --rm \
   worker node src/worker.js
 ```
 
-> On macOS with Docker Desktop, `host.docker.internal` resolves to your host automatically.
->
-> On Linux, add a host-gateway mapping and keep `REDIS_URL` as a full URL:
->
-> ```bash
-> docker compose run --rm \
->   --add-host host.docker.internal:host-gateway \
->   --env-file .env \
->   -e REDIS_URL=redis://host.docker.internal:6379 \
->   worker node src/worker.js
-> ```
+On macOS with Docker Desktop, `host.docker.internal` resolves to your host automatically. On Linux, add a host-gateway mapping:
 
----
+```bash
+docker compose run --rm \
+  --add-host host.docker.internal:host-gateway \
+  --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
+  worker node src/worker.js
+```
+
 
 ## Stopping everything
 
@@ -430,7 +433,6 @@ docker compose run --rm \
 npm run dev:stop
 ```
 
----
 
 ## Troubleshooting
 
