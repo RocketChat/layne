@@ -49,7 +49,7 @@ Everything runs inside Docker Compose — nginx, Certbot, Redis, the server, and
    | Pull requests | Read-only |
    | Issues | Read & write (required for label management) |
 
-4. Under **Subscribe to events**, check **Pull request**.
+4. Under **Subscribe to events**, check **Pull request**, **Workflow run**, and **Workflow job**.
 
 5. Set **Where can this GitHub App be installed?** to **Only on this account** (or Any account if you plan to share it).
 
@@ -100,7 +100,7 @@ newgrp docker
 
 ## Step 4 — Deploy Layne
 
-1. Clone the repository onto the instance:
+1. Fork and clone the repository onto the instance:
 
 ```bash
 git clone https://github.com/your-org/layne.git
