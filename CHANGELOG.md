@@ -1,5 +1,13 @@
 # layne
 
+## 1.1.0
+
+### Minor Changes
+
+- [#15](https://github.com/RocketChat/layne/pull/15) [`e000196`](https://github.com/RocketChat/layne/commit/e00019655f2e9f5ade9e9be07ff92a176fa93d93) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds support for creating comments in the PRs
+
+- [#13](https://github.com/RocketChat/layne/pull/13) [`4c19ba0`](https://github.com/RocketChat/layne/commit/4c19ba0c4f758c90ab6fb1161f8999a97510865f) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds a new suppressor feature to ignore findings with a "// SECURITY: XYZ" comment
+
 ## 1.0.0
 
 ### Major Changes
