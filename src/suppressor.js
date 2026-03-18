@@ -36,17 +36,23 @@ export async function suppressFindings(findings, { workspacePath, baseSha }) {
 
   const kept = [];
   for (const finding of findings) {
+    if (finding.tool === 'claude' && finding.locationValidated !== true) {
+      kept.push(finding);
+      continue;
+    }
+
     const lines = await getLines(finding.file);
     if (lines === null) {
       kept.push(finding);
       continue;
     }
 
-    const sameLine  = lines[finding.line - 1] ?? '';
-    const lineAbove = lines[finding.line - 2] ?? '';
+    const line = finding.suppressionLine ?? finding.startLine ?? finding.line;
+    const sameLine  = lines[line - 1] ?? '';
+    const lineAbove = lines[line - 2] ?? '';
 
     if (SECURITY_COMMENT_RE.test(sameLine) || SECURITY_COMMENT_RE.test(lineAbove)) {
-      console.log(`[suppressor] suppressed finding ${finding.file}:${finding.line} [${finding.ruleId}] — SECURITY: comment found at base`);
+      console.log(`[suppressor] suppressed finding ${finding.file}:${line} [${finding.ruleId}] — SECURITY: comment found at base`);
     } else {
       kept.push(finding);
     }

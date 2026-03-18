@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { buildAnnotations } from '../reporter.js';
 
 function finding(overrides = {}) {
+  const line = overrides.line ?? overrides.startLine ?? 10;
   return {
     file:     'src/app.js',
-    line:     10,
+    line,
+    startLine: overrides.startLine ?? line,
+    endLine: overrides.endLine ?? overrides.startLine ?? line,
     severity: 'high',
     message:  'Hardcoded secret detected',
     ruleId:   'trufflehog/aws-key',
@@ -122,6 +125,45 @@ describe('buildAnnotations()', () => {
       const findings = [finding(), finding({ line: 20 }), finding({ line: 30 })];
       const { annotations } = buildAnnotations(findings);
       expect(annotations).toHaveLength(3);
+    });
+
+    it('uses startLine/endLine when a finding spans multiple lines', () => {
+      const [annotation] = buildAnnotations([finding({
+        line: 20,
+        startLine: 20,
+        endLine: 24,
+      })]).annotations;
+
+      expect(annotation.start_line).toBe(20);
+      expect(annotation.end_line).toBe(24);
+    });
+
+    it('uses annotationStartLine/annotationEndLine when present', () => {
+      const [annotation] = buildAnnotations([finding({
+        line: 20,
+        startLine: 20,
+        endLine: 24,
+        annotationStartLine: 20,
+        annotationEndLine: 20,
+      })]).annotations;
+
+      expect(annotation.start_line).toBe(20);
+      expect(annotation.end_line).toBe(20);
+    });
+
+    it('skips findings that are not eligible for inline annotations', () => {
+      const { annotations, summary } = buildAnnotations([
+        finding(),
+        finding({
+          line: 30,
+          startLine: 30,
+          endLine: 30,
+          annotationEligible: false,
+        }),
+      ]);
+
+      expect(annotations).toHaveLength(1);
+      expect(summary).toContain('1 finding(s) could not be placed inline.');
     });
   });
 });

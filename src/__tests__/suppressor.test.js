@@ -90,6 +90,37 @@ describe('suppressFindings()', () => {
     expect(result).toEqual([f]);
   });
 
+  it('does not suppress an unvalidated Claude finding', async () => {
+    resolveWith('line1\n// SECURITY: unrelated prior approval\nline3\n');
+    const f = finding({
+      tool: 'claude',
+      line: 2,
+      startLine: 2,
+      endLine: 2,
+      locationValidated: false,
+    });
+
+    const result = await suppressFindings([f], BASE);
+
+    expect(result).toEqual([f]);
+  });
+
+  it('uses suppressionLine when checking for SECURITY comments', async () => {
+    resolveWith('line1\nline2\n// SECURITY: approved in prior PR\nline4\n');
+
+    const result = await suppressFindings([finding({
+      tool: 'claude',
+      startLine: 1,
+      endLine: 4,
+      annotationStartLine: 4,
+      annotationEndLine: 4,
+      suppressionLine: 3,
+      locationValidated: true,
+    })], BASE);
+
+    expect(result).toEqual([]);
+  });
+
   it('returns the correct filtered array for a mixed batch', async () => {
     // file A: has a SECURITY comment above line 3
     const fileAContent = 'line1\n// SECURITY: reviewed by bob\nconst y = 2;\nline4\n';
@@ -101,7 +132,7 @@ describe('suppressFindings()', () => {
       .mockImplementationOnce((_cmd, _args, cb) => cb(null, fileBContent, ''));
 
     const fA = finding({ file: 'src/a.js', line: 3 }); // should be suppressed
-    const fB = finding({ file: 'src/b.js', line: 2 }); // should be kept
+    const fB = finding({ file: 'src/b.js', line: 1 }); // should be kept
 
     const result = await suppressFindings([fA, fB], BASE);
     expect(result).toEqual([fB]);

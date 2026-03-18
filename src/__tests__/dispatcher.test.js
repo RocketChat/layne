@@ -29,6 +29,7 @@ const { dispatch }       = await import('../dispatcher.js');
 const BASE = {
   workspacePath: '/tmp/ws',
   changedFiles:  ['src/app.js', 'src/utils.js'],
+  changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
   baseSha:       'abc123',
   baseRef:       'main',
   labels:        [],
@@ -134,6 +135,7 @@ describe('dispatch()', () => {
     await dispatch(BASE);
     expect(runClaude).toHaveBeenCalledWith(expect.objectContaining({
       toolConfig: { enabled: false, model: 'claude-haiku-4-5-20251001' },
+      changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
     }));
   });
 

@@ -18,10 +18,12 @@ const SEVERITY_TO_LEVEL = {
  * Returns: { annotations, conclusion, summary }
  */
 export function buildAnnotations(findings) {
-  const annotations = findings.map(f => ({
+  const inlineableFindings = findings.filter(f => f.annotationEligible !== false);
+
+  const annotations = inlineableFindings.map(f => ({
     path:             f.file,
-    start_line:       f.line,
-    end_line:         f.line,
+    start_line:       f.annotationStartLine ?? f.startLine ?? f.line,
+    end_line:         f.annotationEndLine ?? f.annotationStartLine ?? f.endLine ?? f.startLine ?? f.line,
     annotation_level: SEVERITY_TO_LEVEL[f.severity] ?? 'notice',
     title:            `[${f.tool}] ${f.ruleId}`,
     message:          f.message,
@@ -41,7 +43,8 @@ export function buildAnnotations(findings) {
       `${count(findings, 'critical')} critical, ` +
       `${count(findings, 'high')} high, ` +
       `${count(findings, 'medium')} medium, ` +
-      `${count(findings, 'low')} low.`;
+      `${count(findings, 'low')} low.` +
+      `${inlineableFindings.length === findings.length ? '' : ` ${findings.length - inlineableFindings.length} finding(s) could not be placed inline.`}`;
 
   return { annotations, conclusion, summary };
 }

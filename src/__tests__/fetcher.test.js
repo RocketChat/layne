@@ -17,7 +17,7 @@ vi.mock('child_process', () => ({
   execFile: mockExecFile,
 }));
 
-const { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
+const { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -174,6 +174,51 @@ describe('getChangedFiles()', () => {
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
     expect(files).toEqual(['src/ok.js']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('getChangedLineRanges()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('parses added and modified line ranges from a zero-context diff', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, [
+      'diff --git a/src/app.js b/src/app.js',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -2,0 +3,2 @@',
+      '+x',
+      '+y',
+      'diff --git a/src/util.js b/src/util.js',
+      '--- a/src/util.js',
+      '+++ b/src/util.js',
+      '@@ -10 +10 @@',
+      '-old',
+      '+new',
+    ].join('\n'), ''));
+
+    const ranges = await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
+
+    expect(ranges).toEqual({
+      'src/app.js': [{ start: 3, end: 4 }],
+      'src/util.js': [{ start: 10, end: 10 }],
+    });
+  });
+
+  it('ignores deleted hunks that have no lines in the head revision', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, [
+      'diff --git a/src/app.js b/src/app.js',
+      '--- a/src/app.js',
+      '+++ b/src/app.js',
+      '@@ -5,2 +5,0 @@',
+      '-x',
+      '-y',
+    ].join('\n'), ''));
+
+    const ranges = await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
+
+    expect(ranges).toEqual({ 'src/app.js': [] });
   });
 });
 
