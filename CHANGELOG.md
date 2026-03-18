@@ -1,5 +1,11 @@
 # layne
 
+## 1.1.1
+
+### Patch Changes
+
+- [#18](https://github.com/RocketChat/layne/pull/18) [`3c06f0b`](https://github.com/RocketChat/layne/commit/3c06f0b90e2dafa5f5a42dbe3d3b7f858233020e) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Fixes an issue in the Claude adapter that makes it hallucinate code lines when reporting it
+
 ## 1.1.0
 
 ### Minor Changes
