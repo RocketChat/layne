@@ -4,7 +4,7 @@ import { runClaude } from './adapters/claude.js';
 import { debug } from './debug.js';
 import { loadScanConfig } from './config.js';
 
-export async function dispatch({ workspacePath, changedFiles, owner, repo }) {
+export async function dispatch({ workspacePath, changedFiles, changedLineRanges, owner, repo }) {
   debug('dispatcher', `running scanners on ${changedFiles?.length ?? 0} file(s)`);
 
   const scanConfig = await loadScanConfig({ owner, repo });
@@ -12,7 +12,7 @@ export async function dispatch({ workspacePath, changedFiles, owner, repo }) {
   const [trufflehogFindings, semgrepFindings, claudeFindings] = await Promise.all([
     runTrufflehog({ workspacePath, changedFiles, toolConfig: scanConfig.trufflehog }),
     runSemgrep({ workspacePath, changedFiles, toolConfig: scanConfig.semgrep }),
-    runClaude({ workspacePath, changedFiles, toolConfig: scanConfig.claude }),
+    runClaude({ workspacePath, changedFiles, changedLineRanges, toolConfig: scanConfig.claude }),
   ]);
 
   return [...trufflehogFindings, ...semgrepFindings, ...claudeFindings];

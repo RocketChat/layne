@@ -5,9 +5,10 @@ import { Worker } from 'bullmq';
 import { redis, scanQueue } from './queue.js';
 import { getInstallationToken } from './auth.js';
 import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } from './github.js';
-import { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } from './fetcher.js';
+import { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace } from './fetcher.js';
 import { dispatch } from './dispatcher.js';
 import { suppressFindings } from './suppressor.js';
+import { validateFindingLocations } from './location-validator.js';
 import { buildAnnotations } from './reporter.js';
 import { loadScanConfig } from './config.js';
 import { notify } from './notifiers/index.js';
@@ -21,6 +22,7 @@ import {
   scanTimeoutsTotal,
   scanRetriesTotal,
   findingTotal,
+  findingPlacementTotal,
   findingsPerScan,
   queueWaiting,
   queueActive,
@@ -61,6 +63,17 @@ async function setNotifyCount(owner, repo, prNumber, count) {
  */
 function sanitizeError(message) {
   return (message ?? '').replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@');
+}
+
+function isActionableFinding(finding) {
+  if (finding.annotationEligible === false) return false;
+  if (finding.tool === 'claude' && finding.locationValidated !== true) return false;
+  return true;
+}
+
+function appendDiscardedCandidateSummary(summary, discardedCount) {
+  if (discardedCount === 0) return summary;
+  return `${summary} Omitted ${discardedCount} finding candidate(s) that could not be resolved to a precise code location.`;
 }
 
 /**
@@ -157,34 +170,43 @@ async function runScan(job) {
 
     await setupRepo({ token, cloneUrl, headSha, baseSha: mergeBaseSha, workspacePath });
     const rawChanged   = await getChangedFiles({ workspacePath, baseSha: mergeBaseSha, headSha });
+    const changedLineRanges = await getChangedLineRanges({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedFiles = await checkoutFiles({ workspacePath, headSha, files: rawChanged });
     debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
     const scanConfig = await loadScanConfig({ owner, repo });
 
-    const rawFindings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, labels, owner, repo });
-    const findings    = await suppressFindings(rawFindings, { workspacePath, baseSha: mergeBaseSha });
-    console.log(`[worker] ${findings.length} total finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
-    for (const f of findings) {
-      console.log(`[worker]   ${f.tool} ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
+    const rawFindings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, changedLineRanges, labels, owner, repo });
+    const validatedFindings = await validateFindingLocations(rawFindings, { workspacePath, changedFiles, changedLineRanges });
+    logFindingPlacement(validatedFindings, { owner, repo, prNumber });
+    const findings = await suppressFindings(validatedFindings, { workspacePath, baseSha: mergeBaseSha });
+    const actionableFindings = findings.filter(isActionableFinding);
+    const discardedCount = findings.length - actionableFindings.length;
+    console.log(`[worker] ${actionableFindings.length} actionable finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);
+    for (const f of actionableFindings) {
+      console.log(`[worker]   ${f.tool} ${f.severity.toUpperCase()} ${f.file}:${f.startLine ?? f.line}-${f.endLine ?? f.line} [${f.ruleId}] ${f.message}`);
       findingTotal.inc({ severity: f.severity, tool: f.tool, owner, repo });
     }
+    if (discardedCount > 0) {
+      console.log(`[worker] Omitted ${discardedCount} finding candidate(s) from check/comment/notification output because they could not be resolved to a precise code location.`);
+    }
 
-    const result = buildAnnotations(findings);
+    const result = buildAnnotations(actionableFindings);
+    const summary = appendDiscardedCandidateSummary(result.summary, discardedCount);
     conclusion = result.conclusion;
 
-    await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations: result.annotations, summary: result.summary });
+    await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations: result.annotations, summary });
 
     console.log(`[worker] Completed scan for ${owner}/${repo} PR #${prNumber} — ${conclusion}`);
 
     const { comment: commentConfig } = scanConfig;
     if (commentConfig.enabled) {
-      await postComment({ findings, owner, repo, prNumber, installationId, conclusion, commentConfig })
+      await postComment({ findings: actionableFindings, owner, repo, prNumber, installationId, conclusion, commentConfig })
         .catch(err => console.error('[worker] PR comment error:', err.message));
     }
 
     scanTotal.inc({ conclusion, owner, repo });
-    findingsPerScan.observe({ conclusion }, findings.length);
+    findingsPerScan.observe({ conclusion }, actionableFindings.length);
 
     // Label management — errors never affect the scan result.
     const { labels: labelConfig } = scanConfig;
@@ -203,10 +225,10 @@ async function runScan(job) {
     }
 
     const prevCount = await getNotifyCount(owner, repo, prNumber);
-    await setNotifyCount(owner, repo, prNumber, findings.length);
+    await setNotifyCount(owner, repo, prNumber, actionableFindings.length);
 
-    if (findings.length > prevCount) {
-      await notify({ findings, owner, repo, prNumber, notificationConfig: scanConfig.notifications })
+    if (actionableFindings.length > prevCount) {
+      await notify({ findings: actionableFindings, owner, repo, prNumber, notificationConfig: scanConfig.notifications })
         .catch(err => console.error('[worker] notification dispatch error:', err.message));
     }
   } finally {
@@ -214,6 +236,56 @@ async function runScan(job) {
       await cleanupWorkspace(workspacePath);
     }
     stopTimer({ conclusion });
+  }
+}
+
+function logFindingPlacement(findings, { owner, repo, prNumber }) {
+  if (findings.length === 0) return;
+
+  const counts = new Map();
+  let claudeTotal = 0;
+  let claudeInlineable = 0;
+
+  for (const finding of findings) {
+    const outcome = finding.annotationEligible === false ? 'not_inlineable' : 'inlineable';
+    const reason = finding.annotationEligible === false
+      ? (finding.annotationReason ?? finding.locationReason ?? 'unknown')
+      : (finding.locationReason ?? 'validated');
+
+    findingPlacementTotal.inc({ tool: finding.tool, outcome, reason });
+    counts.set(`${finding.tool}|${outcome}|${reason}`, (counts.get(`${finding.tool}|${outcome}|${reason}`) ?? 0) + 1);
+
+    if (finding.tool === 'claude') {
+      claudeTotal++;
+      if (finding.annotationEligible !== false) claudeInlineable++;
+    }
+  }
+
+  const summary = Array.from(counts.entries())
+    .map(([key, count]) => {
+      const [tool, outcome, reason] = key.split('|');
+      return `${tool}:${outcome}:${reason}=${count}`;
+    })
+    .join(', ');
+
+  console.log(`[worker] Finding placement for ${owner}/${repo} PR #${prNumber}: ${summary}`);
+
+  if (claudeTotal === 0) return;
+
+  console.log(`[worker] Claude placement summary for ${owner}/${repo} PR #${prNumber}: inlineable=${claudeInlineable}/${claudeTotal}`);
+  for (const finding of findings.filter(f => f.tool === 'claude')) {
+    console.log(
+      `[worker]   claude placement ${finding.file}:${finding.startLine ?? finding.line}-${finding.endLine ?? finding.line}` +
+      ` evidenceSpan=${finding.evidenceStartLine ?? finding.startLine ?? finding.line}-${finding.evidenceEndLine ?? finding.endLine ?? finding.startLine ?? finding.line}` +
+      ` rule=${finding.ruleId}` +
+      ` evidence=${finding.evidenceStatus ?? 'n/a'}` +
+      ` anchorKind=${finding.anchorKind ?? 'none'}` +
+      ` annotation=${finding.annotationStartLine ?? 'none'}` +
+      ` suppression=${finding.suppressionLine ?? finding.startLine ?? finding.line ?? 'none'}` +
+      ` eligible=${finding.annotationEligible !== false}` +
+      ` locationReason=${finding.locationReason ?? 'unknown'}` +
+      ` annotationReason=${finding.annotationReason ?? 'unknown'}`
+    );
   }
 }
 

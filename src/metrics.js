@@ -31,6 +31,7 @@ export let scanDuration;
 export let scanTimeoutsTotal;
 export let scanRetriesTotal;
 export let findingTotal;
+export let findingPlacementTotal;
 export let findingsPerScan;
 export let webhooksTotal;
 export let queueWaiting;
@@ -75,6 +76,13 @@ if (enabled) {
     registers:  [registry],
   });
 
+  findingPlacementTotal = new Counter({
+    name:       'layne_finding_placements_total',
+    help:       'Outcome of inline annotation placement after location validation',
+    labelNames: ['tool', 'outcome', 'reason'],
+    registers:  [registry],
+  });
+
   findingsPerScan = new Histogram({
     name:       'layne_findings_per_scan',
     help:       'Distribution of finding counts per completed scan',
@@ -114,6 +122,7 @@ if (enabled) {
   scanTimeoutsTotal = noopCounter;
   scanRetriesTotal  = noopCounter;
   findingTotal      = noopCounter;
+  findingPlacementTotal = noopCounter;
   findingsPerScan   = noopHistogram;
   webhooksTotal     = noopCounter;
   queueWaiting      = noopGauge;

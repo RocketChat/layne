@@ -21,7 +21,12 @@ const SYSTEM_PROMPT =
   'You are a security code reviewer. Analyse the provided source files for malicious intent: ' +
   'reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. ' +
   'Report ONLY confirmed malicious patterns with high confidence. Do not report style issues, bugs, or ' +
-  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real.' +
+  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real. ' +
+  'The source files include line numbers. For every finding, copy a short exact evidence snippet verbatim from the code, ' +
+  'choosing the smallest distinctive contiguous snippet that uniquely identifies the malicious logic in that file. ' +
+  'If you cannot provide exact verbatim evidence from the file, omit the finding. ' +
+  'Do not guess locations: line numbers and anchors are only hints and will be revalidated locally against the evidence you provide. ' +
+  'When the finding describes an enclosing function, method, or class, prefer anchorKind=declaration and set anchorLine to the declaration line while keeping evidence as the exact proof snippet. ' +
   'Call `report_findings` with your results.';
 
 const REPORT_FINDINGS_TOOL = {
@@ -36,12 +41,32 @@ const REPORT_FINDINGS_TOOL = {
           type: 'object',
           properties: {
             file:     { type: 'string' },
-            line:     { type: 'integer' },
+            startLine:{
+              type: 'integer',
+              description: 'Optional hint only. The final start line will be resolved locally from the evidence snippet.',
+            },
+            endLine:  {
+              type: 'integer',
+              description: 'Optional hint only. The final end line will be resolved locally from the evidence snippet.',
+            },
             severity: { type: 'string', enum: ['high', 'medium', 'low'] },
             message:  { type: 'string' },
             ruleId:   { type: 'string' },
+            evidence: {
+              type: 'string',
+              description: 'Exact verbatim contiguous snippet copied from the file that uniquely identifies the malicious code.',
+            },
+            anchorKind: {
+              type: 'string',
+              enum: ['line', 'declaration', 'span'],
+              description: 'Optional hint only. The final annotation span will be resolved locally from the evidence snippet.',
+            },
+            anchorLine: {
+              type: 'integer',
+              description: 'Optional hint only. The final annotation line will be resolved locally from the evidence snippet.',
+            },
           },
-          required: ['file', 'line', 'severity', 'message', 'ruleId'],
+          required: ['file', 'severity', 'message', 'ruleId', 'evidence'],
         },
       },
     },
@@ -58,7 +83,12 @@ const REPORT_FINDINGS_TOOL = {
  *   - skill mode: Skills API + code_execution tool (requires beta headers);
  *     set `claude.skill: { id: "skill_01...", version: "latest" }` in layne.json
  */
-export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFAULT_CONFIG.claude }) {
+export async function runClaude({
+  workspacePath,
+  changedFiles,
+  changedLineRanges = {},
+  toolConfig = DEFAULT_CONFIG.claude,
+}) {
   if (!changedFiles || changedFiles.length === 0) return [];
   if (!toolConfig.enabled) {
     console.log('[claude] skipping — not enabled for this repo (set "claude": {"enabled": true} in config/layne.json)');
@@ -88,7 +118,11 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
     if (content.length > FILE_SIZE_LIMIT) {
       content = content.slice(0, FILE_SIZE_LIMIT) + '\n[truncated]';
     }
-    fileContents.push({ file, content });
+    fileContents.push({
+      file,
+      content,
+      promptContent: formatFileForPrompt(file, content, changedLineRanges[file] ?? []),
+    });
   }
 
   if (fileContents.length === 0) return [];
@@ -118,7 +152,7 @@ export async function runClaude({ workspacePath, changedFiles, toolConfig = DEFA
   }
   console.log(`[claude] ${findings.length} finding(s)${errorCount > 0 ? ' (incomplete — API errors occurred)' : ''}:`);
   for (const f of findings) {
-    console.log(`[claude]   ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
+    console.log(`[claude]   ${f.severity.toUpperCase()} ${f.file}:${f.startLine ?? f.line}-${f.endLine ?? f.line} [${f.ruleId}] ${f.message}`);
   }
 
   return findings;
@@ -206,7 +240,7 @@ async function scanBatchWithSkill(client, files, model, skillConfig) {
 
 function buildUserMessage(files) {
   return files
-    .map(f => `### ${f.file}\n\`\`\`\n${f.content}\n\`\`\``)
+    .map(f => f.promptContent)
     .join('\n\n');
 }
 
@@ -217,11 +251,7 @@ function extractFindings(content) {
   if (!toolUse) return { findings: [] };
 
   return {
-    findings: (toolUse.input.findings ?? []).map(f => ({
-      ...f,
-      ruleId: `claude/${f.ruleId}`,
-      tool:   'claude',
-    })),
+    findings: (toolUse.input.findings ?? []).map(normalizeFinding),
   };
 }
 
@@ -231,7 +261,7 @@ function splitIntoBatches(fileContents, charLimit) {
   let currentSize = 0;
 
   for (const fc of fileContents) {
-    const size = fc.file.length + fc.content.length;
+    const size = fc.promptContent.length;
     if (current.length > 0 && currentSize + size > charLimit) {
       batches.push(current);
       current = [];
@@ -243,4 +273,56 @@ function splitIntoBatches(fileContents, charLimit) {
 
   if (current.length > 0) batches.push(current);
   return batches;
+}
+
+function normalizeFinding(finding) {
+  const startLine = normalizePositiveInt(finding.startLine ?? finding.line) ?? 1;
+  const endLine = normalizePositiveInt(finding.endLine ?? finding.startLine ?? finding.line) ?? startLine;
+
+  return {
+    ...finding,
+    line: startLine,
+    startLine,
+    endLine: endLine >= startLine ? endLine : startLine,
+    anchorKind: normalizeAnchorKind(finding.anchorKind),
+    anchorLine: normalizePositiveInt(finding.anchorLine),
+    evidence: typeof finding.evidence === 'string' ? finding.evidence.trim() : '',
+    ruleId: `claude/${finding.ruleId}`,
+    tool: 'claude',
+  };
+}
+
+function formatFileForPrompt(file, content, ranges) {
+  const changedLines = formatChangedRanges(ranges);
+  return [
+    `### ${file}`,
+    `Changed lines in this PR: ${changedLines}`,
+    '```text',
+    numberLines(content),
+    '```',
+  ].join('\n');
+}
+
+function numberLines(content) {
+  const lines = content.split('\n');
+  const width = String(lines.length).length;
+  return lines
+    .map((line, index) => `${String(index + 1).padStart(width, '0')} | ${line}`)
+    .join('\n');
+}
+
+function formatChangedRanges(ranges) {
+  if (!ranges.length) return 'none provided';
+  return ranges.map(range => `${range.start}-${range.end}`).join(', ');
+}
+
+function normalizePositiveInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeAnchorKind(value) {
+  return value === 'line' || value === 'declaration' || value === 'span'
+    ? value
+    : null;
 }

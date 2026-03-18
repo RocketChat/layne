@@ -39,6 +39,10 @@ describe('metrics (METRICS_ENABLED not set — default)', () => {
     expect(() => metrics.findingTotal.inc({ severity: 'high', tool: 'semgrep', owner: 'org', repo: 'repo' })).not.toThrow();
   });
 
+  it('findingPlacementTotal.inc() is a no-op and does not throw', () => {
+    expect(() => metrics.findingPlacementTotal.inc({ tool: 'claude', outcome: 'inlineable', reason: 'validated-claimed-range' })).not.toThrow();
+  });
+
   it('findingsPerScan.observe() is a no-op and does not throw', () => {
     expect(() => metrics.findingsPerScan.observe({ conclusion: 'success' }, 3)).not.toThrow();
   });
@@ -86,6 +90,7 @@ describe('metrics (METRICS_ENABLED=true)', () => {
     expect(output).toContain('layne_scans_total');
     expect(output).toContain('layne_scan_duration_seconds');
     expect(output).toContain('layne_findings_total');
+    expect(output).toContain('layne_finding_placements_total');
     expect(output).toContain('layne_webhooks_total');
     expect(output).toContain('layne_queue_waiting');
   });

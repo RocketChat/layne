@@ -22,6 +22,7 @@ vi.mock('../metrics.js', () => {
     scanTimeoutsTotal: makeCounter(),
     scanRetriesTotal:  makeCounter(),
     findingTotal:      makeCounter(),
+    findingPlacementTotal: makeCounter(),
     findingsPerScan:   makeHistogram(),
     webhooksTotal:     makeCounter(),
     queueWaiting:      makeGauge(),
@@ -50,6 +51,7 @@ vi.mock('../fetcher.js', () => ({
   createWorkspace:  vi.fn().mockResolvedValue('/tmp/layne-test-workspace'),
   setupRepo:        vi.fn().mockResolvedValue(undefined),
   getChangedFiles:  vi.fn().mockResolvedValue(['src/app.js']),
+  getChangedLineRanges: vi.fn().mockResolvedValue({ 'src/app.js': [{ start: 2, end: 4 }] }),
   checkoutFiles:    vi.fn().mockResolvedValue(['src/app.js']),
   cleanupWorkspace: vi.fn().mockResolvedValue(undefined),
 }));
@@ -89,13 +91,19 @@ vi.mock('../suppressor.js', () => ({
   suppressFindings: vi.fn(async (findings) => findings),
 }));
 
+vi.mock('../location-validator.js', () => ({
+  validateFindingLocations: vi.fn(async findings => findings),
+}));
+
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } = await import('../github.js');
-const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingsPerScan } = await import('../metrics.js');
-const { createWorkspace, setupRepo, getChangedFiles, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
+const { scanTotal, scanDuration, scanTimeoutsTotal, scanRetriesTotal, findingTotal, findingPlacementTotal, findingsPerScan } = await import('../metrics.js');
+const { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
 const { dispatch }                        = await import('../dispatcher.js');
+const { buildAnnotations }                = await import('../reporter.js');
 const { suppressFindings }               = await import('../suppressor.js');
+const { validateFindingLocations }        = await import('../location-validator.js');
 const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
 const { postComment }                     = await import('../commenter.js');
@@ -177,6 +185,11 @@ describe('processJob()', () => {
         baseSha:       'merge-base-sha',
         headSha:       'abc123',
       });
+      expect(getChangedLineRanges).toHaveBeenCalledWith({
+        workspacePath: '/tmp/layne-test-workspace',
+        baseSha:       'merge-base-sha',
+        headSha:       'abc123',
+      });
       expect(checkoutFiles).toHaveBeenCalledWith(expect.objectContaining({
         workspacePath: '/tmp/layne-test-workspace',
         headSha:       'abc123',
@@ -189,6 +202,7 @@ describe('processJob()', () => {
       expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
         workspacePath: '/tmp/layne-test-workspace',
         changedFiles:  ['src/app.js'],
+        changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
         baseSha:       'def456',
         baseRef:       'main',
         labels:        [],
@@ -203,9 +217,39 @@ describe('processJob()', () => {
 
       await processJob(baseJob);
 
+      expect(validateFindingLocations).toHaveBeenCalledWith(rawFindings, {
+        workspacePath: '/tmp/layne-test-workspace',
+        changedFiles:  ['src/app.js'],
+        changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
+      });
       expect(suppressFindings).toHaveBeenCalledWith(rawFindings, {
         workspacePath: '/tmp/layne-test-workspace',
         baseSha:       'merge-base-sha',
+      });
+    });
+
+    it('records placement outcomes after location validation', async () => {
+      const rawFindings = [{
+        file: 'src/app.js',
+        line: 2,
+        startLine: 2,
+        endLine: 2,
+        severity: 'high',
+        message: 'x',
+        ruleId: 'claude/rule',
+        tool: 'claude',
+        locationReason: 'validated-claimed-range',
+        annotationReason: 'anchored',
+        annotationEligible: true,
+      }];
+      dispatch.mockResolvedValueOnce(rawFindings);
+
+      await processJob(baseJob);
+
+      expect(findingPlacementTotal.inc).toHaveBeenCalledWith({
+        tool: 'claude',
+        outcome: 'inlineable',
+        reason: 'validated-claimed-range',
       });
     });
 
@@ -367,6 +411,20 @@ describe('processJob()', () => {
 
   describe('notifications', () => {
     const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+    const discardedClaudeFinding = {
+      file: 'src/app.js',
+      line: 2,
+      startLine: 2,
+      endLine: 2,
+      severity: 'high',
+      message: 'candidate',
+      ruleId: 'claude/x',
+      tool: 'claude',
+      locationValidated: false,
+      annotationEligible: false,
+      locationReason: 'evidence-not-found',
+      annotationReason: 'evidence-not-found',
+    };
 
     it('calls notify after completeCheckRun on the first scan with findings', async () => {
       dispatch.mockResolvedValueOnce([finding]);
@@ -478,6 +536,48 @@ describe('processJob()', () => {
       });
     });
 
+    it('filters discarded Claude candidates out of annotations, notify payloads, and notify counts', async () => {
+      dispatch.mockResolvedValueOnce([finding, discardedClaudeFinding]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+
+      expect(buildAnnotations).toHaveBeenCalledWith([finding]);
+      expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion: 'success',
+        summary: expect.stringContaining('Omitted 1 finding candidate(s)'),
+      }));
+      expect(notify).toHaveBeenCalledWith({
+        findings:           [finding],
+        owner:              'org',
+        repo:               'repo',
+        prNumber:           7,
+        notificationConfig: {},
+      });
+      expect(redis.set).toHaveBeenCalledWith(
+        'layne:scan:count:org/repo#7',
+        1,
+        'EX',
+        expect.any(Number)
+      );
+    });
+
+    it('does not notify when Claude only returns discarded candidates', async () => {
+      dispatch.mockResolvedValueOnce([discardedClaudeFinding]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+
+      expect(buildAnnotations).toHaveBeenCalledWith([]);
+      expect(notify).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledWith(
+        'layne:scan:count:org/repo#7',
+        0,
+        'EX',
+        expect.any(Number)
+      );
+    });
+
     it('does not throw and still cleans up the workspace when notify rejects', async () => {
       dispatch.mockResolvedValueOnce([finding]);
       redis.get.mockResolvedValueOnce(null);
@@ -567,6 +667,20 @@ describe('processJob()', () => {
 
   describe('PR comment', () => {
     const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+    const discardedClaudeFinding = {
+      file: 'src/app.js',
+      line: 2,
+      startLine: 2,
+      endLine: 2,
+      severity: 'high',
+      message: 'candidate',
+      ruleId: 'claude/x',
+      tool: 'claude',
+      locationValidated: false,
+      annotationEligible: false,
+      locationReason: 'evidence-not-found',
+      annotationReason: 'evidence-not-found',
+    };
 
     it('does not call postComment when comment.enabled is false (default)', async () => {
       await processJob(baseJob);
@@ -591,6 +705,27 @@ describe('processJob()', () => {
         comment: { enabled: true, template: null },
       });
       dispatch.mockResolvedValueOnce([finding]);
+
+      await processJob(baseJob);
+
+      expect(postComment).toHaveBeenCalledWith({
+        findings:      [finding],
+        owner:         'org',
+        repo:          'repo',
+        prNumber:      7,
+        installationId: 1,
+        conclusion:    'success',
+        commentConfig: { enabled: true, template: null },
+      });
+    });
+
+    it('passes only actionable findings to postComment', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {},
+        comment: { enabled: true, template: null },
+      });
+      dispatch.mockResolvedValueOnce([finding, discardedClaudeFinding]);
 
       await processJob(baseJob);
 
@@ -657,6 +792,28 @@ describe('processJob()', () => {
         owner:    'org',
         repo:     'repo',
       });
+    });
+
+    it('does not increment findingTotal for discarded Claude candidates', async () => {
+      dispatch.mockResolvedValueOnce([{
+        file: 'src/app.js',
+        line: 2,
+        startLine: 2,
+        endLine: 2,
+        severity: 'high',
+        message: 'candidate',
+        ruleId: 'claude/x',
+        tool: 'claude',
+        locationValidated: false,
+        annotationEligible: false,
+        locationReason: 'evidence-not-found',
+        annotationReason: 'evidence-not-found',
+      }]);
+      redis.get.mockResolvedValueOnce(null);
+
+      await processJob(baseJob);
+
+      expect(findingTotal.inc).not.toHaveBeenCalled();
     });
 
     it('records findingsPerScan with the finding count and conclusion', async () => {

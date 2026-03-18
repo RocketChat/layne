@@ -89,6 +89,14 @@ export async function getChangedFiles({ workspacePath, baseSha, headSha }) {
   return safe;
 }
 
+// Returns changed line ranges in the head version of each file, keyed by
+// repo-root-relative path. This lets downstream annotation code distinguish
+// "valid location in the file" from "valid location in the PR diff".
+export async function getChangedLineRanges({ workspacePath, baseSha, headSha }) {
+  const patch = await git(['-C', workspacePath, 'diff', '--unified=0', '--no-color', '--no-ext-diff', baseSha, headSha]);
+  return parseChangedLineRanges(patch);
+}
+
 // Materialises only the changed files on disk. git sparse-checkout restricts the working
 // tree to the listed paths, then checkout fetches the blobs for exactly those files.
 // Post-checkout realpath and stat validation is applied to catch symlink escapes and
@@ -140,4 +148,37 @@ export async function cleanupWorkspace(workspacePath) {
 
 function isWithinPath(targetPath, basePath) {
   return targetPath === basePath || targetPath.startsWith(`${basePath}${sep}`);
+}
+
+function parseChangedLineRanges(patch) {
+  const rangesByFile = {};
+  let currentFile = null;
+
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('+++ ')) {
+      const path = line.slice(4).trim();
+      currentFile = path === '/dev/null' ? null : stripGitPathPrefix(path);
+      if (currentFile && !rangesByFile[currentFile]) {
+        rangesByFile[currentFile] = [];
+      }
+      continue;
+    }
+
+    if (!currentFile || !line.startsWith('@@')) continue;
+
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+
+    const start = Number.parseInt(match[1], 10);
+    const count = match[2] === undefined ? 1 : Number.parseInt(match[2], 10);
+    if (!Number.isInteger(start) || !Number.isInteger(count) || count <= 0) continue;
+
+    rangesByFile[currentFile].push({ start, end: start + count - 1 });
+  }
+
+  return rangesByFile;
+}
+
+function stripGitPathPrefix(path) {
+  return path.startsWith('b/') ? path.slice(2) : path;
 }
