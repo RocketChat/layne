@@ -1,0 +1,91 @@
+/* Layne docs */
+
+@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@400;600;700&display=swap');
+
+/* Light mode */
+:root {
+  --ifm-color-primary: #171717;
+  --ifm-color-primary-dark: #0a0a0a;
+  --ifm-color-primary-darker: #000000;
+  --ifm-color-primary-darkest: #000000;
+  --ifm-color-primary-light: #404040;
+  --ifm-color-primary-lighter: #525252;
+  --ifm-color-primary-lightest: #737373;
+  --ifm-code-font-size: 95%;
+}
+
+/* Dark mode — monochrome */
+[data-theme='dark'] {
+  --ifm-color-primary: #d4d4d4;
+  --ifm-color-primary-dark: #a3a3a3;
+  --ifm-color-primary-darker: #737373;
+  --ifm-color-primary-darkest: #525252;
+  --ifm-color-primary-light: #e5e5e5;
+  --ifm-color-primary-lighter: #f0f0f0;
+  --ifm-color-primary-lightest: #fafafa;
+
+  --ifm-background-color: #0f0f0f;
+  --ifm-background-surface-color: #171717;
+  --ifm-navbar-background-color: #0a0a0a;
+  --ifm-footer-background-color: #080808;
+  --ifm-sidebar-background: #0a0a0a;
+  --ifm-toc-border-color: #262626;
+  --ifm-color-emphasis-300: #262626;
+  --ifm-hr-border-color: #262626;
+  --ifm-font-color-base: #e5e5e5;
+  --ifm-heading-color: #ffffff;
+  --ifm-menu-color: #a3a3a3;
+  --ifm-menu-color-active: #ffffff;
+  --ifm-code-background: #262626;
+  --ifm-navbar-link-color: #e5e5e5;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Oxanium', monospace;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Navbar — subtle bottom border */
+[data-theme='dark'] .navbar {
+  border-bottom: 1px solid #1f1f1f;
+}
+
+/* Sidebar active item — white left border */
+[data-theme='dark'] .menu__link--active:not(.menu__link--sublist) {
+  border-left: 2px solid #ffffff;
+  padding-left: calc(var(--ifm-menu-link-padding-horizontal) - 2px);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Code block title bar */
+[data-theme='dark'] [class*='codeBlockTitle'] {
+  background: #111111;
+  border-bottom: 1px solid #262626;
+  color: #525252;
+  font-family: 'Oxanium', monospace;
+  font-size: 0.75rem;
+}
+
+/* Admonitions — desaturated but still distinguishable */
+[data-theme='dark'] .alert--warning {
+  --ifm-alert-border-color: #78716c;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .alert--danger {
+  --ifm-alert-border-color: #7f1d1d;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .alert--info {
+  --ifm-alert-border-color: #374151;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .alert--success {
+  --ifm-alert-border-color: #14532d;
+  background-color: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .alert--secondary {
+  --ifm-alert-border-color: #3f3f46;
+  background-color: rgba(255, 255, 255, 0.02);
+}

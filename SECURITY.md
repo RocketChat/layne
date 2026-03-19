@@ -4,7 +4,7 @@
 
 If you believe you have found a security vulnerability in Layne, please do not open a public GitHub issue. Instead, report it through one of the following channels:
 
-- **GitHub Security Advisory:** [Report a vulnerability](../../security/advisories/new) — opens a private advisory draft visible only to maintainers.
+- **GitHub Security Advisory:** [Report a vulnerability](../../security/advisories/new) - opens a private advisory draft visible only to maintainers.
 - **Email:** [security@rocket.chat](mailto:security@rocket.chat)
 
 Please include as much detail as possible: a description of the vulnerability, steps to reproduce it, and the potential impact. If you have a proof-of-concept or suggested fix, we welcome that too.
@@ -19,7 +19,7 @@ We ask that you:
 
 - Give us reasonable time to investigate and fix the issue before disclosing it publicly.
 - Avoid accessing, modifying, or deleting data that does not belong to you.
-- Act in good faith — we will do the same.
+- Act in good faith - we will do the same.
 
 Researchers who follow these guidelines will be credited in the fix unless they prefer to remain anonymous.
 

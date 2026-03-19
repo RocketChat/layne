@@ -2,23 +2,6 @@
 
 This guide covers deploying Layne to a production EC2 instance with Docker Compose, TLS via Let's Encrypt, and an automated CI/CD pipeline. You can adapt it to any host that can run Docker Compose.
 
-
-## Table of Contents
-
-- [Prerequisites](#prerequisites)
-- [Step 1 — Create the GitHub App](#step-1--create-the-github-app)
-- [Step 2 — Provision the EC2 Instance](#step-2--provision-the-ec2-instance)
-- [Step 3 — Install Docker](#step-3--install-docker)
-- [Step 4 — Deploy Layne](#step-4--deploy-layne)
-- [Step 5 — Verify](#step-5--verify)
-- [Operations](#operations)
-  - [Automated Deployment](#automated-deployment)
-  - [Scaling Workers](#scaling-workers)
-  - [Renewing TLS Certificates](#renewing-tls-certificates)
-  - [Updating Tool Versions](#updating-tool-versions)
-  - [Debugging](#debugging)
-
-
 ## Prerequisites
 
 You can deploy Layne anywhere you want. The way we deploy it requires:
@@ -28,10 +11,10 @@ You can deploy Layne anywhere you want. The way we deploy it requires:
 - Docker and Docker Compose installed on the EC2 instance
 - GitHub organisation admin access (to create and install the GitHub App)
 
-Everything runs inside Docker Compose — nginx, Certbot, Redis, the server, and the worker. No manual nginx install on the host is required.
+Everything runs inside Docker Compose - nginx, Certbot, Redis, the server, and the worker. No manual nginx install on the host is required.
 
 
-## Step 1 — Create the GitHub App
+## Step 1 - Create the GitHub App
 
 1. Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**.
 
@@ -39,7 +22,7 @@ Everything runs inside Docker Compose — nginx, Certbot, Redis, the server, and
    - **GitHub App name:** `Layne` (or any name you prefer)
    - **Homepage URL:** `https://your-domain.com`
    - **Webhook URL:** `https://your-domain.com/webhook`
-   - **Webhook secret:** generate one with `openssl rand -hex 32` and save it — you will need it later.
+   - **Webhook secret:** generate one with `openssl rand -hex 32` and save it - you will need it later.
 
 3. Under **Repository permissions**, set:
    | Permission | Access |
@@ -55,12 +38,12 @@ Everything runs inside Docker Compose — nginx, Certbot, Redis, the server, and
 
 6. Click **Create GitHub App**. Note the **App ID** shown at the top of the page.
 
-7. Scroll down to **Private keys** and click **Generate a private key**. A `.pem` file will be downloaded — keep it safe.
+7. Scroll down to **Private keys** and click **Generate a private key**. A `.pem` file will be downloaded - keep it safe.
 
 8. On the left sidebar, click **Install App** and install it on the repositories you want Layne to scan.
 
 
-## Step 2 — Provision the EC2 Instance
+## Step 2 - Provision the EC2 Instance
 
 1. Launch an EC2 instance. Recommended spec:
    - **Instance type:** `t3.medium` or larger (Semgrep is CPU-intensive)
@@ -68,16 +51,16 @@ Everything runs inside Docker Compose — nginx, Certbot, Redis, the server, and
    - **Storage:** 20 GB gp3 (scan workspaces are ephemeral but the Docker image is ~2 GB)
 
 2. In the **Security Group**, open:
-   - Port `443` (HTTPS) — inbound from `0.0.0.0/0`
-   - Port `80` (HTTP) — inbound from `0.0.0.0/0` (needed for ACME challenges during cert issuance)
-   - Port `22` (SSH) — inbound from your IP only
+   - Port `443` (HTTPS) - inbound from `0.0.0.0/0`
+   - Port `80` (HTTP) - inbound from `0.0.0.0/0` (needed for ACME challenges during cert issuance)
+   - Port `22` (SSH) - inbound from your IP only
 
 3. Assign an **Elastic IP** to the instance so the address is stable.
 
 4. Point your domain's **A record** to the Elastic IP. Wait for DNS to propagate before continuing.
 
 
-## Step 3 — Install Docker
+## Step 3 - Install Docker
 
 SSH into the instance and run:
 
@@ -98,7 +81,7 @@ newgrp docker
 ```
 
 
-## Step 4 — Deploy Layne
+## Step 4 - Deploy Layne
 
 1. Fork and clone the repository onto the instance:
 
@@ -119,7 +102,7 @@ cp .env.example .env
 # The numeric App ID from the GitHub App settings page
 GITHUB_APP_ID=123456
 
-# The private key from the downloaded .pem file — paste the full content
+# The private key from the downloaded .pem file - paste the full content
 # on a single line, replacing literal newlines with \n
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAA...\n-----END RSA PRIVATE KEY-----"
 
@@ -136,7 +119,7 @@ To convert the private key to a single line:
 awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' layne.pem
 ```
 
-4. Run the one-time TLS setup. This uses Certbot inside Docker to obtain a Let's Encrypt certificate — no host-level nginx install needed:
+4. Run the one-time TLS setup. This uses Certbot inside Docker to obtain a Let's Encrypt certificate - no host-level nginx install needed:
 
 ```bash
 chmod +x scripts/init-tls.sh
@@ -166,7 +149,7 @@ curl https://your-domain.com/health
 ```
 
 
-## Step 5 — Verify
+## Step 5 - Verify
 
 Open a pull request on one of the repos where Layne is installed. Within a few seconds you should see a **Layne** check appear on the PR in `queued` status, then `in progress`, then `success` or `failure` with inline annotations if issues were found.
 
@@ -179,10 +162,10 @@ Here is the GitHub Actions workflow we use internally to deploy Layne to an EC2 
 
 The workflow:
 
-1. Runs the full test suite — the deploy step is skipped if tests fail
+1. Runs the full test suite - the deploy step is skipped if tests fail
 2. Rsyncs the repository to `/home/ubuntu/layne/layne/` on the server, preserving `data/` (certbot certificates) and never touching `.env`
 3. Writes a fresh `.env` file from GitHub secrets
-4. Runs `docker compose up --build --no-deps -d server worker` — rebuilds and restarts only the server and worker, leaving Redis (and the BullMQ queue) untouched
+4. Runs `docker compose up --build --no-deps -d server worker` - rebuilds and restarts only the server and worker, leaving Redis (and the BullMQ queue) untouched
 
 ```yaml
 name: Deploy
@@ -342,7 +325,7 @@ Set `DEBUG_MODE=true` in your `.env` file (or as a Docker environment variable) 
 - Installation token generation events
 - Webhook event details (action, repo, PR number, commit SHA)
 
-Stderr from subprocesses (git, semgrep, trufflehog) is always logged when non-empty, regardless of `DEBUG_MODE`. This is intentional — stderr from these tools almost always indicates a misconfiguration or tool error worth knowing about.
+Stderr from subprocesses (git, semgrep, trufflehog) is always logged when non-empty, regardless of `DEBUG_MODE`. This is intentional - stderr from these tools almost always indicates a misconfiguration or tool error worth knowing about.
 
 To enable on a running stack without a full rebuild:
 

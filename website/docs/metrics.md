@@ -2,14 +2,6 @@
 
 Layne can expose Prometheus metrics for operational and security visibility. Metrics are disabled by default and opt-in via environment variable. No Prometheus or Grafana infrastructure is required for a basic deployment.
 
-
-## Table of Contents
-
-- [Enabling metrics](#enabling-metrics)
-- [Available metrics](#available-metrics)
-- [Deploying with Prometheus and Grafana](#deploying-with-prometheus-and-grafana)
-
-
 ## Enabling metrics
 
 Set `METRICS_ENABLED=true` in your environment (or `.env` file). The worker will start a lightweight HTTP server on `METRICS_PORT` (default: `9091`); the server exposes an additional `GET /metrics` endpoint on its existing port.
@@ -51,13 +43,13 @@ The `owner` and `repo` labels create one time series per repository. For a self-
 
 The `monitoring/` directory contains ready-to-use configuration. Use the `monitoring` Docker Compose profile to bring up the full stack:
 
-```bash
+```bash title="Terminal"
 METRICS_ENABLED=true docker compose --profile monitoring up
 ```
 
 This starts:
-- **Prometheus** — scrapes both the server (`:3000/metrics`) and the worker (`:9091/metrics`) every 15 seconds. Data is retained for 30 days in a named Docker volume.
-- **Grafana** — available at `http://localhost:3001`, pre-provisioned with the Prometheus datasource and a Layne dashboard. No manual setup required.
+- **Prometheus** - scrapes both the server (`:3000/metrics`) and the worker (`:9091/metrics`) every 15 seconds. Data is retained for 30 days in a named Docker volume.
+- **Grafana** - available at `http://localhost:3001`, pre-provisioned with the Prometheus datasource and a Layne dashboard. No manual setup required.
 
 The Grafana dashboard (`monitoring/grafana/dashboards/layne.json`) includes panels for:
 - Scan rate by conclusion
@@ -69,4 +61,6 @@ The Grafana dashboard (`monitoring/grafana/dashboards/layne.json`) includes pane
 - Top repos by finding count (last 24 h)
 - Findings distribution per scan
 
-For production, Prometheus and Grafana should sit behind the same Nginx reverse proxy as the rest of Layne, or on an internal network not exposed to the public internet.
+:::warning
+For production, Prometheus and Grafana should sit behind the same Nginx reverse proxy as the rest of Layne, or on an internal network not exposed to the public internet. Neither service has authentication enabled in the default configuration.
+:::
