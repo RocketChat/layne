@@ -52,7 +52,7 @@ Layne ships with three built-in scanners. You can enable, disable, or configure 
 | [Trufflehog](https://github.com/trufflesecurity/trufflehog) | Secrets, API keys and credentials | Runs `trufflehog filesystem`; use `--only-verified` to reduce noise |
 | [Claude](https://www.anthropic.com) | Bugs, vulnerabilities, backdoors, obfuscated payloads, supply-chain attacks (you can define a system prompt or a skill to use) | Disabled by default; opt in per repo; requires `ANTHROPIC_API_KEY` |
 
-You can also add your own scanners. See [Extending Layne](docs/6-extending.md).
+You can also add your own scanners. See [Extending Layne](website/docs/extending.md).
 
 ### Layne's Workflow
 
@@ -74,13 +74,15 @@ And you can configure Layne to send a notification via webhook to a Rocket.Chat 
 
 ## Documentation
 
-- [**Deployment**](docs/1-deployment.md) - EC2 setup, Docker Compose, TLS, and automated CI/CD pipeline
-- [**Configuration**](docs/2-configuration.md) - per-repo scanner settings, PR labels, and chat notifications
-- [**Local Development**](docs/3-local-development.md) - set up a local dev environment, replay webhooks, and debug without deploying
-- [**Security Architecture**](docs/4-security-architecture.md) - permissions, credential handling, network exposure, and compromise scenarios
-- [**Metrics**](docs/5-metrics.md) - Prometheus metrics and the bundled Grafana dashboard
-- [**Extending Layne**](docs/6-extending.md) - adding new scanners and notification providers
-- [**Reference**](docs/7-reference.md) - environment variables, finding shape, severity levels, and queue behaviour
+Run the documentation site locally:
+
+```bash
+npm run docs:dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+The full documentation covers deployment, configuration, scanners, notifiers, PR comments, finding suppression, metrics, security architecture, and more.
 
 ## License
 

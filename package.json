@@ -17,7 +17,9 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "docs:dev": "npm --prefix website run start",
+    "docs:build": "npm --prefix website run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

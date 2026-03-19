@@ -34,7 +34,7 @@ Thanks for your interest in contributing. This document covers the branch model,
 
 ## Changesets
 
-Every PR that changes behaviour needs a changeset — a small file that describes what changed and what kind of version bump it warrants. The changeset check CI will fail if one is missing.
+Every PR that changes behaviour needs a changeset - a small file that describes what changed and what kind of version bump it warrants. The changeset check CI will fail if one is missing.
 
 **Add a changeset:**
 ```bash
@@ -53,7 +53,7 @@ This prompts you to pick a bump type and write a one-line description, then writ
 
 **Skipping the changeset:**
 
-For PRs that don't warrant a release entry — CI fixes, typos, documentation updates — add the `no-changeset` label to the PR. The check will be skipped.
+For PRs that don't warrant a release entry - CI fixes, typos, documentation updates - add the `no-changeset` label to the PR. The check will be skipped.
 
 ---
 
@@ -62,7 +62,7 @@ For PRs that don't warrant a release entry — CI fixes, typos, documentation up
 - **One thing per PR.** If you find yourself writing "and also..." in the description, split it.
 - **Explain the why.** The diff shows what changed. The description should say why.
 - **Every behaviour change needs a test.** If you're fixing a bug, the test should fail on the old code.
-- **Security-sensitive areas get extra scrutiny** — webhook verification, auth, file path handling, scanner output parsing. Explain your threat model.
+- **Security-sensitive areas get extra scrutiny** - webhook verification, auth, file path handling, scanner output parsing. Explain your threat model.
 
 **Example description:**
 
@@ -98,8 +98,8 @@ All four must pass before a PR can be merged.
 
 ## Extending Layne
 
-- **Adding a new scanner:** see [docs/6-extending.md — Adding a New Scanner](docs/6-extending.md#adding-a-new-scanner)
-- **Adding a notification provider:** see [docs/6-extending.md — Adding a New Notifier](docs/6-extending.md#adding-a-new-notifier)
+- **Adding a new scanner:** see [docs/6-extending.md - Adding a New Scanner](docs/6-extending.md#adding-a-new-scanner)
+- **Adding a notification provider:** see [docs/6-extending.md - Adding a New Notifier](docs/6-extending.md#adding-a-new-notifier)
 
 ---
 

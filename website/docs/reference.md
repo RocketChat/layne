@@ -1,14 +1,4 @@
 # Reference
-
-## Table of Contents
-
-- [Environment Variables](#environment-variables)
-- [Finding Shape](#finding-shape)
-- [Scan timeout](#scan-timeout)
-- [Webhook deduplication](#webhook-deduplication)
-- [Queue](#queue)
-
-
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -17,8 +7,8 @@
 | `GITHUB_APP_PRIVATE_KEY` | Yes | (none) | RSA private key (single line, `\n`-escaped) |
 | `GITHUB_WEBHOOK_SECRET` | Yes | (none) | HMAC secret for webhook signature verification |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string (set automatically in Docker Compose) |
-| `DOMAIN` | Yes | (none) | Domain name for TLS and the Rocket.Chat logo URL (e.g. `layne.example.com`) |
-| `LETSENCRYPT_EMAIL` | Yes | (none) | Email for Let's Encrypt expiry notifications |
+| `DOMAIN` | No* | (none) | Domain name for TLS and the Rocket.Chat logo URL (e.g. `layne.example.com`). Required by the Docker Compose TLS setup - not validated at runtime by the app. |
+| `LETSENCRYPT_EMAIL` | No* | (none) | Email for Let's Encrypt expiry notifications. Required by the Docker Compose TLS setup - not validated at runtime by the app. |
 | `PORT` | No | `3000` | Port for the webhook server |
 | `ANTHROPIC_API_KEY` | No | (none) | Required when any repo has `claude.enabled: true` |
 | `DEBUG_MODE` | No | off | Set to `true` or `1` to enable verbose debug logging |
@@ -41,7 +31,7 @@ All scanners produce findings in a common format:
 }
 ```
 
-For how findings are converted to GitHub annotations and how severities affect PR status, see [Extending Layne — How Findings Become GitHub Annotations](6-extending.md#how-findings-become-github-annotations).
+For how findings are converted to GitHub annotations and how severities affect PR status, see [Extending Layne - How Findings Become GitHub Annotations](extending.md#how-findings-become-github-annotations).
 
 ## Scan timeout
 
@@ -56,6 +46,6 @@ Duplicate webhook deliveries (same repo + PR number + commit SHA) are ignored us
 
 ## Queue
 
-Layne uses [BullMQ](https://docs.bullmq.io/) backed by Redis. The queue is named `scans`. Each worker process runs with a concurrency of 5 (5 simultaneous jobs). Scale horizontally by running additional worker containers — they all share the same Redis queue.
+Layne uses [BullMQ](https://docs.bullmq.io/) backed by Redis. The queue is named `scans`. Each worker process runs with a concurrency of 5 (5 simultaneous jobs). Scale horizontally by running additional worker containers - they all share the same Redis queue.
 
 Jobs are configured with 2 attempts. On the first failure, BullMQ retries automatically; on the second failure the job is moved to the failed set and the Check Run is marked as `failure`.
