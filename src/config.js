@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   labels:  Object.freeze({}),
   trigger: Object.freeze({ on: 'pull_request' }),
   comment: Object.freeze({ enabled: false, template: null }),
+  exceptionApprovers: Object.freeze({ users: [], teams: [] }),
 });
 
 // Cached after first read — layne.json is loaded once per process.
@@ -69,6 +70,11 @@ export async function loadScanConfig({ owner, repo }) {
   const globalComment  = reposConfig['$global']?.comment ?? {};
   const repoComment    = repoOverrides.comment ?? {};
 
+  // Exception approvers: per-repo replaces global entirely (not merged key-by-key).
+  // This is consistent with how labels work.
+  const globalExceptionApprovers = reposConfig['$global']?.exceptionApprovers ?? DEFAULT_CONFIG.exceptionApprovers;
+  const repoExceptionApprovers   = repoOverrides.exceptionApprovers ?? null;
+
   return {
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
@@ -77,5 +83,6 @@ export async function loadScanConfig({ owner, repo }) {
     labels:        { ...globalLabels, ...repoLabels },
     trigger:       { ...DEFAULT_CONFIG.trigger, ...globalTrigger, ...(repoOverrides.trigger ?? {}) },
     comment:       { ...DEFAULT_CONFIG.comment, ...globalComment, ...repoComment },
+    exceptionApprovers: repoExceptionApprovers ?? globalExceptionApprovers,
   };
 }

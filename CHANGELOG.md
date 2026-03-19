@@ -1,5 +1,18 @@
 # layne
 
+## 1.2.0
+
+### Minor Changes
+
+- **Exception Approvals**: Configure specific users or teams who can approve PRs that would otherwise fail the security scan. When an authorized approver approves a PR, Layne automatically re-runs the scan and passes it with a clear audit trail. Features include:
+  - Automatic re-run on `pull_request_review` webhook when authorized approver approves
+  - Team membership resolution via GitHub API
+  - Approval validation against current commit SHA (new commits invalidate approvals)
+  - Configurable exception labels (`onException`)
+  - Always-on notifications for exception usage
+  - Full audit trail in check run summary and chat notifications
+  - See [Exception Approvals](./website/docs/exception-approvals.md) documentation
+
 ## 1.1.1
 
 ### Patch Changes

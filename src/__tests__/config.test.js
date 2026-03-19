@@ -299,4 +299,39 @@ describe('loadScanConfig()', () => {
     const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
     expect(config.comment.template).toBe('repo tpl');
   });
+
+  // --- exceptionApprovers ---
+
+  it('returns empty exceptionApprovers by default', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.exceptionApprovers).toEqual({ users: [], teams: [] });
+  });
+
+  it('inherits $global exceptionApprovers when the repo has no exceptionApprovers block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { exceptionApprovers: { users: ['admin'], teams: ['org/security'] } },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.exceptionApprovers).toEqual({ users: ['admin'], teams: ['org/security'] });
+  });
+
+  it('repo-level exceptionApprovers replaces $global', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { exceptionApprovers: { users: ['admin'], teams: ['org/security'] } },
+      'acme/payments': { exceptionApprovers: { users: ['payments-lead'], teams: [] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.exceptionApprovers).toEqual({ users: ['payments-lead'], teams: [] });
+  });
+
+  it('repo can disable exceptionApprovals by setting empty arrays', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':        { exceptionApprovers: { users: ['admin'], teams: ['org/security'] } },
+      'acme/internal': { exceptionApprovers: { users: [], teams: [] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'internal' });
+    expect(config.exceptionApprovers).toEqual({ users: [], teams: [] });
+  });
 });

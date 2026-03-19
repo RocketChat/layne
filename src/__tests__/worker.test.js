@@ -70,12 +70,13 @@ vi.mock('../reporter.js', () => ({
 
 vi.mock('../config.js', () => ({
   loadScanConfig: vi.fn().mockResolvedValue({
-    semgrep:       { enabled: true, extraArgs: ['--config', 'auto'] },
-    trufflehog:    { enabled: true, extraArgs: [] },
-    claude:        { enabled: false, model: 'claude-haiku-4-5-20251001' },
-    notifications: {},
-    labels:        {},
-    comment:       { enabled: false, template: null },
+    semgrep:            { enabled: true, extraArgs: ['--config', 'auto'] },
+    trufflehog:         { enabled: true, extraArgs: [] },
+    claude:             { enabled: false, model: 'claude-haiku-4-5-20251001' },
+    notifications:      {},
+    labels:             {},
+    comment:            { enabled: false, template: null },
+    exceptionApprovers: { users: [], teams: [] },
   }),
 }));
 
@@ -95,6 +96,12 @@ vi.mock('../location-validator.js', () => ({
   validateFindingLocations: vi.fn(async findings => findings),
 }));
 
+vi.mock('../exception-approvals.js', () => ({
+  generateFindingId:    vi.fn().mockReturnValue('LAYNE-a3f29c81'),
+  loadExceptions:       vi.fn().mockResolvedValue(new Map()),
+  buildExceptionSummary: vi.fn(({ baseSummary }) => ({ conclusion: 'failure', summary: baseSummary })),
+}));
+
 const { Worker: MockWorker }              = await import('bullmq');
 const { getInstallationToken }            = await import('../auth.js');
 const { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } = await import('../github.js');
@@ -108,6 +115,7 @@ const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
 const { postComment }                     = await import('../commenter.js');
 const { redis }                           = await import('../queue.js');
+const { generateFindingId, loadExceptions, buildExceptionSummary } = await import('../exception-approvals.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
 // ---
@@ -533,6 +541,7 @@ describe('processJob()', () => {
         repo:               'repo',
         prNumber:           7,
         notificationConfig: {},
+        exceptionApproval:  null,
       });
     });
 
@@ -553,6 +562,7 @@ describe('processJob()', () => {
         repo:               'repo',
         prNumber:           7,
         notificationConfig: {},
+        exceptionApproval:  null,
       });
       expect(redis.set).toHaveBeenCalledWith(
         'layne:scan:count:org/repo#7',
@@ -844,6 +854,164 @@ describe('processJob()', () => {
       setupRepo.mockRejectedValueOnce(new Error('git clone failed'));
       await expect(processJob({ ...baseJob, attemptsMade: 1 })).rejects.toThrow('git clone failed');
       expect(scanRetriesTotal.inc).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // exception approvals
+  // -------------------------------------------------------------------------
+
+  describe('exception approvals', () => {
+    const finding = { file: 'a.js', line: 1, severity: 'high', message: 'issue', ruleId: 'r/1', tool: 'semgrep' };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      buildAnnotations.mockReturnValue({ annotations: [], conclusion: 'failure', summary: 'Issues found.' });
+      dispatch.mockResolvedValue([finding]);
+      loadScanConfig.mockResolvedValue({
+        semgrep:            { enabled: true, extraArgs: [] },
+        trufflehog:         { enabled: true, extraArgs: [] },
+        claude:             { enabled: false },
+        notifications:      {},
+        labels:             {},
+        comment:            { enabled: false, template: null },
+        exceptionApprovers: { users: ['alice'], teams: [] },
+      });
+      generateFindingId.mockReturnValue('LAYNE-a3f29c81');
+      loadExceptions.mockResolvedValue(new Map());
+      buildExceptionSummary.mockImplementation(({ baseSummary }) => ({ conclusion: 'failure', summary: baseSummary }));
+    });
+
+    it('stamps _findingId on each actionable finding', async () => {
+      await processJob(baseJob);
+      expect(generateFindingId).toHaveBeenCalledWith(expect.objectContaining({ file: 'a.js' }));
+    });
+
+    it('does not call loadExceptions when exceptionApprovers is empty', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {}, comment: { enabled: false, template: null },
+        exceptionApprovers: { users: [], teams: [] },
+      });
+
+      await processJob(baseJob);
+      expect(loadExceptions).not.toHaveBeenCalled();
+      expect(buildExceptionSummary).not.toHaveBeenCalled();
+    });
+
+    it('calls loadExceptions with the blocking finding IDs when approvers are configured', async () => {
+      await processJob(baseJob);
+
+      expect(loadExceptions).toHaveBeenCalledWith(expect.objectContaining({
+        owner:      'org',
+        repo:       'repo',
+        prNumber:   7,
+        headSha:    'abc123',
+        findingIds: ['LAYNE-a3f29c81'],
+      }));
+    });
+
+    it('does not call loadExceptions when there are no blocking findings', async () => {
+      const lowFinding = { ...finding, severity: 'low' };
+      dispatch.mockResolvedValueOnce([lowFinding]);
+      buildAnnotations.mockReturnValueOnce({ annotations: [], conclusion: 'success', summary: 'Low only.' });
+
+      await processJob(baseJob);
+      expect(loadExceptions).not.toHaveBeenCalled();
+    });
+
+    it('overrides conclusion and summary from buildExceptionSummary', async () => {
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted summary.' });
+
+      await processJob(baseJob);
+
+      expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion: 'success',
+        summary:    'Excepted summary.',
+      }));
+    });
+
+    it('sets exceptionApproval when all blocking findings are excepted (success + exceptions.size > 0)', async () => {
+      const exceptions = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'test', timestamp: '' }]]);
+      loadExceptions.mockResolvedValueOnce(exceptions);
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
+
+      await processJob(baseJob);
+
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        exceptionApproval: expect.objectContaining({ approved: true, approver: 'alice' }),
+      }));
+    });
+
+    it('keeps exceptionApproval null when conclusion is failure (partial or no exceptions)', async () => {
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'failure', summary: 'Still failing.' });
+
+      await processJob(baseJob);
+
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        exceptionApproval: null,
+      }));
+    });
+
+    it('keeps conclusion as failure when loadExceptions throws (fail closed)', async () => {
+      loadExceptions.mockRejectedValueOnce(new Error('Redis down'));
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'failure', summary: 'Issues found.' });
+
+      await processJob(baseJob);
+
+      expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion: 'failure',
+      }));
+    });
+
+    it('uses onException labels when exception is approved', async () => {
+      const exceptions = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'ok', timestamp: '' }]]);
+      loadExceptions.mockResolvedValueOnce(exceptions);
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, comment: { enabled: false, template: null },
+        exceptionApprovers: { users: ['alice'], teams: [] },
+        labels: {
+          onFailure:         ['needs-review'],
+          onException:       ['security-exception-used'],
+          removeOnException: ['needs-review'],
+        },
+      });
+
+      await processJob(baseJob);
+
+      expect(setLabels).toHaveBeenCalledWith(expect.objectContaining({
+        add:    ['security-exception-used'],
+        remove: ['needs-review'],
+      }));
+    });
+
+    it('always notifies when exception is approved, even if finding count did not increase', async () => {
+      const exceptions = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'ok', timestamp: '' }]]);
+      loadExceptions.mockResolvedValueOnce(exceptions);
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
+      redis.get.mockResolvedValueOnce('1'); // same count as current finding
+
+      await processJob(baseJob);
+
+      expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('passes exceptionApproval: null to notify when no exception approvers are configured', async () => {
+      loadScanConfig.mockResolvedValueOnce({
+        semgrep: { enabled: true, extraArgs: [] }, trufflehog: { enabled: true, extraArgs: [] },
+        claude: { enabled: false }, notifications: {}, labels: {}, comment: { enabled: false, template: null },
+        exceptionApprovers: { users: [], teams: [] },
+      });
+      buildAnnotations.mockReturnValueOnce({ annotations: [], conclusion: 'failure', summary: 'Issues found.' });
+      redis.get.mockResolvedValueOnce(null); // prevCount = 0, finding count = 1 -> will notify
+
+      await processJob(baseJob);
+
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        exceptionApproval: null,
+      }));
     });
   });
 });

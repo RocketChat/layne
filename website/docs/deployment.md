@@ -32,7 +32,7 @@ Everything runs inside Docker Compose - nginx, Certbot, Redis, the server, and t
    | Pull requests | Read-only |
    | Issues | Read & write (required for label management) |
 
-4. Under **Subscribe to events**, check **Pull request**, **Workflow run**, and **Workflow job**.
+4. Under **Subscribe to events**, check **Pull request**, **Workflow run**, **Workflow job**, and **Issue comment** (required for exception approvals).
 
 5. Set **Where can this GitHub App be installed?** to **Only on this account** (or Any account if you plan to share it).
 

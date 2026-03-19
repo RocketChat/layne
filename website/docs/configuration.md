@@ -69,6 +69,7 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 | `labels` | Full replacement - per-repo `labels` replaces the global block entirely |
 | `notifications` | Per-notifier-key - per-repo `rocketchat` replaces global `rocketchat`; a per-repo `slack` entry stacks alongside a global `rocketchat` entry |
 | `comment` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
+| `exceptionApprovers` | Full replacement - per-repo `exceptionApprovers` replaces the global block entirely |
 
 
 ## Trigger
@@ -231,10 +232,55 @@ Layne can automatically add and remove GitHub labels on a PR based on the scan r
 
 All four keys are optional. Omitting a key is a no-op.
 
+### Exception labels
+
+When an exception approval is used, you can configure a label to be added:
+
+```json title="config/layne.json"
+{
+  "$global": {
+    "labels": {
+      "onException":     ["security-exception-used"],
+      "removeOnException": ["security-exception-used"]
+    }
+  }
+}
+```
+
+| Key | When applied | Description |
+|---|---|---|
+| `onException` | Exception approved despite findings | Labels to add to the PR |
+| `removeOnException` | Exception approved despite findings | Labels to remove from the PR |
+
 ### Label auto-creation
 
-If a label listed in `onFailure` or `onSuccess` does not exist on the repository, Layne creates it automatically with a neutral gray colour (`#ededed`). You do not need to pre-create labels.
+If a label listed in `onFailure`, `onSuccess`, or `onException` does not exist on the repository, Layne creates it automatically with a neutral gray colour (`#ededed`). You do not need to pre-create labels.
 
 ### Global vs per-repo
 
 A per-repo `labels` block replaces the `$global` block entirely - it is not merged key-by-key. If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo.
+
+
+## Exception Approvals
+
+Configure specific users or teams who can approve PRs that would otherwise fail. See [Exception Approvals](./exception-approvals.md) for full documentation.
+
+### Configuration
+
+```json title="config/layne.json"
+{
+  "$global": {
+    "exceptionApprovers": {
+      "users": ["security-lead"],
+      "teams": ["acme/security-team"]
+    }
+  }
+}
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `users` | string[] | GitHub usernames who can approve exceptions |
+| `teams` | string[] | GitHub team slugs (format: `org/team-slug`) whose members can approve |
+
+Per-repo `exceptionApprovers` replaces the global block entirely (not merged key-by-key).

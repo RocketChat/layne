@@ -18,6 +18,7 @@ const sidebars = {
       ],
     },
     { type: 'doc', id: 'finding-suppression',   label: 'Finding Suppression' },
+    { type: 'doc', id: 'exception-approvals',  label: 'Exception Approvals' },
     { type: 'doc', id: 'notifiers',             label: 'Notifiers' },
     { type: 'doc', id: 'pr-comments',           label: 'PR Comments' },
     { type: 'doc', id: 'metrics',               label: 'Metrics' },

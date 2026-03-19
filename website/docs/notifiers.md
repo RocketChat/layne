@@ -9,6 +9,20 @@ Notifiers are configured under the `notifications` key in `config/layne.json`.
 
 Layne only notifies when the finding count **increases** compared to the previous scan for the same PR. If a developer pushes a follow-up commit that does not introduce new findings, no notification is sent. The previous count is stored in Redis with a 30-day TTL. A Redis read error is treated as a previous count of zero (fail open - the notification fires).
 
+## Exception Approval Notifications
+
+When an exception approval is used, Layne **always sends a notification** — even if the finding count didn't increase. This ensures visibility for the security team.
+
+The notification includes the approver's username:
+
+```
+⚠️ Exception approved by @security-lead
+🦴 Found 2 issue(s): 1 critical, 1 high
+https://github.com/acme/payments/pull/42
+```
+
+You can customise the notification using the `{{approver}}` template variable when an exception is in effect.
+
 
 ## Global vs per-repo
 
@@ -39,6 +53,7 @@ All notifiers support a `template` field with `{{variable}}` placeholders. The a
 | `{{medium}}` | Count of medium findings |
 | `{{low}}` | Count of low findings |
 | `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
+| `{{approver}}` | GitHub username of the exception approver (only set when an exception is used) |
 
 Omit `template` to use the default message format for that notifier.
 

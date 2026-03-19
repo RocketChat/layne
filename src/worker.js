@@ -15,6 +15,7 @@ import { notify } from './notifiers/index.js';
 import { postComment } from './commenter.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
+import { generateFindingId, loadExceptions, buildExceptionSummary } from './exception-approvals.js';
 import {
   registry,
   scanTotal,
@@ -191,9 +192,35 @@ async function runScan(job) {
       console.log(`[worker] Omitted ${discardedCount} finding candidate(s) from check/comment/notification output because they could not be resolved to a precise code location.`);
     }
 
+    for (const f of actionableFindings) f._findingId = generateFindingId(f);
+
     const result = buildAnnotations(actionableFindings);
-    const summary = appendDiscardedCandidateSummary(result.summary, discardedCount);
+    let summary = appendDiscardedCandidateSummary(result.summary, discardedCount);
     conclusion = result.conclusion;
+
+    let exceptionApproval = null;
+    const { exceptionApprovers } = scanConfig;
+
+    if (exceptionApprovers?.users?.length || exceptionApprovers?.teams?.length) {
+      const blockingIds = actionableFindings
+        .filter(f => f.severity === 'critical' || f.severity === 'high')
+        .map(f => f._findingId);
+
+      const exceptions = blockingIds.length > 0
+        ? await loadExceptions({ owner, repo, prNumber, headSha, findingIds: blockingIds })
+            .catch(err => { console.error(`[worker] Failed to load exceptions: ${err.message}`); return new Map(); })
+        : new Map();
+
+      const override = buildExceptionSummary({ findings: actionableFindings, exceptions, baseSummary: appendDiscardedCandidateSummary(result.summary, discardedCount) });
+      conclusion = override.conclusion;
+      summary    = override.summary;
+
+      if (conclusion === 'success' && exceptions.size > 0) {
+        const approvers = [...new Set([...exceptions.values()].map(e => e.approver))].join(', ');
+        exceptionApproval = { approved: true, approver: approvers };
+        console.log(`[worker] Exception approved by @${approvers} for ${owner}/${repo} PR #${prNumber}`);
+      }
+    }
 
     await completeCheckRun({ installationId, owner, repo, checkRunId, conclusion, annotations: result.annotations, summary });
 
@@ -210,12 +237,18 @@ async function runScan(job) {
 
     // Label management — errors never affect the scan result.
     const { labels: labelConfig } = scanConfig;
-    const toAdd    = conclusion === 'failure'
-      ? (labelConfig.onFailure       ?? [])
-      : (labelConfig.onSuccess       ?? []);
-    const toRemove = conclusion === 'failure'
-      ? (labelConfig.removeOnFailure ?? [])
-      : (labelConfig.removeOnSuccess ?? []);
+    let toAdd, toRemove;
+    
+    if (exceptionApproval?.approved) {
+      toAdd = labelConfig.onException ?? [];
+      toRemove = labelConfig.removeOnException ?? [];
+    } else if (conclusion === 'failure') {
+      toAdd = labelConfig.onFailure ?? [];
+      toRemove = labelConfig.removeOnFailure ?? [];
+    } else {
+      toAdd = labelConfig.onSuccess ?? [];
+      toRemove = labelConfig.removeOnSuccess ?? [];
+    }
 
     if (toAdd.length || toRemove.length) {
       await ensureLabelsExist({ installationId, owner, repo, labelNames: toAdd })
@@ -227,8 +260,9 @@ async function runScan(job) {
     const prevCount = await getNotifyCount(owner, repo, prNumber);
     await setNotifyCount(owner, repo, prNumber, actionableFindings.length);
 
-    if (actionableFindings.length > prevCount) {
-      await notify({ findings: actionableFindings, owner, repo, prNumber, notificationConfig: scanConfig.notifications })
+    // Always notify on exception approval, otherwise only on new findings
+    if (exceptionApproval?.approved || actionableFindings.length > prevCount) {
+      await notify({ findings: actionableFindings, owner, repo, prNumber, notificationConfig: scanConfig.notifications, exceptionApproval })
         .catch(err => console.error('[worker] notification dispatch error:', err.message));
     }
   } finally {

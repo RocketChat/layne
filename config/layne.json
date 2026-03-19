@@ -10,7 +10,8 @@
       "onFailure":       ["needs-security-review"],
       "removeOnSuccess": ["needs-security-review"],
       "onSuccess":       [],
-      "removeOnFailure": []
+      "removeOnFailure": [],
+      "onException":     ["security-exception-used"]
     }
   },
   "acme/frontend": {
@@ -46,6 +47,10 @@
         "webhookUrl": "$PAYMENTS_ROCKETCHAT_WEBHOOK_URL",
         "template": ":rotating_light: *Payment system alert — {{repo}} PR #{{prNumber}}*\n{{total}} finding(s): {{critical}} critical, {{high}} high, {{medium}} medium, {{low}} low"
       }
+    },
+    "exceptionApprovers": {
+      "users": ["payments-security-lead"],
+      "teams": ["acme/payments-security"]
     }
   },
   "RocketChat/security": {
