@@ -8,8 +8,8 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment']);
-const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger', 'comment']);
+const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS      = /^claude-/;
@@ -54,6 +54,7 @@ function validateGlobal(block, ctx, errors) {
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
   if (block.comment       !== undefined) validateComment(block.comment, `${ctx}.comment`, errors);
+  if (block.exceptionApprovers !== undefined) validateExceptionApprovers(block.exceptionApprovers, `${ctx}.exceptionApprovers`, errors);
 }
 
 function validateRepo(block, ctx, errors) {
@@ -69,6 +70,7 @@ function validateRepo(block, ctx, errors) {
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
   if (block.comment       !== undefined) validateComment(block.comment, `${ctx}.comment`, errors);
+  if (block.exceptionApprovers !== undefined) validateExceptionApprovers(block.exceptionApprovers, `${ctx}.exceptionApprovers`, errors);
 }
 
 function validateScanner(block, ctx, errors) {
@@ -183,11 +185,29 @@ function validateComment(block, ctx, errors) {
 
 function validateLabels(block, ctx, errors) {
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
-  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess']) {
+  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess', 'onException']) {
     if (block[key] === undefined) continue;
     if (!Array.isArray(block[key]))
       errors.push(`${ctx}.${key}: must be an array`);
     else if (block[key].some(l => typeof l !== 'string'))
       errors.push(`${ctx}.${key}: all items must be strings`);
+  }
+}
+
+function validateExceptionApprovers(block, ctx, errors) {
+  if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
+  
+  if (block.users !== undefined) {
+    if (!Array.isArray(block.users))
+      errors.push(`${ctx}.users: must be an array`);
+    else if (block.users.some(u => typeof u !== 'string'))
+      errors.push(`${ctx}.users: all items must be strings`);
+  }
+  
+  if (block.teams !== undefined) {
+    if (!Array.isArray(block.teams))
+      errors.push(`${ctx}.teams: must be an array`);
+    else if (block.teams.some(t => typeof t !== 'string'))
+      errors.push(`${ctx}.teams: all items must be strings`);
   }
 }

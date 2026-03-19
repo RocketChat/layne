@@ -203,6 +203,95 @@ export async function setLabels({ installationId, owner, repo, prNumber, add, re
   }
 }
 
+/**
+ * Returns a pull request by number.
+ * The caller uses .head.sha to get the current head commit.
+ */
+export async function getPullRequest({ installationId, owner, repo, prNumber }) {
+  debug('github', `fetching PR ${owner}/${repo} #${prNumber}`);
+
+  const octokit = await getInstallationOctokit(installationId);
+
+  const { data } = await octokit.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+  });
+
+  return data;
+}
+
+/**
+ * Posts a comment on a pull request (issues API, since PRs are issues).
+ */
+export async function createPrComment({ installationId, owner, repo, prNumber, body }) {
+  debug('github', `posting comment on ${owner}/${repo} PR #${prNumber}`);
+
+  const octokit = await getInstallationOctokit(installationId);
+
+  await octokit.issues.createComment({
+    owner,
+    repo,
+    issue_number: prNumber,
+    body,
+  });
+}
+
+/**
+ * Resolves team slugs to a list of member usernames.
+ * Team slugs can be "org/team-slug" or just "team-slug" (uses owner as org).
+ */
+export async function getTeamMembers({ installationId, org, teamSlugs }) {
+  if (!teamSlugs?.length) return [];
+
+  const octokit = await getInstallationOctokit(installationId);
+  const members = new Set();
+
+  for (const slug of teamSlugs) {
+    let teamOrg, teamSlug;
+    
+    if (slug.includes('/')) {
+      [teamOrg, teamSlug] = slug.split('/');
+    } else {
+      teamOrg = org;
+      teamSlug = slug;
+    }
+
+    try {
+      const { data } = await octokit.teams.listMembersInOrg({
+        org: teamOrg,
+        team_slug: teamSlug,
+      });
+      data.forEach(m => members.add(m.login));
+      debug('github', `resolved team ${teamOrg}/${teamSlug}: ${data.length} member(s)`);
+    } catch (err) {
+      console.error(`[github] Failed to list members for team ${teamOrg}/${teamSlug}: ${err.message}`);
+    }
+  }
+
+  return Array.from(members);
+}
+
+/**
+ * Returns the latest Layne check run for a given commit SHA.
+ * Used to check if previous scan failed before re-running on approval.
+ */
+export async function getLatestCheckRun({ installationId, owner, repo, headSha }) {
+  debug('github', `fetching check runs for ${owner}/${repo} sha=${headSha}`);
+
+  const octokit = await getInstallationOctokit(installationId);
+
+  const { data } = await octokit.checks.listForRef({
+    owner,
+    repo,
+    ref: headSha,
+    check_name: CHECK_NAME,
+  });
+
+  // GitHub returns check runs in reverse-creation order by default, so [0] is the most recent.
+  return data.check_runs?.[0] ?? null;
+}
+
 function chunkArray(arr, size) {
   const chunks = [];
   for (let i = 0; i < arr.length; i += size) {

@@ -12,6 +12,15 @@ vi.mock('../github.js', () => ({
   completeCheckRun:            vi.fn(),
   skipCheckRun:                vi.fn(),
   findPullRequestBySha:        vi.fn(),
+  getLatestCheckRun:           vi.fn(),
+  getPullRequest:              vi.fn(),
+  createPrComment:             vi.fn(),
+}));
+
+vi.mock('../exception-approvals.js', () => ({
+  isReviewerAuthorized:  vi.fn(),
+  parseExceptionCommand: vi.fn(),
+  storeExceptions:       vi.fn(),
 }));
 
 vi.mock('../config.js', () => ({
@@ -23,16 +32,21 @@ vi.mock('../metrics.js', () => ({
   webhooksTotal: { inc: vi.fn() },
 }));
 
-const { redis, scanQueue }                           = await import('../queue.js');
+const { redis, scanQueue }                                  = await import('../queue.js');
 const { createCheckRun, completeCheckRun,
-        skipCheckRun, findPullRequestBySha }         = await import('../github.js');
-const { loadScanConfig }                             = await import('../config.js');
-const { webhooksTotal }                              = await import('../metrics.js');
-const { app, verifySignature, processWebhookRequest } = await import('../server.js');
+        skipCheckRun, findPullRequestBySha,
+        getLatestCheckRun, getPullRequest,
+        createPrComment }                                   = await import('../github.js');
+const { loadScanConfig }                                    = await import('../config.js');
+const { webhooksTotal }                                     = await import('../metrics.js');
+const { isReviewerAuthorized, parseExceptionCommand,
+        storeExceptions }                                   = await import('../exception-approvals.js');
+const { app, verifySignature, processWebhookRequest }       = await import('../server.js');
 
-const PR_TRIGGER_CONFIG          = { trigger: { on: 'pull_request' } };
-const WORKFLOW_TRIGGER_CONFIG    = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'] } };
+const PR_TRIGGER_CONFIG           = { trigger: { on: 'pull_request' } };
+const WORKFLOW_TRIGGER_CONFIG     = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'] } };
 const WORKFLOW_JOB_TRIGGER_CONFIG = { trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success'] } };
+const EXCEPTION_CONFIG            = { trigger: { on: 'pull_request' }, exceptionApprovers: { users: ['alice'], teams: [] } };
 
 function sign(body) {
   return 'sha256=' + crypto
@@ -132,6 +146,16 @@ beforeEach(() => {
   completeCheckRun.mockResolvedValue(undefined);
   skipCheckRun.mockResolvedValue(undefined);
   findPullRequestBySha.mockResolvedValue(null);
+  getLatestCheckRun.mockResolvedValue({ conclusion: 'failure' });
+  getPullRequest.mockResolvedValue({
+    head:   { sha: 'abc123', ref: 'feature/login' },
+    base:   { sha: 'def456', ref: 'main' },
+    labels: [],
+  });
+  createPrComment.mockResolvedValue(undefined);
+  isReviewerAuthorized.mockResolvedValue(false);
+  parseExceptionCommand.mockReturnValue(null);
+  storeExceptions.mockResolvedValue(undefined);
   redis.set.mockResolvedValue('OK');
   redis.eval.mockResolvedValue(1);
   redis.get.mockResolvedValue(null);
@@ -186,7 +210,7 @@ describe('processWebhookRequest()', () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
-  it('ignores events that are not pull_request, workflow_run, or workflow_job', async () => {
+  it('ignores events that are not pull_request, workflow_run, workflow_job, or issue_comment', async () => {
     const res = await processWebhookRequest(webhookRequest(JSON.stringify({ action: 'created' }), {
       event: 'push',
     }));
@@ -812,5 +836,263 @@ describe('workflow_job trigger — workflow_job event', () => {
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue_comment handler
+// ---------------------------------------------------------------------------
+
+function commentPayload({
+  action    = 'created',
+  commenter = 'alice',
+  body      = '/layne exception-approve LAYNE-a3f29c81 reason: test cred',
+  isPR      = true,
+} = {}) {
+  return JSON.stringify({
+    action,
+    issue: {
+      number:       42,
+      pull_request: isPR ? { url: 'https://api.github.com/repos/org/my-repo/pulls/42' } : undefined,
+    },
+    comment: {
+      body,
+      user: { login: commenter },
+    },
+    repository: {
+      name:      'my-repo',
+      full_name: 'org/my-repo',
+      clone_url: 'https://github.com/org/my-repo.git',
+      owner:     { login: 'org' },
+    },
+    installation: { id: 987 },
+  });
+}
+
+describe('issue_comment handler', () => {
+  const PARSED_OK = { ids: ['LAYNE-a3f29c81'], reason: 'test cred' };
+
+  beforeEach(() => {
+    loadScanConfig.mockResolvedValue(EXCEPTION_CONFIG);
+    parseExceptionCommand.mockReturnValue(PARSED_OK);
+    isReviewerAuthorized.mockResolvedValue(true);
+    getLatestCheckRun.mockResolvedValue({ conclusion: 'failure' });
+  });
+
+  it('ignores non-created actions', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload({ action: 'edited' }), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores comments on issues (not PRs)', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload({ isPR: false }), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores comments that do not contain the exception command', async () => {
+    parseExceptionCommand.mockReturnValue(null);
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload({ body: 'LGTM!' }), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Event ignored' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores when no exception approvers are configured', async () => {
+    loadScanConfig.mockResolvedValue({ trigger: { on: 'pull_request' } });
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'No exception approvers configured' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('ignores when exception approvers config has empty users and teams', async () => {
+    loadScanConfig.mockResolvedValue({
+      trigger:            { on: 'pull_request' },
+      exceptionApprovers: { users: [], teams: [] },
+    });
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'No exception approvers configured' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('posts an error comment and returns Invalid command when parseExceptionCommand returns an error', async () => {
+    parseExceptionCommand.mockReturnValue({ ids: [], reason: null, error: 'No valid IDs found.' });
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Invalid command' });
+    expect(createPrComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Invalid exception command'),
+    }));
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('returns Commenter not authorized when commenter is not in exception approvers', async () => {
+    isReviewerAuthorized.mockResolvedValue(false);
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload({ commenter: 'mallory' }), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Commenter not authorized' });
+    expect(createPrComment).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('returns PR not found when getPullRequest fails', async () => {
+    getPullRequest.mockRejectedValueOnce(new Error('GitHub API down'));
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('stores exceptions with correct params', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(storeExceptions).toHaveBeenCalledWith(expect.objectContaining({
+      owner:      'org',
+      repo:       'my-repo',
+      prNumber:   42,
+      headSha:    'abc123',
+      findingIds: ['LAYNE-a3f29c81'],
+      approver:   'alice',
+      reason:     'test cred',
+    }));
+  });
+
+  it('enqueues a scan when the latest check run failed', async () => {
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('does not enqueue when the latest check run did not fail', async () => {
+    getLatestCheckRun.mockResolvedValue({ conclusion: 'success' });
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue when there is no check run', async () => {
+    getLatestCheckRun.mockResolvedValue(null);
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('posts a confirmation comment after storing exceptions', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(createPrComment).toHaveBeenCalledWith(expect.objectContaining({
+      installationId: 987,
+      owner:          'org',
+      repo:           'my-repo',
+      prNumber:       42,
+      body:           expect.stringContaining('Exception recorded'),
+    }));
+  });
+
+  it('includes the commenter name in the confirmation', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload({ commenter: 'alice' }), { event: 'issue_comment' }
+    ));
+
+    const [call] = createPrComment.mock.calls;
+    expect(call[0].body).toContain('@alice');
+  });
+
+  it('passes issuee_comment action to the job', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    const [eventName] = scanQueue.add.mock.calls[0];
+    expect(eventName).toBe('scan');
+  });
+
+  it('uses the correct job ID for deduplication', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    const [, , opts] = scanQueue.add.mock.calls[0];
+    expect(opts.jobId).toBe('org/my-repo#42@abc123');
+  });
+
+  it('passes correct payload to isReviewerAuthorized', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload({ commenter: 'alice' }), { event: 'issue_comment' }
+    ));
+
+    expect(isReviewerAuthorized).toHaveBeenCalledWith(expect.objectContaining({
+      reviewer:       'alice',
+      installationId: 987,
+      owner:          'org',
+      config:         { users: ['alice'], teams: [] },
+    }));
+  });
+
+  it('returns Commenter not authorized when isReviewerAuthorized throws', async () => {
+    isReviewerAuthorized.mockRejectedValueOnce(new Error('GitHub API down'));
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Commenter not authorized' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('still returns Accepted when getLatestCheckRun throws (exceptions stored, comment posted)', async () => {
+    getLatestCheckRun.mockRejectedValueOnce(new Error('GitHub API down'));
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
+    expect(storeExceptions).toHaveBeenCalled();
+    expect(createPrComment).toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
   });
 });

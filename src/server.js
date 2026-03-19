@@ -6,11 +6,12 @@ import crypto from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import { redis, scanQueue } from './queue.js';
-import { createCheckRun, completeCheckRun, skipCheckRun, findPullRequestBySha } from './github.js';
+import { createCheckRun, completeCheckRun, skipCheckRun, findPullRequestBySha, getLatestCheckRun, getPullRequest, createPrComment } from './github.js';
 import { loadScanConfig } from './config.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 import { registry, webhooksTotal } from './metrics.js';
+import { isReviewerAuthorized, parseExceptionCommand, storeExceptions } from './exception-approvals.js';
 
 const METRICS_ENABLED = process.env.METRICS_ENABLED === 'true';
 
@@ -91,7 +92,7 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
     return { status: 401, body: 'Invalid signature' };
   }
 
-  if (event !== 'pull_request' && event !== 'workflow_run' && event !== 'workflow_job') {
+  if (event !== 'pull_request' && event !== 'workflow_run' && event !== 'workflow_job' && event !== 'issue_comment') {
     return { status: 200, body: 'Event ignored' };
   }
 
@@ -104,6 +105,9 @@ export async function processWebhookRequest({ event, signature, rawBody }) {
 
   if (event === 'pull_request') {
     return handlePullRequest(payload);
+  }
+  if (event === 'issue_comment') {
+    return handleIssueComment(payload);
   }
   if (event === 'workflow_job') {
     return handleWorkflowJob(payload);
@@ -135,6 +139,126 @@ async function handlePullRequest(payload) {
   }
 
   return enqueueScan({ pull_request, repository, installation, jobId, action });
+}
+
+// ---------------------------------------------------------------------------
+// issue_comment handler
+// ---------------------------------------------------------------------------
+
+async function handleIssueComment(payload) {
+  const { action, issue, comment, repository, installation } = payload;
+
+  debug('server', `issue_comment webhook: action=${action} repo=${repository.full_name} issue #${issue?.number}`);
+
+  if (action !== 'created') {
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  if (!issue.pull_request) {
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const parsed = parseExceptionCommand(comment.body);
+  if (!parsed) {
+    return { status: 200, body: 'Event ignored' };
+  }
+
+  const config = await loadScanConfig({ owner: repository.owner.login, repo: repository.name });
+  const approvers = config.exceptionApprovers;
+  if (!approvers?.users?.length && !approvers?.teams?.length) {
+    debug('server', 'ignoring issue_comment: no exception approvers configured');
+    return { status: 200, body: 'No exception approvers configured' };
+  }
+
+  if (parsed.error) {
+    await createPrComment({
+      installationId: installation.id,
+      owner:          repository.owner.login,
+      repo:           repository.name,
+      prNumber:       issue.number,
+      body:           `❌ Invalid exception command: ${parsed.error}`,
+    }).catch(err => console.error(`[server] Failed to post error reply: ${err.message}`));
+    return { status: 200, body: 'Invalid command' };
+  }
+
+  const commenter = comment.user.login;
+  const isAuthorized = await isReviewerAuthorized({
+    reviewer:       commenter,
+    config:         approvers,
+    installationId: installation.id,
+    owner:          repository.owner.login,
+  }).catch(err => {
+    console.error(`[server] Failed to check reviewer authorization: ${err.message}`);
+    return false;
+  });
+
+  if (!isAuthorized) {
+    debug('server', `ignoring issue_comment: commenter ${commenter} not in exception approvers`);
+    return { status: 200, body: 'Commenter not authorized' };
+  }
+
+  const pr = await getPullRequest({
+    installationId: installation.id,
+    owner:          repository.owner.login,
+    repo:           repository.name,
+    prNumber:       issue.number,
+  }).catch(err => {
+    console.error(`[server] Failed to get PR: ${err.message}`);
+    return null;
+  });
+
+  if (!pr) {
+    return { status: 200, body: 'PR not found' };
+  }
+
+  const headSha = pr.head.sha;
+
+  await storeExceptions({
+    owner:      repository.owner.login,
+    repo:       repository.name,
+    prNumber:   issue.number,
+    headSha,
+    findingIds: parsed.ids,
+    approver:   commenter,
+    reason:     parsed.reason,
+  }).catch(err => console.error(`[server] Failed to store exceptions: ${err.message}`));
+
+  const checkRun = await getLatestCheckRun({
+    installationId: installation.id,
+    owner:          repository.owner.login,
+    repo:           repository.name,
+    headSha,
+  }).catch(err => {
+    console.error(`[server] Failed to get latest check run: ${err.message}`);
+    return null;
+  });
+
+  if (checkRun?.conclusion === 'failure') {
+    const jobId = getJobId(repository.full_name, issue.number, headSha);
+    await enqueueScan({
+      pull_request: {
+        number: issue.number,
+        head:   { sha: headSha, ref: pr.head.ref },
+        base:   { sha: pr.base.sha, ref: pr.base.ref },
+        labels: pr.labels ?? [],
+      },
+      repository,
+      installation,
+      jobId,
+      action: 'issue_comment',
+    }).catch(err => console.error(`[server] Failed to enqueue scan: ${err.message}`));
+  }
+
+  const idList = parsed.ids.join(', ');
+  await createPrComment({
+    installationId: installation.id,
+    owner:          repository.owner.login,
+    repo:           repository.name,
+    prNumber:       issue.number,
+    body:           `✅ Exception recorded for ${idList} by @${commenter}: "${parsed.reason}". Re-running scan...`,
+  }).catch(err => console.error(`[server] Failed to post confirmation: ${err.message}`));
+
+  return { status: 200, body: 'Accepted' };
 }
 
 async function deferPullRequest({ pull_request, repository, installation, config }) {

@@ -23,12 +23,13 @@ const NOTIFIERS = {
  * @param {string} params.repo               - Repository name.
  * @param {number} params.prNumber           - Pull request number.
  * @param {object} params.notificationConfig - Merged global + per-repo notification config.
+ * @param {object} [params.exceptionApproval] - Exception approval info if applicable.
  */
-export async function notify({ findings, owner, repo, prNumber, notificationConfig }) {
+export async function notify({ findings, owner, repo, prNumber, notificationConfig, exceptionApproval }) {
   for (const [key, notifierFn] of Object.entries(NOTIFIERS)) {
     const toolConfig = notificationConfig[key];
     if (!toolConfig?.enabled) continue;
 
-    await notifierFn({ findings, owner, repo, prNumber, toolConfig });
+    await notifierFn({ findings, owner, repo, prNumber, toolConfig, exceptionApproval });
   }
 }

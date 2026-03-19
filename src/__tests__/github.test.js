@@ -9,6 +9,8 @@ const mockAddLabels              = vi.fn().mockResolvedValue({});
 const mockRemoveLabel            = vi.fn().mockResolvedValue({});
 const mockListPRsForCommit       = vi.fn().mockResolvedValue({ data: [] });
 const mockCompareCommits         = vi.fn().mockResolvedValue({ data: { merge_base_commit: { sha: 'merge-base-sha' } } });
+const mockPullsGet               = vi.fn().mockResolvedValue({ data: { number: 7, head: { sha: 'abc', ref: 'feat' }, base: { sha: 'base', ref: 'main' }, labels: [] } });
+const mockIssuesCreateComment    = vi.fn().mockResolvedValue({});
 
 const mockOctokit = {
   checks: {
@@ -16,10 +18,14 @@ const mockOctokit = {
     update: mockChecksUpdate,
   },
   issues: {
-    getLabel:    mockGetLabel,
-    createLabel: mockCreateLabel,
-    addLabels:   mockAddLabels,
-    removeLabel: mockRemoveLabel,
+    getLabel:       mockGetLabel,
+    createLabel:    mockCreateLabel,
+    addLabels:      mockAddLabels,
+    removeLabel:    mockRemoveLabel,
+    createComment:  mockIssuesCreateComment,
+  },
+  pulls: {
+    get: mockPullsGet,
   },
   repos: {
     listPullRequestsAssociatedWithCommit: mockListPRsForCommit,
@@ -34,7 +40,7 @@ vi.mock('../auth.js', () => ({
 const {
   createCheckRun, startCheckRun, completeCheckRun,
   skipCheckRun, findPullRequestBySha, getMergeBaseSha,
-  ensureLabelsExist, setLabels,
+  ensureLabelsExist, setLabels, getPullRequest, createPrComment,
 } = await import('../github.js');
 
 const BASE = {
@@ -323,5 +329,42 @@ describe('setLabels()', () => {
     await expect(setLabels({ ...LABEL_BASE, add: ['label'], remove: [] })).resolves.toBeUndefined();
     expect(error).toHaveBeenCalledWith(expect.stringContaining('[github]'));
     error.mockRestore();
+  });
+});
+
+describe('getPullRequest()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('calls octokit.pulls.get with the correct params', async () => {
+    await getPullRequest({ ...BASE, prNumber: 42 });
+
+    expect(mockPullsGet).toHaveBeenCalledWith(expect.objectContaining({
+      owner:       'org',
+      repo:        'repo',
+      pull_number: 42,
+    }));
+  });
+
+  it('returns the PR data from the API response', async () => {
+    const prData = { number: 42, head: { sha: 'abc123', ref: 'feat' }, base: { sha: 'def', ref: 'main' }, labels: [] };
+    mockPullsGet.mockResolvedValueOnce({ data: prData });
+
+    const result = await getPullRequest({ ...BASE, prNumber: 42 });
+    expect(result).toBe(prData);
+  });
+});
+
+describe('createPrComment()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('calls octokit.issues.createComment with the correct params', async () => {
+    await createPrComment({ ...BASE, prNumber: 42, body: 'Hello!' });
+
+    expect(mockIssuesCreateComment).toHaveBeenCalledWith(expect.objectContaining({
+      owner:        'org',
+      repo:         'repo',
+      issue_number: 42,
+      body:         'Hello!',
+    }));
   });
 });
