@@ -37,10 +37,22 @@ describe('generateFindingId()', () => {
     expect(generateFindingId(f)).toBe(generateFindingId(f));
   });
 
-  it('returns different IDs for different inputs', () => {
-    const a = generateFindingId({ tool: 'semgrep', ruleId: 'eval',    file: 'a.js', line: 1 });
-    const b = generateFindingId({ tool: 'semgrep', ruleId: 'sql-inj', file: 'a.js', line: 1 });
+  it('returns different IDs for different files', () => {
+    const a = generateFindingId({ tool: 'semgrep', ruleId: 'eval', file: 'a.js', line: 1 });
+    const b = generateFindingId({ tool: 'semgrep', ruleId: 'eval', file: 'b.js', line: 1 });
     expect(a).not.toBe(b);
+  });
+
+  it('returns different IDs for different tools on the same file and line', () => {
+    const a = generateFindingId({ tool: 'semgrep',    ruleId: 'r', file: 'a.js', line: 1 });
+    const b = generateFindingId({ tool: 'trufflehog', ruleId: 'r', file: 'a.js', line: 1 });
+    expect(a).not.toBe(b);
+  });
+
+  it('returns the same ID regardless of ruleId', () => {
+    const a = generateFindingId({ tool: 'claude', ruleId: 'reverse-shell', file: 'a.js', line: 1 });
+    const b = generateFindingId({ tool: 'claude', ruleId: 'backdoor',      file: 'a.js', line: 1 });
+    expect(a).toBe(b);
   });
 
   it('uses startLine when line is absent', () => {
