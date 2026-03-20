@@ -5,7 +5,7 @@ import { redis } from './queue.js';
 const EXCEPTION_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
 
 export function generateFindingId(finding) {
-  const input = `${finding.tool}:${finding.ruleId}:${finding.file}:${finding.line ?? finding.startLine}`;
+  const input = `${finding.tool}:${finding.file}:${finding.line ?? finding.startLine}`;
   return 'LAYNE-' + crypto.createHash('sha256').update(input).digest('hex').slice(0, 8);
 }
 
