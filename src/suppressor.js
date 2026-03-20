@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { buildLineMapForFile } from './fetcher.js';
 
 const SECURITY_COMMENT_RE = /(?:\/\/|#)\s*SECURITY:\s+\S/;
 
@@ -15,11 +16,18 @@ function gitShow(workspacePath, baseSha, filePath) {
  * the base SHA — meaning the comment was reviewed and merged in a prior PR.
  * New `// SECURITY:` comments added in the current PR are invisible to this
  * function (they're not in base), so self-approval is impossible.
+ *
+ * Uses a diff-based line map to translate HEAD line numbers to base line
+ * numbers before reading the base file. This handles cases where a PR adds
+ * lines earlier in a file, shifting the finding's position relative to base.
+ * Findings on newly added lines (mapped to null in the diff) are never
+ * suppressed regardless of what comments exist nearby.
  */
-export async function suppressFindings(findings, { workspacePath, baseSha }) {
+export async function suppressFindings(findings, { workspacePath, baseSha, headSha }) {
   if (findings.length === 0) return [];
 
-  const fileCache = new Map();
+  const fileCache    = new Map();
+  const lineMapCache = new Map();
 
   async function getLines(filePath) {
     if (fileCache.has(filePath)) return fileCache.get(filePath);
@@ -34,11 +42,41 @@ export async function suppressFindings(findings, { workspacePath, baseSha }) {
     return lines;
   }
 
+  async function getLineMap(filePath) {
+    if (lineMapCache.has(filePath)) return lineMapCache.get(filePath);
+    let map = null;
+    try {
+      map = await buildLineMapForFile({ workspacePath, baseSha, headSha, filePath });
+    } catch {
+      // Diff unavailable — fall back to using head line numbers directly
+    }
+    lineMapCache.set(filePath, map);
+    return map;
+  }
+
   const kept = [];
   for (const finding of findings) {
     if (finding.tool === 'claude' && finding.locationValidated !== true) {
       kept.push(finding);
       continue;
+    }
+
+    const headLineNumber = finding.suppressionLine ?? finding.startLine ?? finding.line;
+
+    const lineMap = await getLineMap(finding.file);
+    let baseLookupLine;
+
+    if (lineMap === null || !lineMap.has(headLineNumber)) {
+      // Diff unavailable or line not in map — fall back to head line number
+      baseLookupLine = headLineNumber;
+    } else {
+      const mapped = lineMap.get(headLineNumber);
+      if (mapped === null) {
+        // Newly added line in this PR — cannot have a pre-existing approval
+        kept.push(finding);
+        continue;
+      }
+      baseLookupLine = mapped;
     }
 
     const lines = await getLines(finding.file);
@@ -47,12 +85,11 @@ export async function suppressFindings(findings, { workspacePath, baseSha }) {
       continue;
     }
 
-    const line = finding.suppressionLine ?? finding.startLine ?? finding.line;
-    const sameLine  = lines[line - 1] ?? '';
-    const lineAbove = lines[line - 2] ?? '';
+    const sameLine  = lines[baseLookupLine - 1] ?? '';
+    const lineAbove = lines[baseLookupLine - 2] ?? '';
 
     if (SECURITY_COMMENT_RE.test(sameLine) || SECURITY_COMMENT_RE.test(lineAbove)) {
-      console.log(`[suppressor] suppressed finding ${finding.file}:${line} [${finding.ruleId}] — SECURITY: comment found at base`);
+      console.log(`[suppressor] suppressed finding ${finding.file}:${headLineNumber} [${finding.ruleId}] — SECURITY: comment found at base`);
     } else {
       kept.push(finding);
     }
