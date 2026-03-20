@@ -325,4 +325,62 @@ describe('runClaude()', () => {
     expect(finding.startLine).toBe(7);
     expect(finding.endLine).toBe(7);
   });
+
+  // --- promptFiles (diff_only mode) ---
+
+  it('uses promptFiles instead of reading files from disk when provided', async () => {
+    const promptFiles = [{ file: 'src/app.js', content: '@@ lines 2-4 @@\n2| foo()\n3| bar()\n4| baz()' }];
+    mockCreate.mockResolvedValueOnce(cleanResponse());
+
+    await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles:  CHANGED_FILES,
+      promptFiles,
+      toolConfig:    ENABLED_CONFIG,
+    });
+
+    expect(mockReadFile).not.toHaveBeenCalled();
+    const userContent = mockCreate.mock.calls[0][0].messages[0].content;
+    expect(userContent).toContain('src/app.js');
+    expect(userContent).toContain('@@ lines 2-4 @@');
+    expect(userContent).toContain('2| foo()');
+  });
+
+  it('returns findings normally when using promptFiles', async () => {
+    const promptFiles = [{ file: 'src/app.js', content: '3| eval(input)' }];
+    mockCreate.mockResolvedValueOnce(findingResponse([{
+      file:     'src/app.js',
+      startLine: 3,
+      endLine:   3,
+      severity: 'high',
+      message:  'eval with user input',
+      ruleId:   'eval-injection',
+      evidence: 'eval(input)',
+    }]));
+
+    const findings = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles:  CHANGED_FILES,
+      promptFiles,
+      toolConfig:    ENABLED_CONFIG,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].ruleId).toBe('claude/eval-injection');
+    expect(findings[0].startLine).toBe(3);
+  });
+
+  it('falls back to reading files from disk when promptFiles is empty', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce(cleanResponse());
+
+    await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles:  CHANGED_FILES,
+      promptFiles:   [],
+      toolConfig:    ENABLED_CONFIG,
+    });
+
+    expect(mockReadFile).toHaveBeenCalledOnce();
+  });
 });

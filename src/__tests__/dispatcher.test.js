@@ -26,15 +26,21 @@ const { runClaude }      = await import('../adapters/claude.js');
 const { loadScanConfig } = await import('../config.js');
 const { dispatch }       = await import('../dispatcher.js');
 
+const BASE_SCAN_CONTEXT = {
+  mode:              'changed_files',
+  contextLines:      8,
+  repoWorkspacePath: '/tmp/ws',
+  scanWorkspacePath: '/tmp/ws',
+  scanFiles:         ['src/app.js', 'src/utils.js'],
+  promptFiles:       [],
+  changedLineRanges: new Map(),
+};
+
 const BASE = {
-  workspacePath: '/tmp/ws',
-  changedFiles:  ['src/app.js', 'src/utils.js'],
+  scanContext:       BASE_SCAN_CONTEXT,
   changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
-  baseSha:       'abc123',
-  baseRef:       'main',
-  labels:        [],
-  owner:         'org',
-  repo:          'repo',
+  owner:             'org',
+  repo:              'repo',
 };
 
 describe('dispatch()', () => {
@@ -47,7 +53,7 @@ describe('dispatch()', () => {
     expect(runClaude).toHaveBeenCalledOnce();
   });
 
-  it('passes changedFiles to the trufflehog adapter', async () => {
+  it('passes scanFiles and scanWorkspacePath to the trufflehog adapter', async () => {
     await dispatch(BASE);
     expect(runTrufflehog).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/tmp/ws',
@@ -55,7 +61,7 @@ describe('dispatch()', () => {
     }));
   });
 
-  it('passes changedFiles to the semgrep adapter', async () => {
+  it('passes scanFiles and scanWorkspacePath to the semgrep adapter', async () => {
     await dispatch(BASE);
     expect(runSemgrep).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/tmp/ws',
@@ -96,8 +102,8 @@ describe('dispatch()', () => {
     expect(findings).toEqual([sg]);
   });
 
-  it('still calls both adapters when changedFiles is empty', async () => {
-    await dispatch({ ...BASE, changedFiles: [] });
+  it('still calls both adapters when scanFiles is empty', async () => {
+    await dispatch({ ...BASE, scanContext: { ...BASE_SCAN_CONTEXT, scanFiles: [] } });
     expect(runTrufflehog).toHaveBeenCalledWith(expect.objectContaining({ changedFiles: [] }));
     expect(runSemgrep).toHaveBeenCalledOnce();
   });
@@ -131,12 +137,20 @@ describe('dispatch()', () => {
     }));
   });
 
-  it('passes toolConfig.claude from scanConfig to runClaude', async () => {
+  it('passes toolConfig.claude, changedLineRanges, and promptFiles to runClaude', async () => {
     await dispatch(BASE);
     expect(runClaude).toHaveBeenCalledWith(expect.objectContaining({
       toolConfig: { enabled: false, model: 'claude-haiku-4-5-20251001' },
       changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
+      promptFiles: [],
     }));
+  });
+
+  it('passes promptFiles from scan context to runClaude in diff_only mode', async () => {
+    const promptFiles = [{ file: 'src/app.js', content: '@@ lines 2-4 @@\n2| foo\n3| bar' }];
+    const diffContext = { ...BASE_SCAN_CONTEXT, mode: 'diff_only', promptFiles };
+    await dispatch({ ...BASE, scanContext: diffContext });
+    expect(runClaude).toHaveBeenCalledWith(expect.objectContaining({ promptFiles }));
   });
 
   it('merges findings from all three adapters', async () => {

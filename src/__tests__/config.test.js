@@ -334,4 +334,50 @@ describe('loadScanConfig()', () => {
     const config = await loadScanConfig({ owner: 'acme', repo: 'internal' });
     expect(config.exceptionApprovers).toEqual({ users: [], teams: [] });
   });
+
+  // --- mode and contextLines ---
+
+  it('returns changed_files mode and contextLines 8 by default', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.mode).toBe('changed_files');
+    expect(config.contextLines).toBe(8);
+  });
+
+  it('inherits $global mode and contextLines when the repo has no mode', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { mode: 'diff_only', contextLines: 5 },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.mode).toBe('diff_only');
+    expect(config.contextLines).toBe(5);
+  });
+
+  it('repo-level mode overrides $global mode', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { mode: 'diff_only' },
+      'acme/payments': { mode: 'changed_files' },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect(config.mode).toBe('changed_files');
+  });
+
+  it('repo-level contextLines overrides $global contextLines', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { contextLines: 10 },
+      'acme/frontend': { contextLines: 3 },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.contextLines).toBe(3);
+  });
+
+  it('repo can set mode to diff_only while global stays changed_files', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/monorepo': { mode: 'diff_only', contextLines: 4 },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'monorepo' });
+    expect(config.mode).toBe('diff_only');
+    expect(config.contextLines).toBe(4);
+  });
 });

@@ -70,6 +70,8 @@ vi.mock('../reporter.js', () => ({
 
 vi.mock('../config.js', () => ({
   loadScanConfig: vi.fn().mockResolvedValue({
+    mode:               'changed_files',
+    contextLines:       8,
     semgrep:            { enabled: true, extraArgs: ['--config', 'auto'] },
     trufflehog:         { enabled: true, extraArgs: [] },
     claude:             { enabled: false, model: 'claude-haiku-4-5-20251001' },
@@ -78,6 +80,19 @@ vi.mock('../config.js', () => ({
     comment:            { enabled: false, template: null },
     exceptionApprovers: { users: [], teams: [] },
   }),
+}));
+
+vi.mock('../scan-context.js', () => ({
+  createScanContext: vi.fn().mockResolvedValue({
+    mode:              'changed_files',
+    contextLines:      8,
+    repoWorkspacePath: '/tmp/layne-test-workspace',
+    scanWorkspacePath: '/tmp/layne-test-workspace',
+    scanFiles:         ['src/app.js'],
+    promptFiles:       [],
+    changedLineRanges: new Map(),
+  }),
+  filterFindingsToChangedLines: vi.fn((findings) => findings),
 }));
 
 vi.mock('../notifiers/index.js', () => ({
@@ -116,6 +131,7 @@ const { notify }                          = await import('../notifiers/index.js'
 const { postComment }                     = await import('../commenter.js');
 const { redis }                           = await import('../queue.js');
 const { generateFindingId, loadExceptions, buildExceptionSummary } = await import('../exception-approvals.js');
+const { createScanContext, filterFindingsToChangedLines } = await import('../scan-context.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
 // ---
@@ -205,26 +221,28 @@ describe('processJob()', () => {
       }));
     });
 
-    it('runs the dispatcher with the job context including changed files', async () => {
+    it('runs the dispatcher with scan context and changed line ranges', async () => {
       await processJob(baseJob);
       expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
-        workspacePath: '/tmp/layne-test-workspace',
-        changedFiles:  ['src/app.js'],
+        scanContext: expect.objectContaining({
+          mode:              'changed_files',
+          scanWorkspacePath: '/tmp/layne-test-workspace',
+          scanFiles:         ['src/app.js'],
+          repoWorkspacePath: '/tmp/layne-test-workspace',
+        }),
         changedLineRanges: { 'src/app.js': [{ start: 2, end: 4 }] },
-        baseSha:       'def456',
-        baseRef:       'main',
-        labels:        [],
-        owner:         'org',
-        repo:          'repo',
+        owner: 'org',
+        repo:  'repo',
       }));
     });
 
-    it('calls suppressFindings with dispatch output and mergeBaseSha', async () => {
+    it('applies diff filter and validates findings using the repo workspace', async () => {
       const rawFindings = [{ file: 'a.js', line: 1, severity: 'high', message: 'x', ruleId: 'r/1', tool: 'semgrep' }];
       dispatch.mockResolvedValueOnce(rawFindings);
 
       await processJob(baseJob);
 
+      expect(filterFindingsToChangedLines).toHaveBeenCalledWith(rawFindings, expect.objectContaining({ mode: 'changed_files' }));
       expect(validateFindingLocations).toHaveBeenCalledWith(rawFindings, {
         workspacePath: '/tmp/layne-test-workspace',
         changedFiles:  ['src/app.js'],
@@ -403,11 +421,19 @@ describe('processJob()', () => {
   });
 
   describe('no changed files', () => {
-    it('passes an empty changedFiles array to dispatch when the PR has no file changes', async () => {
+    it('passes a scan context with empty scanFiles to dispatch when the PR has no file changes', async () => {
       getChangedFiles.mockResolvedValueOnce([]);
       checkoutFiles.mockResolvedValueOnce([]);
+      createScanContext.mockResolvedValueOnce({
+        mode: 'changed_files', contextLines: 8,
+        repoWorkspacePath: '/tmp/layne-test-workspace',
+        scanWorkspacePath: '/tmp/layne-test-workspace',
+        scanFiles: [], promptFiles: [], changedLineRanges: new Map(),
+      });
       await processJob(baseJob);
-      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ changedFiles: [] }));
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+        scanContext: expect.objectContaining({ scanFiles: [] }),
+      }));
     });
 
     it('completes the check run successfully when there are no changed files', async () => {

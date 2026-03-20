@@ -20,9 +20,12 @@ Claude does **not** report style issues, bugs, or theoretical vulnerabilities. T
 
 ## Data privacy
 
-When Claude is enabled for a repo, the **full content of every changed source file** is sent to the Anthropic API for analysis - not just the changed lines. Files are capped at 50 KB each. Binary files are skipped.
+Source code leaves your environment when Claude is enabled. Consider whether this is appropriate for repositories containing sensitive business logic, PII, or regulated data. If it is, a scoped custom prompt can focus analysis on a narrower threat model.
 
-This means source code leaves your environment. Consider whether this is appropriate for repositories containing sensitive business logic, PII, or regulated data. If it is, a scoped custom prompt can focus analysis on a narrower threat model.
+What is sent depends on the [scan mode](../configuration.md#scan-mode) configured for the repo:
+
+- **`changed_files` mode (default):** The **full content of every changed source file** is sent - not just the changed lines. Files are capped at 50 KB each. Binary files are skipped.
+- **`diff_only` mode:** Only the changed hunks plus `contextLines` lines of surrounding context are sent per file. Unchanged portions of the file are not transmitted to Anthropic's API.
 
 **Skill mode** (described below) is explicitly not eligible for Anthropic's Zero Data Retention (ZDR) programme.
 
@@ -32,7 +35,9 @@ This means source code leaves your environment. Consider whether this is appropr
 1. Changed files are read from the workspace. Binary files (images, archives, compiled objects, fonts, etc.) are skipped.
 2. Files larger than 50 KB are truncated.
 3. Files are batched at 100 KB of text per API call to stay within token limits.
-4. Claude is called once per batch. Each file is sent with line numbers and a list of which lines changed in the PR.
+4. Claude is called once per batch. What is sent per file depends on scan mode:
+   - **`changed_files` mode:** The full numbered file content is sent with a "Changed lines in this PR: X-Y" header.
+   - **`diff_only` mode:** Only the changed hunks plus context are sent, formatted as `@@ lines X-Y @@` snippets. Line numbers within the snippet match the original file.
 5. Claude calls the `report_findings` tool with its results. Line numbers are hints - Layne re-validates each finding against a verbatim evidence snippet before reporting it.
 6. API errors are caught and logged without failing the scan. If some batches error, findings may be incomplete.
 
@@ -120,7 +125,11 @@ print(skill.id)  # you'll use this to configure Layne
 
 ### Skill Tips
 
-When creating a new skill to be used with Layne, it's important to also add to that skill the format that Layne is expecting the findings to be reported. You can use Claude Code or a different agent and ask it to create the skill in compliance with Layne's "contract". The following is an example of a skill that works with Layne:
+When creating a new skill to be used with Layne, it's important to also add to that skill the format that Layne is expecting the findings to be reported. You can use Claude Code or a different agent and ask it to create the skill in compliance with Layne's "contract". The following is an example of a skill that works with Layne in **`changed_files` mode** (the default).
+
+:::warning Skill mode with `diff_only`
+If you use skill mode together with `diff_only` scan mode, the Operating Mode section of your SKILL.md needs to be updated. In `diff_only` mode the skill receives `@@ lines X-Y @@`-delimited snippets instead of full numbered files, and there is no "Changed lines in this PR" header. The instruction to "scan the whole provided file" is not applicable - the snippet is the complete input. Update your skill instructions to describe the snippet format and to draw findings only from the provided ranges.
+:::
 
 ```md
 ---
