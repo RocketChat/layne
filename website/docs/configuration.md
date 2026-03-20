@@ -240,8 +240,8 @@ When an exception approval is used, you can configure a label to be added:
 {
   "$global": {
     "labels": {
-      "onException":     ["security-exception-used"],
-      "removeOnException": ["security-exception-used"]
+      "onException":       ["security-exception-used"],
+      "removeOnException": ["needs-security-review"]
     }
   }
 }

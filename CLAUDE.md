@@ -54,9 +54,11 @@ Two separate Node.js processes:
 **`src/server.js` - Webhook receiver**
 - Express app with `POST /webhook`, `GET /health`, `GET /metrics` (when enabled), `GET /assets/layne-logo.png`
 - Verifies GitHub HMAC signature before processing
-- Handles two event types: `pull_request` and `workflow_run`
+- Handles four event types: `pull_request`, `workflow_run`, `workflow_job`, and `issue_comment`
 - **`pull_request` trigger (default):** on opened/synchronize/reopened, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
 - **`workflow_run` trigger:** on `pull_request` events, caches PR metadata in Redis (TTL 7 days) and creates a `skipped` Check Run; on `workflow_run completed` events matching the configured workflow name and conclusion, looks up cached PR metadata (falls back to GitHub API if cache is cold) then enqueues the scan
+- **`workflow_job` trigger:** same two-stage pattern as `workflow_run` but gates on a single named job completing rather than the whole workflow
+- **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores exceptions in Redis keyed to the current head SHA; re-enqueues the scan if the current check run is in `failure` state
 - Job ID is deduplicated by `{repo}#{pr}@{sha}` - duplicate webhook deliveries are no-ops (Redis lock + queue check)
 - Exported `app` and `processWebhookRequest` for use in tests
 
@@ -70,17 +72,23 @@ Two separate Node.js processes:
 **Job lifecycle (inside `runScan`):**
 1. Mark Check Run `in_progress`
 2. Authenticate as installation via `src/auth.js` → short-lived token
-3. Create temp workspace (`src/fetcher.js` → `createWorkspace`)
-4. Partial-clone both head and base SHAs with `--filter=blob:none` - fetches trees/commits only, no blobs yet (`src/fetcher.js` → `setupRepo`)
-5. Diff the two commits via tree objects to get changed file paths (`getChangedFiles`)
-6. Sparse-checkout only the changed files - blobs fetched on demand (`checkoutFiles`)
-7. Load per-repo config via `src/config.js` → `loadScanConfig`
-8. Run scanners in parallel via `src/dispatcher.js` → `dispatch()`
-9. Convert findings to annotations via `src/reporter.js` → `buildAnnotations()`
-10. Complete Check Run
-11. Apply/remove PR labels via `src/github.js` → `ensureLabelsExist` + `setLabels`
-12. Notify via `src/notifiers/index.js` → `notify()` (only when finding count increases)
-13. Clean up workspace in `finally`
+3. Resolve merge base SHA via `src/github.js` → `getMergeBaseSha` (three-dot diff base)
+4. Create temp workspace (`src/fetcher.js` → `createWorkspace`)
+5. Partial-clone head and merge-base SHAs with `--filter=blob:none` (`src/fetcher.js` → `setupRepo`)
+6. Diff the two commits to get changed file paths (`getChangedFiles`) and per-file changed line ranges (`getChangedLineRanges`)
+7. Sparse-checkout only the changed files - blobs fetched on demand (`checkoutFiles`)
+8. Load per-repo config via `src/config.js` → `loadScanConfig`
+9. Run scanners in parallel via `src/dispatcher.js` → `dispatch()`
+10. Validate finding locations against the actual file content (`src/location-validator.js` → `validateFindingLocations`)
+11. Suppress findings that have a `// SECURITY:` comment at the merge base (`src/suppressor.js` → `suppressFindings`)
+12. Filter to actionable findings; stamp each with a deterministic `_findingId` (`LAYNE-xxxxxxxx`) via `src/exception-approvals.js` → `generateFindingId`
+13. Convert findings to annotations via `src/reporter.js` → `buildAnnotations()`
+14. If `exceptionApprovers` is configured: load stored exceptions from Redis and call `buildExceptionSummary` to potentially override conclusion to `success`
+15. Complete Check Run
+16. Post PR comment if `comment.enabled` via `src/commenter.js` → `postComment`
+17. Apply/remove PR labels via `src/github.js` → `ensureLabelsExist` + `setLabels`
+18. Notify via `src/notifiers/index.js` → `notify()` (always fires on exception approval; otherwise only when finding count increases)
+19. Clean up workspace in `finally`
 
 **Scanners (`src/adapters/`):**
 - `semgrep.js` - runs `semgrep scan --config auto --json`; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low

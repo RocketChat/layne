@@ -10,8 +10,9 @@ Layne requests the minimum permissions needed to do its job:
 |---|---|---|
 | Checks | Read & write | Creates and updates Check Runs with scan results and annotations |
 | Contents | Read-only | Clones the PR head and base commits to scan changed files |
-| Pull requests | Read-only | Reads PR metadata (number, head SHA, base SHA) from the webhook payload |
-| Issues | Read & write | Adds and removes GitHub labels on PRs (labels are managed via the Issues API) |
+| Pull requests | Read-only | Queries PR metadata via the GitHub API (`getPullRequest`, `findPullRequestBySha`) |
+| Issues | Read & write | Adds and removes GitHub labels on PRs; posts exception approval confirmation and error reply comments |
+| Organization members | Read-only | Resolves team membership when `exceptionApprovers.teams` is configured |
 
 Layne does not request write access to Contents, code, or settings - it cannot push commits or modify repository configuration.
 
@@ -71,6 +72,8 @@ The EC2 instance exposes:
 |---|---|---|
 | Scan job queue | Redis | Until job completes or fails; evicted by BullMQ |
 | Notification dedup counts | Redis (`layne:scan:count:…`) | 30-day TTL |
+| Exception approval records | Redis (`layne:exception:…`) | 30-day TTL; keyed to commit SHA so new pushes don't inherit prior approvals |
+| PR metadata cache (deferred triggers) | Redis (`layne:pr:…`) | 7-day TTL |
 | Cloned repository workspaces | Ephemeral temp directory | Deleted in `finally` block after each scan |
 | Scan findings | Not stored | Results are posted directly to the GitHub Check Run and discarded |
 

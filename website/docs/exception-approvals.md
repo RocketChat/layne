@@ -42,7 +42,7 @@ The command can appear anywhere in the comment body — other text before or aft
 
 ## Finding IDs
 
-Each finding gets a deterministic `LAYNE-xxxxxxxx` ID derived from the tool, rule, file, and line number. The same finding produces the same ID on every scan of the same commit, so the ID in the check run summary is stable until the code changes.
+Each finding gets a deterministic `LAYNE-xxxxxxxx` ID derived from the tool, file, and line number. The same finding produces the same ID on every scan of the same commit, so the ID in the check run summary is stable until the code changes.
 
 ## Check Run Summary
 

@@ -30,7 +30,12 @@ Everything runs inside Docker Compose - nginx, Certbot, Redis, the server, and t
    | Checks | Read & write |
    | Contents | Read-only |
    | Pull requests | Read-only |
-   | Issues | Read & write (required for label management) |
+   | Issues | Read & write (required for label management and exception approval comments) |
+
+   Under **Organization permissions**, set:
+   | Permission | Access |
+   |---|---|
+   | Members | Read-only (required when `exceptionApprovers.teams` is configured) |
 
 4. Under **Subscribe to events**, check **Pull request**, **Workflow run**, **Workflow job**, and **Issue comment** (required for exception approvals).
 
