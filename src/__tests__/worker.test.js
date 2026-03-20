@@ -233,6 +233,7 @@ describe('processJob()', () => {
       expect(suppressFindings).toHaveBeenCalledWith(rawFindings, {
         workspacePath: '/tmp/layne-test-workspace',
         baseSha:       'merge-base-sha',
+        headSha:       'abc123',
       });
     });
 

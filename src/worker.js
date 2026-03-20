@@ -180,7 +180,7 @@ async function runScan(job) {
     const rawFindings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, changedLineRanges, labels, owner, repo });
     const validatedFindings = await validateFindingLocations(rawFindings, { workspacePath, changedFiles, changedLineRanges });
     logFindingPlacement(validatedFindings, { owner, repo, prNumber });
-    const findings = await suppressFindings(validatedFindings, { workspacePath, baseSha: mergeBaseSha });
+    const findings = await suppressFindings(validatedFindings, { workspacePath, baseSha: mergeBaseSha, headSha });
     const actionableFindings = findings.filter(isActionableFinding);
     const discardedCount = findings.length - actionableFindings.length;
     console.log(`[worker] ${actionableFindings.length} actionable finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);

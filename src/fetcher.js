@@ -150,6 +150,65 @@ function isWithinPath(targetPath, basePath) {
   return targetPath === basePath || targetPath.startsWith(`${basePath}${sep}`);
 }
 
+/**
+ * Builds a Map<headLine, baseLine | null> for a single file by parsing the
+ * unified diff between baseSha and headSha.
+ *
+ * - Context lines ( ): headLine → baseLine (unchanged, possibly shifted)
+ * - Added lines (+):   headLine → null     (new in this PR, no base equivalent)
+ * - Removed lines (-): no head entry       (gone from head, base line consumed)
+ *
+ * --unified=999999 ensures every unchanged line appears as a context line so
+ * the map covers the entire head file, not just changed regions.
+ */
+export async function buildLineMapForFile({ workspacePath, baseSha, headSha, filePath }) {
+  const patch = await git([
+    '-C', workspacePath, 'diff',
+    '--unified=999999', '--no-color', '--no-ext-diff',
+    baseSha, headSha, '--', filePath,
+  ]);
+  return parseLineMap(patch, filePath);
+}
+
+function parseLineMap(patch, filePath) {
+  const map = new Map();
+  let headLine = null;
+  let baseLine = null;
+  let inFile = false;
+
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('+++ ')) {
+      inFile = stripGitPathPrefix(line.slice(4).trim()) === filePath;
+      continue;
+    }
+
+    if (!inFile) continue;
+
+    if (line.startsWith('@@')) {
+      const match = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (!match) continue;
+      baseLine = Number.parseInt(match[1], 10);
+      headLine = Number.parseInt(match[2], 10);
+      continue;
+    }
+
+    if (headLine === null) continue;
+
+    if (line.startsWith(' ')) {
+      map.set(headLine, baseLine);
+      headLine++;
+      baseLine++;
+    } else if (line.startsWith('+')) {
+      map.set(headLine, null);
+      headLine++;
+    } else if (line.startsWith('-')) {
+      baseLine++;
+    }
+  }
+
+  return map;
+}
+
 function parseChangedLineRanges(patch) {
   const rangesByFile = {};
   let currentFile = null;
