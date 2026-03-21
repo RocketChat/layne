@@ -16,7 +16,7 @@ import { notify } from './notifiers/index.js';
 import { postComment } from './commenter.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
-import { generateFindingId, loadExceptions, buildExceptionSummary } from './exception-approvals.js';
+import { generateFindingId, loadExceptions, filterStaleExceptions, resolveDriftedExceptions, buildExceptionSummary } from './exception-approvals.js';
 import {
   registry,
   scanTotal,
@@ -209,10 +209,38 @@ async function runScan(job) {
         .filter(f => f.severity === 'critical' || f.severity === 'high')
         .map(f => f._findingId);
 
-      const exceptions = blockingIds.length > 0
-        ? await loadExceptions({ owner, repo, prNumber, headSha, findingIds: blockingIds })
+      const loadedExceptions = blockingIds.length > 0
+        ? await loadExceptions({ owner, repo, prNumber, findingIds: blockingIds })
             .catch(err => { console.error(`[worker] Failed to load exceptions: ${err.message}`); return new Map(); })
         : new Map();
+
+      const freshExceptions = await filterStaleExceptions({
+        exceptions:     loadedExceptions,
+        findings:       actionableFindings,
+        workspacePath:  scanContext.repoWorkspacePath,
+        currentHeadSha: headSha,
+      }).catch(err => {
+        console.error(`[worker] Failed to filter stale exceptions: ${err.message} — using loaded exceptions as-is`);
+        return loadedExceptions;
+      });
+
+      const unmatchedBlockingFindings = actionableFindings.filter(f =>
+        (f.severity === 'critical' || f.severity === 'high') && !freshExceptions.has(f._findingId)
+      );
+
+      const driftedExceptions = await resolveDriftedExceptions({
+        unmatchedFindings:  unmatchedBlockingFindings,
+        owner, repo, prNumber,
+        workspacePath:      scanContext.repoWorkspacePath,
+        currentHeadSha:     headSha,
+      }).catch(err => {
+        console.error(`[worker] Failed to resolve drifted exceptions: ${err.message}`);
+        return new Map();
+      });
+
+      const exceptions = driftedExceptions.size > 0
+        ? new Map([...freshExceptions, ...driftedExceptions])
+        : freshExceptions;
 
       const override = buildExceptionSummary({ findings: actionableFindings, exceptions, baseSummary: appendDiscardedCandidateSummary(result.summary, discardedCount) });
       conclusion = override.conclusion;

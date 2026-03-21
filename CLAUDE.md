@@ -58,7 +58,7 @@ Two separate Node.js processes:
 - **`pull_request` trigger (default):** on opened/synchronize/reopened, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
 - **`workflow_run` trigger:** on `pull_request` events, caches PR metadata in Redis (TTL 7 days) and creates a `skipped` Check Run; on `workflow_run completed` events matching the configured workflow name and conclusion, looks up cached PR metadata (falls back to GitHub API if cache is cold) then enqueues the scan
 - **`workflow_job` trigger:** same two-stage pattern as `workflow_run` but gates on a single named job completing rather than the whole workflow
-- **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores exceptions in Redis keyed to the current head SHA; re-enqueues the scan if the current check run is in `failure` state
+- **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores exceptions in Redis scoped to the PR (not the commit SHA); re-enqueues the scan if the current check run is in `failure` state
 - Job ID is deduplicated by `{repo}#{pr}@{sha}` - duplicate webhook deliveries are no-ops (Redis lock + queue check)
 - Exported `app` and `processWebhookRequest` for use in tests
 
@@ -81,9 +81,9 @@ Two separate Node.js processes:
 9. Run scanners in parallel via `src/dispatcher.js` → `dispatch()`
 10. Validate finding locations against the actual file content (`src/location-validator.js` → `validateFindingLocations`)
 11. Suppress findings that have a `// SECURITY:` comment at the merge base (`src/suppressor.js` → `suppressFindings`)
-12. Filter to actionable findings; stamp each with a deterministic `_findingId` (`LAYNE-xxxxxxxx`) via `src/exception-approvals.js` → `generateFindingId`
+12. Filter to actionable findings; stamp each with a deterministic `_findingId` (`LAYNE-xxxxxxxxxxxxxxxx`) via `src/exception-approvals.js` → `generateFindingId`
 13. Convert findings to annotations via `src/reporter.js` → `buildAnnotations()`
-14. If `exceptionApprovers` is configured: load stored exceptions from Redis and call `buildExceptionSummary` to potentially override conclusion to `success`
+14. If `exceptionApprovers` is configured: load stored exceptions from Redis (`loadExceptions`), remove stale ones whose flagged line changed (`filterStaleExceptions`), resolve approvals that survived a line-number shift via rebase (`resolveDriftedExceptions`), then call `buildExceptionSummary` to potentially override conclusion to `success`
 15. Complete Check Run
 16. Post PR comment if `comment.enabled` via `src/commenter.js` → `postComment`
 17. Apply/remove PR labels via `src/github.js` → `ensureLabelsExist` + `setLabels`

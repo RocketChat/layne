@@ -72,7 +72,7 @@ The EC2 instance exposes:
 |---|---|---|
 | Scan job queue | Redis | Until job completes or fails; evicted by BullMQ |
 | Notification dedup counts | Redis (`layne:scan:count:…`) | 30-day TTL |
-| Exception approval records | Redis (`layne:exception:…`) | 30-day TTL; keyed to commit SHA so new pushes don't inherit prior approvals |
+| Exception approval records | Redis (`layne:exception:…`, `layne:exception-ids:…`) | 30-day TTL; PR-scoped — exceptions survive unrelated commits but are invalidated when the flagged line changes |
 | PR metadata cache (deferred triggers) | Redis (`layne:pr:…`) | 7-day TTL |
 | Cloned repository workspaces | Ephemeral temp directory | Deleted in `finally` block after each scan |
 | Scan findings | Not stored | Results are posted directly to the GitHub Check Run and discarded |

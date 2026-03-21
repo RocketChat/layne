@@ -1,12 +1,13 @@
 import crypto from 'crypto';
 import { getTeamMembers } from './github.js';
 import { redis } from './queue.js';
+import { fetchCommit, getChangedLineRanges, buildLineMapForFile } from './fetcher.js';
 
 const EXCEPTION_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
 
 export function generateFindingId(finding) {
   const input = `${finding.tool}:${finding.file}:${finding.line ?? finding.startLine}`;
-  return 'LAYNE-' + crypto.createHash('sha256').update(input).digest('hex').slice(0, 8);
+  return 'LAYNE-' + crypto.createHash('sha256').update(input).digest('hex').slice(0, 16);
 }
 
 // Returns { ids, reason } | { ids, reason: null, error } | null
@@ -21,10 +22,10 @@ export function parseExceptionCommand(body) {
   const afterCommand = commandLine.slice(commandIndex + '/layne exception-approve'.length).trim();
 
   const tokens = afterCommand.split(/\s+/).filter(Boolean);
-  const ids = tokens.filter(t => /^LAYNE-[0-9a-f]{8}$/.test(t));
+  const ids = tokens.filter(t => /^LAYNE-[0-9a-f]{16}$/.test(t));
 
   if (ids.length === 0) {
-    return { ids: [], reason: null, error: 'No valid finding IDs found. IDs must match LAYNE-xxxxxxxx format.' };
+    return { ids: [], reason: null, error: 'No valid finding IDs found. IDs must match LAYNE-xxxxxxxxxxxxxxxx format.' };
   }
 
   const reasonIndex = tokens.findIndex(t => t === 'reason:');
@@ -40,19 +41,23 @@ export function parseExceptionCommand(body) {
   return { ids, reason };
 }
 
-export async function storeExceptions({ owner, repo, prNumber, headSha, findingIds, approver, reason }) {
-  const value = JSON.stringify({ approver, reason, timestamp: new Date().toISOString() });
+export async function storeExceptions({ owner, repo, prNumber, approvedHeadSha, findingIds, approver, reason }) {
+  const value = JSON.stringify({ approver, reason, timestamp: new Date().toISOString(), approvedHeadSha });
+  const setKey = `layne:exception-ids:${owner}/${repo}#${prNumber}`;
 
-  await Promise.all(findingIds.map(findingId => {
-    const key = `layne:exception:${owner}/${repo}#${prNumber}@${headSha}:${findingId}`;
-    return redis.set(key, value, 'EX', EXCEPTION_TTL);
-  }));
+  await Promise.all([
+    ...findingIds.map(findingId => {
+      const key = `layne:exception:${owner}/${repo}#${prNumber}:${findingId}`;
+      return redis.set(key, value, 'EX', EXCEPTION_TTL);
+    }),
+    redis.sadd(setKey, ...findingIds).then(() => redis.expire(setKey, EXCEPTION_TTL)),
+  ]);
 }
 
-// Returns Map<findingId, { approver, reason, timestamp }>
-export async function loadExceptions({ owner, repo, prNumber, headSha, findingIds }) {
+// Returns Map<findingId, { approver, reason, timestamp, approvedHeadSha }>
+export async function loadExceptions({ owner, repo, prNumber, findingIds }) {
   const results = await Promise.all(findingIds.map(async findingId => {
-    const key = `layne:exception:${owner}/${repo}#${prNumber}@${headSha}:${findingId}`;
+    const key = `layne:exception:${owner}/${repo}#${prNumber}:${findingId}`;
     const val = await redis.get(key);
     return [findingId, val ? JSON.parse(val) : null];
   }));
@@ -62,6 +67,132 @@ export async function loadExceptions({ owner, repo, prNumber, headSha, findingId
     if (data !== null) map.set(id, data);
   }
   return map;
+}
+
+// Removes exceptions whose flagged line was changed between the approval commit and the
+// current head. Groups by approvedHeadSha to minimise git fetches - one fetch per unique
+// approval SHA regardless of how many findings were approved in that commit.
+// On fetch or diff failure the entire group is invalidated (conservative fallback).
+export async function filterStaleExceptions({ exceptions, findings, workspacePath, currentHeadSha }) {
+  if (exceptions.size === 0) return exceptions;
+
+  const findingById = new Map(findings.map(f => [f._findingId, f]));
+
+  // Group exception findingIds by the SHA at which they were approved.
+  const bySha = new Map();
+  for (const [findingId, data] of exceptions) {
+    const { approvedHeadSha } = data;
+    if (approvedHeadSha === currentHeadSha) continue;
+    if (!bySha.has(approvedHeadSha)) bySha.set(approvedHeadSha, []);
+    bySha.get(approvedHeadSha).push(findingId);
+  }
+
+  if (bySha.size === 0) return exceptions;
+
+  const filtered = new Map(exceptions);
+
+  for (const [approvedHeadSha, findingIds] of bySha) {
+    const files = [...new Set(findingIds.map(id => findingById.get(id)?.file).filter(Boolean))];
+
+    let changedRanges;
+    try {
+      await fetchCommit({ workspacePath, sha: approvedHeadSha });
+      changedRanges = await getChangedLineRanges({
+        workspacePath, baseSha: approvedHeadSha, headSha: currentHeadSha, files,
+      });
+    } catch (err) {
+      console.warn(`[exception-approvals] Could not check staleness for ${approvedHeadSha}: ${err.message} — invalidating as a precaution`);
+      for (const id of findingIds) filtered.delete(id);
+      continue;
+    }
+
+    for (const findingId of findingIds) {
+      const finding = findingById.get(findingId);
+      if (!finding) continue;
+
+      const line   = finding.line ?? finding.startLine;
+      const ranges = changedRanges[finding.file] ?? [];
+      if (ranges.some(r => line >= r.start && line <= r.end)) {
+        console.log(`[exception-approvals] Invalidating exception ${findingId}: ${finding.file}:${line} changed since approval`);
+        filtered.delete(findingId);
+      }
+    }
+  }
+
+  return filtered;
+}
+
+// For blocking findings that have no matching stored exception, checks whether the finding
+// is a line-shifted version of a previously approved one (e.g. a rebase added lines above
+// the flagged code). Uses the PR-scoped exception ID set to load all stored exceptions,
+// then builds a per-file line map (headLine → baseLine) between the approval SHA and the
+// current head. If the current finding's line maps back to a line that was approved, the
+// exception is carried forward (only possible for unchanged context lines — modified lines
+// map to null in the line map and are therefore never matched).
+export async function resolveDriftedExceptions({
+  unmatchedFindings,
+  owner, repo, prNumber,
+  workspacePath,
+  currentHeadSha,
+}) {
+  if (unmatchedFindings.length === 0) return new Map();
+
+  const setKey = `layne:exception-ids:${owner}/${repo}#${prNumber}`;
+  const allIds = await redis.smembers(setKey);
+  if (allIds.length === 0) return new Map();
+
+  const allExceptions = await loadExceptions({ owner, repo, prNumber, findingIds: allIds });
+  if (allExceptions.size === 0) return new Map();
+
+  // Group stored exceptions by approvedHeadSha, skipping the current SHA (no drift possible).
+  const bySha = new Map();
+  for (const [findingId, data] of allExceptions) {
+    if (data.approvedHeadSha === currentHeadSha) continue;
+    if (!bySha.has(data.approvedHeadSha)) bySha.set(data.approvedHeadSha, new Map());
+    bySha.get(data.approvedHeadSha).set(findingId, data);
+  }
+
+  if (bySha.size === 0) return new Map();
+
+  const resolved = new Map();
+  const affectedFiles = [...new Set(unmatchedFindings.map(f => f.file))];
+
+  for (const [approvedHeadSha, exceptionsAtSha] of bySha) {
+    try {
+      await fetchCommit({ workspacePath, sha: approvedHeadSha });
+    } catch (err) {
+      console.warn(`[exception-approvals] Could not fetch ${approvedHeadSha} for drift check: ${err.message} — skipping`);
+      continue;
+    }
+
+    for (const file of affectedFiles) {
+      const findingsInFile = unmatchedFindings.filter(f => f.file === file && !resolved.has(f._findingId));
+      if (findingsInFile.length === 0) continue;
+
+      let lineMap;
+      try {
+        lineMap = await buildLineMapForFile({ workspacePath, baseSha: approvedHeadSha, headSha: currentHeadSha, filePath: file });
+      } catch (err) {
+        console.warn(`[exception-approvals] Could not build line map for ${file}@${approvedHeadSha}: ${err.message} — skipping`);
+        continue;
+      }
+
+      for (const finding of findingsInFile) {
+        const currentLine = finding.line ?? finding.startLine;
+        const originalLine = lineMap.get(currentLine);
+        if (originalLine === null || originalLine === undefined) continue;
+
+        const oldFindingId = generateFindingId({ tool: finding.tool, file: finding.file, line: originalLine });
+        const exception = exceptionsAtSha.get(oldFindingId);
+        if (exception) {
+          console.log(`[exception-approvals] Drift resolved: ${finding._findingId} (line ${currentLine}) ← ${oldFindingId} (line ${originalLine}) approved by @${exception.approver} at ${approvedHeadSha}`);
+          resolved.set(finding._findingId, exception);
+        }
+      }
+    }
+  }
+
+  return resolved;
 }
 
 export function buildExceptionSummary({ findings, exceptions, baseSummary }) {

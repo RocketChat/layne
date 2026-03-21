@@ -92,9 +92,20 @@ export async function getChangedFiles({ workspacePath, baseSha, headSha }) {
 // Returns changed line ranges in the head version of each file, keyed by
 // repo-root-relative path. This lets downstream annotation code distinguish
 // "valid location in the file" from "valid location in the PR diff".
-export async function getChangedLineRanges({ workspacePath, baseSha, headSha }) {
-  const patch = await git(['-C', workspacePath, 'diff', '--unified=0', '--no-color', '--no-ext-diff', baseSha, headSha]);
+// Pass `files` to scope the diff to a specific subset of paths.
+export async function getChangedLineRanges({ workspacePath, baseSha, headSha, files = [] }) {
+  const args = ['-C', workspacePath, 'diff', '--unified=0', '--no-color', '--no-ext-diff', baseSha, headSha];
+  if (files.length > 0) args.push('--', ...files);
+  const patch = await git(args);
   return parseChangedLineRanges(patch);
+}
+
+// Fetches a specific commit SHA into an existing workspace using the already-configured
+// authenticated remote. Used to lazy-load commits that were not part of the initial
+// setupRepo fetch (e.g. a previously approved head SHA for staleness checks).
+export async function fetchCommit({ workspacePath, sha }) {
+  await git(['-C', workspacePath, '-c', 'protocol.version=2', 'fetch',
+    '--depth', '1', '--filter=blob:none', 'origin', sha]);
 }
 
 // Materialises only the changed files on disk. git sparse-checkout restricts the working
