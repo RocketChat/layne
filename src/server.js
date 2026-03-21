@@ -214,13 +214,13 @@ async function handleIssueComment(payload) {
   const headSha = pr.head.sha;
 
   await storeExceptions({
-    owner:      repository.owner.login,
-    repo:       repository.name,
-    prNumber:   issue.number,
-    headSha,
-    findingIds: parsed.ids,
-    approver:   commenter,
-    reason:     parsed.reason,
+    owner:           repository.owner.login,
+    repo:            repository.name,
+    prNumber:        issue.number,
+    approvedHeadSha: headSha,
+    findingIds:      parsed.ids,
+    approver:        commenter,
+    reason:          parsed.reason,
   }).catch(err => console.error(`[server] Failed to store exceptions: ${err.message}`));
 
   const checkRun = await getLatestCheckRun({

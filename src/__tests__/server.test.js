@@ -976,13 +976,13 @@ describe('issue_comment handler', () => {
     ));
 
     expect(storeExceptions).toHaveBeenCalledWith(expect.objectContaining({
-      owner:      'org',
-      repo:       'my-repo',
-      prNumber:   42,
-      headSha:    'abc123',
-      findingIds: ['LAYNE-a3f29c81'],
-      approver:   'alice',
-      reason:     'test cred',
+      owner:           'org',
+      repo:            'my-repo',
+      prNumber:        42,
+      approvedHeadSha: 'abc123',
+      findingIds:      ['LAYNE-a3f29c81'],
+      approver:        'alice',
+      reason:          'test cred',
     }));
   });
 

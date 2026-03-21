@@ -11,13 +11,13 @@ Exceptions are **deliberate and auditable** — the approver must reference the 
 3. The check run summary lists each blocking finding with its ID and a ready-to-copy command
 4. An authorized approver posts a PR comment with the command:
    ```
-   /layne exception-approve LAYNE-a3f29c81 reason: test credential, will be rotated before release
+   /layne exception-approve LAYNE-a3f29c81b7e41d22 reason: test credential, will be rotated before release
    ```
 5. Layne receives the `issue_comment` webhook, validates the command and the approver's authorization
-6. Layne stores the exception in Redis (scoped to the current commit SHA) and re-runs the scan
+6. Layne stores the exception in Redis (scoped to the PR) and re-runs the scan
 7. The check run passes with `conclusion: success` and a summary listing who excepted each finding and why
 
-New commits invalidate prior exceptions automatically — the exceptions are keyed to the head SHA, so a new push requires new approvals.
+Exceptions survive new commits as long as the flagged line has not changed. If the flagged line is modified by a subsequent commit, the exception is invalidated and a new approval is required. Unrelated commits — rebases, merge commits from the base branch, changes to other files — do not affect existing approvals.
 
 ## The Command
 
@@ -30,19 +30,19 @@ Post a comment on the PR containing the following on a single line:
 | Part | Description |
 |---|---|
 | `/layne exception-approve` | Required trigger prefix |
-| `<ID>` | One or more finding IDs in `LAYNE-xxxxxxxx` format (from the check run summary) |
+| `<ID>` | One or more finding IDs in `LAYNE-xxxxxxxxxxxxxxxx` format (from the check run summary) |
 | `reason: <explanation>` | Required — free-text explanation; recorded in the audit trail |
 
 **Multiple findings in one command:**
 ```
-/layne exception-approve LAYNE-a3f29c81 LAYNE-b7e41d22 reason: legacy code, tracked in JIRA-1234
+/layne exception-approve LAYNE-a3f29c81b7e41d22 LAYNE-b7e41d22a3f29c81 reason: legacy code, tracked in JIRA-1234
 ```
 
 The command can appear anywhere in the comment body — other text before or after it is ignored.
 
 ## Finding IDs
 
-Each finding gets a deterministic `LAYNE-xxxxxxxx` ID derived from the tool, file, and line number. The same finding produces the same ID on every scan of the same commit, so the ID in the check run summary is stable until the code changes.
+Each finding gets a deterministic `LAYNE-xxxxxxxxxxxxxxxx` ID derived from the tool, file, and line number. The same finding produces the same ID on every scan as long as it remains at the same location, so the ID in the check run summary is stable until the flagged line moves or is removed.
 
 ## Check Run Summary
 
@@ -53,11 +53,11 @@ When exception approvers are configured, the check run summary includes the find
 Found 2 issue(s): 0 critical, 2 high, 0 medium, 0 low.
 
 Blocking findings:
-- LAYNE-a3f29c81 [trufflehog/aws-key] src/config.js:42
-- LAYNE-b7e41d22 [semgrep/eval] src/api.js:88
+- LAYNE-a3f29c81b7e41d22 [trufflehog/aws-key] src/config.js:42
+- LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88
 
 To approve, post a comment:
-/layne exception-approve LAYNE-a3f29c81 LAYNE-b7e41d22 reason: <explanation>
+/layne exception-approve LAYNE-a3f29c81b7e41d22 LAYNE-b7e41d22a3f29c81 reason: <explanation>
 ```
 
 **On failure (partial exceptions):**
@@ -65,13 +65,13 @@ To approve, post a comment:
 Found 2 issue(s): 0 critical, 2 high, 0 medium, 0 low.
 
 Blocking findings (1 remaining):
-- LAYNE-b7e41d22 [semgrep/eval] src/api.js:88
+- LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88
 
 Already excepted (1):
-- LAYNE-a3f29c81 — excepted by @alice: "test credential"
+- LAYNE-a3f29c81b7e41d22 — excepted by @alice: "test credential"
 
 To approve remaining findings, post:
-/layne exception-approve LAYNE-b7e41d22 reason: <explanation>
+/layne exception-approve LAYNE-b7e41d22a3f29c81 reason: <explanation>
 ```
 
 **On success (all excepted):**
@@ -81,8 +81,8 @@ To approve remaining findings, post:
 Found 2 issue(s): 0 critical, 2 high, 0 medium, 0 low.
 
 Excepted findings:
-- LAYNE-a3f29c81 [trufflehog/aws-key] src/config.js:42 — excepted by @alice: "test credential, will be rotated"
-- LAYNE-b7e41d22 [semgrep/eval] src/api.js:88 — excepted by @bob: "legacy code, tracked in JIRA-1234"
+- LAYNE-a3f29c81b7e41d22 [trufflehog/aws-key] src/config.js:42 — excepted by @alice: "test credential, will be rotated"
+- LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88 — excepted by @bob: "legacy code, tracked in JIRA-1234"
 
 All findings are still annotated below for reference.
 ```
@@ -179,7 +179,7 @@ Notifications are **always sent** when an exception is used — even if the find
 | Compromised approver account | Require 2FA on GitHub; follow org security policies |
 | Team membership escalation | Audit team membership regularly; use CODEOWNERS |
 | Config tampering | Protect `config/layne.json` with CODEOWNERS and branch protection |
-| Approval for old commit | Exceptions are keyed to the current HEAD SHA — a new push requires new approvals |
+| Approval for changed code | Exceptions are invalidated when the flagged line changes — only unrelated commits (rebases, merges from the base branch) preserve approvals |
 | Silent approvals | Notifications always fire for exceptions; reason is required and recorded |
 | Unauthorized command | Commands from non-approvers are silently ignored — no reply, no re-scan |
 
@@ -214,11 +214,11 @@ Check run: FAILURE ❌
 Summary includes finding IDs and copy-paste command
              ↓
 Authorized approver posts:
-/layne exception-approve LAYNE-a3f29c81 reason: accepted risk
+/layne exception-approve LAYNE-a3f29c81b7e41d22 reason: accepted risk
              ↓
 Layne validates command and authorization
              ↓
-Exception stored in Redis (keyed to current HEAD SHA)
+Exception stored in Redis (scoped to the PR)
 Layne re-runs the scan
              ↓
 All blocking findings excepted → PASS with audit note
@@ -245,13 +245,13 @@ Check run: SUCCESS ⚠️
 
 **Scenario:**
 1. Developer opens PR #42 with a hardcoded API key (Trufflehog finding)
-2. Layne scan fails with `conclusion: failure`; summary shows `LAYNE-a3f29c81` and the copy-paste command
+2. Layne scan fails with `conclusion: failure`; summary shows `LAYNE-a3f29c81b7e41d22` and the copy-paste command
 3. Bob (authorized user) posts:
    ```
-   /layne exception-approve LAYNE-a3f29c81 reason: test credential, rotating before release
+   /layne exception-approve LAYNE-a3f29c81b7e41d22 reason: test credential, rotating before release
    ```
-4. Layne replies: `✅ Exception recorded for LAYNE-a3f29c81 by @bob: "test credential, rotating before release". Re-running scan...`
+4. Layne replies: `✅ Exception recorded for LAYNE-a3f29c81b7e41d22 by @bob: "test credential, rotating before release". Re-running scan...`
 5. Layne re-runs the scan; check run shows success with the exception audit trail
 6. Label `security-exception-used` is added to the PR
 7. Notification sent to Rocket.Chat/Slack
-8. Developer pushes a new commit — the exception is invalidated; Bob must re-approve if the finding still exists
+8. Developer pushes a new commit — if the commit does not touch the flagged line, the exception survives and no re-approval is needed; if the flagged line is modified, the exception is invalidated and Bob must re-approve

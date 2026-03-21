@@ -112,9 +112,11 @@ vi.mock('../location-validator.js', () => ({
 }));
 
 vi.mock('../exception-approvals.js', () => ({
-  generateFindingId:    vi.fn().mockReturnValue('LAYNE-a3f29c81'),
-  loadExceptions:       vi.fn().mockResolvedValue(new Map()),
-  buildExceptionSummary: vi.fn(({ baseSummary }) => ({ conclusion: 'failure', summary: baseSummary })),
+  generateFindingId:        vi.fn().mockReturnValue('LAYNE-a3f29c81'),
+  loadExceptions:           vi.fn().mockResolvedValue(new Map()),
+  filterStaleExceptions:    vi.fn(async ({ exceptions }) => exceptions),
+  resolveDriftedExceptions: vi.fn(async () => new Map()),
+  buildExceptionSummary:    vi.fn(({ baseSummary }) => ({ conclusion: 'failure', summary: baseSummary })),
 }));
 
 const { Worker: MockWorker }              = await import('bullmq');
@@ -130,7 +132,7 @@ const { loadScanConfig }                  = await import('../config.js');
 const { notify }                          = await import('../notifiers/index.js');
 const { postComment }                     = await import('../commenter.js');
 const { redis }                           = await import('../queue.js');
-const { generateFindingId, loadExceptions, buildExceptionSummary } = await import('../exception-approvals.js');
+const { generateFindingId, loadExceptions, filterStaleExceptions, resolveDriftedExceptions, buildExceptionSummary } = await import('../exception-approvals.js');
 const { createScanContext, filterFindingsToChangedLines } = await import('../scan-context.js');
 const { processJob, shutdown }            = await import('../worker.js');
 
@@ -933,8 +935,47 @@ describe('processJob()', () => {
         owner:      'org',
         repo:       'repo',
         prNumber:   7,
-        headSha:    'abc123',
         findingIds: ['LAYNE-a3f29c81'],
+      }));
+    });
+
+    it('calls filterStaleExceptions with loaded exceptions after loadExceptions', async () => {
+      const loaded = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'ok', timestamp: '', approvedHeadSha: 'abc123' }]]);
+      loadExceptions.mockResolvedValueOnce(loaded);
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
+
+      await processJob(baseJob);
+
+      expect(filterStaleExceptions).toHaveBeenCalledWith(expect.objectContaining({
+        exceptions:     loaded,
+        currentHeadSha: 'abc123',
+      }));
+    });
+
+    it('calls resolveDriftedExceptions with unmatched blocking findings after filterStaleExceptions', async () => {
+      // filterStaleExceptions returns empty — no direct exception match for the finding.
+      filterStaleExceptions.mockResolvedValueOnce(new Map());
+
+      await processJob(baseJob);
+
+      expect(resolveDriftedExceptions).toHaveBeenCalledWith(expect.objectContaining({
+        unmatchedFindings: expect.arrayContaining([
+          expect.objectContaining({ _findingId: 'LAYNE-a3f29c81' }),
+        ]),
+        currentHeadSha: 'abc123',
+      }));
+    });
+
+    it('merges drifted exceptions into the exceptions map passed to buildExceptionSummary', async () => {
+      filterStaleExceptions.mockResolvedValueOnce(new Map());
+      const drifted = new Map([['LAYNE-a3f29c81', { approver: 'bob', reason: 'drift', timestamp: '' }]]);
+      resolveDriftedExceptions.mockResolvedValueOnce(drifted);
+      buildExceptionSummary.mockReturnValueOnce({ conclusion: 'success', summary: 'Drift pass.' });
+
+      await processJob(baseJob);
+
+      expect(buildExceptionSummary).toHaveBeenCalledWith(expect.objectContaining({
+        exceptions: expect.objectContaining({ size: 1 }),
       }));
     });
 

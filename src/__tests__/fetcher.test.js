@@ -17,7 +17,7 @@ vi.mock('child_process', () => ({
   execFile: mockExecFile,
 }));
 
-const { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace } = await import('../fetcher.js');
+const { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace, fetchCommit } = await import('../fetcher.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,6 +179,44 @@ describe('getChangedFiles()', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('fetchCommit()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('fetches the given SHA with --depth 1 and --filter=blob:none', async () => {
+    await fetchCommit({ workspacePath: '/tmp/ws', sha: 'deadbeef' });
+
+    const [cmd, args] = mockExecFile.mock.calls[0];
+    expect(cmd).toBe('git');
+    expect(args).toContain('fetch');
+    expect(args).toContain('--depth');
+    expect(args).toContain('1');
+    expect(args).toContain('--filter=blob:none');
+    expect(args).toContain('origin');
+    expect(args).toContain('deadbeef');
+  });
+
+  it('uses Git protocol v2', async () => {
+    await fetchCommit({ workspacePath: '/tmp/ws', sha: 'deadbeef' });
+    expect(mockExecFile.mock.calls[0][1]).toContain('protocol.version=2');
+  });
+
+  it('runs inside the given workspace path', async () => {
+    await fetchCommit({ workspacePath: '/tmp/my-workspace', sha: 'abc' });
+    const args = mockExecFile.mock.calls[0][1];
+    expect(args).toContain('-C');
+    expect(args).toContain('/tmp/my-workspace');
+  });
+
+  it('throws when git exits with a non-zero code', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) =>
+      cb(new Error('unknown revision'), '', '')
+    );
+    await expect(fetchCommit({ workspacePath: '/tmp/ws', sha: 'bad' })).rejects.toThrow('unknown revision');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('getChangedLineRanges()', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -204,6 +242,24 @@ describe('getChangedLineRanges()', () => {
       'src/app.js': [{ start: 3, end: 4 }],
       'src/util.js': [{ start: 10, end: 10 }],
     });
+  });
+
+  it('scopes the diff to specific files when files array is provided', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
+    await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h', files: ['src/a.js', 'src/b.js'] });
+
+    const args = mockExecFile.mock.calls[0][1];
+    expect(args).toContain('--');
+    expect(args).toContain('src/a.js');
+    expect(args).toContain('src/b.js');
+  });
+
+  it('does not append -- when files array is empty', async () => {
+    mockExecFile.mockImplementationOnce((cmd, args, cb) => cb(null, '', ''));
+    await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
+
+    const args = mockExecFile.mock.calls[0][1];
+    expect(args).not.toContain('--');
   });
 
   it('ignores deleted hunks that have no lines in the head revision', async () => {
