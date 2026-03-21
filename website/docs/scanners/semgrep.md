@@ -12,7 +12,7 @@ Semgrep scans for code-level vulnerabilities using rule-based pattern matching. 
 
 ## How Layne runs it
 
-Layne runs Semgrep against only the files changed in the PR - not the entire repository. The command is assembled as:
+Layne runs Semgrep against only the files changed in the PR - not the entire repository. In [`diff_only` mode](../configuration.md#scan-mode), Semgrep receives projected copies of those files containing only the changed hunks plus surrounding context lines, with blank lines holding the positions of unchanged content. The command is assembled as:
 
 ```
 semgrep scan <extraArgs> --json -- <absolute-file-paths...>

@@ -8,8 +8,9 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
-const KNOWN_GLOBAL_KEYS  = new Set(['notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS      = /^claude-/;
@@ -50,6 +51,7 @@ function validateGlobal(block, ctx, errors) {
       errors.push(`${ctx}: unknown key "${key}" (allowed: ${[...KNOWN_GLOBAL_KEYS].join(', ')})`);
     }
   }
+  validateScanMode(block, ctx, errors);
   if (block.notifications !== undefined) validateNotifications(block.notifications, `${ctx}.notifications`, errors);
   if (block.labels        !== undefined) validateLabels(block.labels, `${ctx}.labels`, errors);
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
@@ -63,6 +65,7 @@ function validateRepo(block, ctx, errors) {
       errors.push(`${ctx}: unknown key "${key}" (allowed: ${[...KNOWN_REPO_KEYS].join(', ')})`);
     }
   }
+  validateScanMode(block, ctx, errors);
   if (block.semgrep       !== undefined) validateScanner(block.semgrep,    `${ctx}.semgrep`,    errors);
   if (block.trufflehog    !== undefined) validateScanner(block.trufflehog, `${ctx}.trufflehog`, errors);
   if (block.claude        !== undefined) validateClaude(block.claude,       `${ctx}.claude`,     errors);
@@ -71,6 +74,15 @@ function validateRepo(block, ctx, errors) {
   if (block.trigger       !== undefined) validateTrigger(block.trigger, `${ctx}.trigger`, errors);
   if (block.comment       !== undefined) validateComment(block.comment, `${ctx}.comment`, errors);
   if (block.exceptionApprovers !== undefined) validateExceptionApprovers(block.exceptionApprovers, `${ctx}.exceptionApprovers`, errors);
+}
+
+function validateScanMode(block, ctx, errors) {
+  if (block.mode !== undefined && !VALID_MODES.has(block.mode))
+    errors.push(`${ctx}.mode: must be "changed_files" or "diff_only", got "${block.mode}"`);
+  if (block.contextLines !== undefined) {
+    if (!Number.isInteger(block.contextLines) || block.contextLines < 0)
+      errors.push(`${ctx}.contextLines: must be a non-negative integer`);
+  }
 }
 
 function validateScanner(block, ctx, errors) {

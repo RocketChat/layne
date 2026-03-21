@@ -6,6 +6,7 @@ import { redis, scanQueue } from './queue.js';
 import { getInstallationToken } from './auth.js';
 import { startCheckRun, completeCheckRun, ensureLabelsExist, setLabels, getMergeBaseSha } from './github.js';
 import { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace } from './fetcher.js';
+import { createScanContext, filterFindingsToChangedLines } from './scan-context.js';
 import { dispatch } from './dispatcher.js';
 import { suppressFindings } from './suppressor.js';
 import { validateFindingLocations } from './location-validator.js';
@@ -143,7 +144,6 @@ async function runScan(job) {
     baseSha,
     baseRef,
     prNumber,
-    labels,
     checkRunId,
   } = job.data;
 
@@ -173,14 +173,17 @@ async function runScan(job) {
     const rawChanged   = await getChangedFiles({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedLineRanges = await getChangedLineRanges({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedFiles = await checkoutFiles({ workspacePath, headSha, files: rawChanged });
-    debug('worker', `dispatching ${changedFiles.length} file(s) to scanners`);
 
     const scanConfig = await loadScanConfig({ owner, repo });
 
-    const rawFindings = await dispatch({ workspacePath, baseSha, baseRef, changedFiles, changedLineRanges, labels, owner, repo });
-    const validatedFindings = await validateFindingLocations(rawFindings, { workspacePath, changedFiles, changedLineRanges });
+    const scanContext = await createScanContext({ workspacePath, changedFiles, baseSha: mergeBaseSha, headSha, scanConfig });
+    debug('worker', `dispatching ${scanContext.scanFiles.length} file(s) to scanners (mode: ${scanContext.mode})`);
+
+    const rawFindings = await dispatch({ scanContext, changedLineRanges, owner, repo });
+    const diffFilteredFindings = filterFindingsToChangedLines(rawFindings, scanContext);
+    const validatedFindings = await validateFindingLocations(diffFilteredFindings, { workspacePath: scanContext.repoWorkspacePath, changedFiles, changedLineRanges });
     logFindingPlacement(validatedFindings, { owner, repo, prNumber });
-    const findings = await suppressFindings(validatedFindings, { workspacePath, baseSha: mergeBaseSha, headSha });
+    const findings = await suppressFindings(validatedFindings, { workspacePath: scanContext.repoWorkspacePath, baseSha: mergeBaseSha, headSha });
     const actionableFindings = findings.filter(isActionableFinding);
     const discardedCount = findings.length - actionableFindings.length;
     console.log(`[worker] ${actionableFindings.length} actionable finding(s) for ${owner}/${repo} PR #${prNumber} across all tools:`);

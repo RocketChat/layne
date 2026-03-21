@@ -14,7 +14,7 @@ Trufflehog does not detect code vulnerabilities (use Semgrep for that) and does 
 
 ## How Layne runs it
 
-Layne runs Trufflehog against only the files changed in the PR - not the entire repository. The command is assembled as:
+Layne runs Trufflehog against only the files changed in the PR - not the entire repository. In [`diff_only` mode](../configuration.md#scan-mode), Trufflehog receives projected copies of those files containing only the changed hunks plus surrounding context lines. Secrets that exist exclusively in unchanged portions of a changed file will not be reported in that mode. The command is assembled as:
 
 ```
 trufflehog filesystem --json --no-update <extraArgs> -- <absolute-file-paths...>

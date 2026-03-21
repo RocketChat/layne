@@ -87,6 +87,7 @@ export async function runClaude({
   workspacePath,
   changedFiles,
   changedLineRanges = {},
+  promptFiles = [],
   toolConfig = DEFAULT_CONFIG.claude,
 }) {
   if (!changedFiles || changedFiles.length === 0) return [];
@@ -101,28 +102,37 @@ export async function runClaude({
   }
   console.log(`[claude] scanning ${changedFiles.length} file(s) with model ${toolConfig.model} (mode: ${mode})`);
 
-  // 1. Read files, skip binaries, cap at FILE_SIZE_LIMIT each
+  // 1. Build file contents.
+  //    diff_only mode: promptFiles are pre-built line-numbered snippets from scan-context.
+  //    changed_files mode: read full file contents from disk.
   const fileContents = [];
-  for (const file of changedFiles) {
-    if (BINARY_EXTENSIONS.has(extname(file).toLowerCase())) {
-      debug('claude', `skipping binary file: ${file}`);
-      continue;
+
+  if (promptFiles.length > 0) {
+    for (const { file, content } of promptFiles) {
+      fileContents.push({ file, content, promptContent: formatSnippetForPrompt(file, content) });
     }
-    let content;
-    try {
-      content = await readFile(join(workspacePath, file), 'utf8');
-    } catch {
-      debug('claude', `could not read file: ${file}`);
-      continue;
+  } else {
+    for (const file of changedFiles) {
+      if (BINARY_EXTENSIONS.has(extname(file).toLowerCase())) {
+        debug('claude', `skipping binary file: ${file}`);
+        continue;
+      }
+      let content;
+      try {
+        content = await readFile(join(workspacePath, file), 'utf8');
+      } catch {
+        debug('claude', `could not read file: ${file}`);
+        continue;
+      }
+      if (content.length > FILE_SIZE_LIMIT) {
+        content = content.slice(0, FILE_SIZE_LIMIT) + '\n[truncated]';
+      }
+      fileContents.push({
+        file,
+        content,
+        promptContent: formatFileForPrompt(file, content, changedLineRanges[file] ?? []),
+      });
     }
-    if (content.length > FILE_SIZE_LIMIT) {
-      content = content.slice(0, FILE_SIZE_LIMIT) + '\n[truncated]';
-    }
-    fileContents.push({
-      file,
-      content,
-      promptContent: formatFileForPrompt(file, content, changedLineRanges[file] ?? []),
-    });
   }
 
   if (fileContents.length === 0) return [];
@@ -290,6 +300,15 @@ function normalizeFinding(finding) {
     ruleId: `claude/${finding.ruleId}`,
     tool: 'claude',
   };
+}
+
+function formatSnippetForPrompt(file, snippetContent) {
+  return [
+    `### ${file}`,
+    '```text',
+    snippetContent,
+    '```',
+  ].join('\n');
 }
 
 function formatFileForPrompt(file, content, ranges) {

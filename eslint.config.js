@@ -1,6 +1,6 @@
 export default [
   {
-    ignores: ['coverage/**', 'node_modules/**'],
+    ignores: ['coverage/**', 'node_modules/**', 'website/.docusaurus/**', 'website/build/**'],
   },
   {
     files: ['**/*.js'],

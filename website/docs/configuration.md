@@ -64,12 +64,74 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 
 | Key | How per-repo overrides `$global` |
 |---|---|
+| `mode`, `contextLines` | Per-repo value replaces global value |
 | `semgrep`, `trufflehog`, `claude` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
 | `trigger` | Full replacement - per-repo `trigger` replaces the global block entirely |
 | `labels` | Full replacement - per-repo `labels` replaces the global block entirely |
 | `notifications` | Per-notifier-key - per-repo `rocketchat` replaces global `rocketchat`; a per-repo `slack` entry stacks alongside a global `rocketchat` entry |
 | `comment` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
 | `exceptionApprovers` | Full replacement - per-repo `exceptionApprovers` replaces the global block entirely |
+
+
+## Scan Mode
+
+Controls how much of each changed file the scanners analyse.
+
+```json title="config/layne.json"
+{
+  "$global": {
+    "mode": "changed_files",
+    "contextLines": 8
+  }
+}
+```
+
+### `mode`
+
+| Value | Behaviour |
+|---|---|
+| `"changed_files"` | *(default)* Each scanner receives the full content of every file touched by the PR. Findings anywhere in those files are reported. |
+| `"diff_only"` | A projected copy of each file is built containing only the changed hunks plus `contextLines` lines of surrounding context (blank lines preserve line numbers). Scanners receive the projected copy. After scanning, findings are filtered to lines that fall within the actual changed ranges. |
+
+`diff_only` reduces noise and cost for large files where only a few lines changed. The tradeoff is that pre-existing issues in unchanged sections of the file are not reported.
+
+:::warning Trufflehog in `diff_only` mode
+Secrets that exist only in unchanged lines of a file will not appear in scan results. If full secret coverage is critical, set `mode: "changed_files"` for those repositories, or keep the global default as `changed_files` and only switch specific repos to `diff_only`.
+:::
+
+### `contextLines`
+
+Number of surrounding lines to include around each changed hunk when `mode` is `"diff_only"`. Adjacent expanded hunks are merged into one region.
+
+- **Default:** `8`
+- Ignored when `mode` is `"changed_files"`
+
+### Examples
+
+**Use `diff_only` globally, fall back to full scan for a compliance-critical repo:**
+
+```json title="config/layne.json"
+{
+  "$global": {
+    "mode": "diff_only",
+    "contextLines": 8
+  },
+  "org/compliance-repo": {
+    "mode": "changed_files"
+  }
+}
+```
+
+**Tighter context window for a high-volume monorepo:**
+
+```json title="config/layne.json"
+{
+  "org/monorepo": {
+    "mode": "diff_only",
+    "contextLines": 3
+  }
+}
+```
 
 
 ## Trigger
