@@ -144,7 +144,6 @@ async function runScan(job) {
     baseSha,
     baseRef,
     prNumber,
-    labels,
     checkRunId,
   } = job.data;
 
