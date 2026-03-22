@@ -91,7 +91,7 @@ Use skill mode when you need the deeper analysis capability and have an uploaded
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `id` | string | (none) | Skill ID from the Anthropic Skills API (`skill_01...`) |
-| `version` | string | `"latest"` | Skill version. Pin to a specific version for reproducible behaviour |
+| `version` | string | `"latest"` | Skill version. Pin to a specific version for reproducible behavior |
 
 Claude scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly opt in.
 
@@ -235,7 +235,13 @@ Required fields:
 
 Guidance:
 
-- Prefer stable short `ruleId` values in lower-kebab-case.
+- `ruleId` must be one of the following values exactly — no other values are permitted:
+  - `reverse-shell` — reverse shells, bind shells, or interactive stdio forwarding to a remote process
+  - `credential-exfiltration` — secrets, tokens, keys, cookies, or env vars sent to an external destination
+  - `obfuscated-payload` — encoded or constructed strings that decode into code, commands, or malicious URLs fed to an execution sink
+  - `backdoor` — hidden admin paths, secret trigger strings, kill switches, or covert remote command execution
+  - `supply-chain-abuse` — hostile install-time scripts, URL/git dependencies with suspicious execution, or typosquat-style packages with concrete hostile behavior
+  - `covert-execution` — dangerous dynamic execution where the surrounding logic is clearly hostile and does not fit a more specific category above
 - Use `high` for confirmed malicious logic. Use lower severities only if the behavior is still clearly malicious but materially less severe.
 - Keep `message` specific and factual.
 - Prefer `anchorKind: "declaration"` when the finding is about the behavior of an enclosing function, method, or class rather than a single sink line.
@@ -309,7 +315,7 @@ If any answer is no, omit the finding.
     "claude": {
       "enabled": true,
       "model": "claude-sonnet-4-6",
-      "prompt": "You are a security reviewer specialising in payment systems. Analyse the provided source files for malicious intent: reverse shells, backdoors, credential exfiltration, and supply-chain attacks. Pay extra attention to anything that could exfiltrate card data or PII. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
+      "prompt": "You are a security reviewer specializing in payment systems. Analyze the provided source files for malicious intent: reverse shells, backdoors, credential exfiltration, and supply-chain attacks. Pay extra attention to anything that could exfiltrate card data or PII. Report ONLY confirmed malicious patterns with high confidence. Call `report_findings` with your results."
     }
   }
 }

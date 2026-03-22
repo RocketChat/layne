@@ -1,5 +1,9 @@
 # Extending Layne
 
+We wrote Layne to reflect our internal workflow at Rocket.Chat, but Layne is simply an orchestrator - the fact that we ship it with Trufflehog, Semgrep, and Claude support doesn't mean you need/should use those. Layne was created by a small application security team for other application security teams.
+
+You can - and we'd argue you should - customize Layne. Rewrite it, extend it, add new features, contribute to the open-source repository, go crazy. Layne is here to help your team have a scalable workflow that makes sense in your context. 
+
 ## Adding a New Scanner
 
 Scanners live in `src/adapters/` as individual modules. Each adapter runs a tool and converts its output to Layne's finding format. Adding a new one takes three steps.
@@ -11,9 +15,10 @@ Create `src/adapters/mytool.js`. The adapter exports one async function that rec
 ```js title="src/adapters/mytool.js"
 import { execFile } from 'child_process';
 
-export async function runMytool({ workspacePath, changedFiles }) {
+export async function runMytool({ workspacePath, changedFiles, toolConfig = {} }) {
   // changedFiles is an array of paths relative to the repo root.
   // Pass workspacePath + '/' + file to get absolute paths on disk.
+  // toolConfig holds the resolved per-repo config block for this tool.
 
   const stdout = await exec('mytool', ['--json', workspacePath]);
 
@@ -78,18 +83,22 @@ import { runTrufflehog } from './adapters/trufflehog.js';
 import { runSemgrep }    from './adapters/semgrep.js';
 import { runMytool }     from './adapters/mytool.js';   // add this
 
-export async function dispatch({ workspacePath, changedFiles, owner, repo }) {
+export async function dispatch({ scanContext, changedLineRanges, owner, repo }) {
+  const { scanWorkspacePath, scanFiles } = scanContext;
+
+  const scanConfig = await loadScanConfig({ owner, repo });
+
   const [trufflehogFindings, semgrepFindings, mytoolFindings] = await Promise.all([
-    runTrufflehog({ workspacePath, changedFiles }),
-    runSemgrep({ workspacePath, changedFiles }),
-    runMytool({ workspacePath, changedFiles }),           // add this
+    runTrufflehog({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.trufflehog }),
+    runSemgrep({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.semgrep }),
+    runMytool({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.mytool }),  // add this
   ]);
 
   return [...trufflehogFindings, ...semgrepFindings, ...mytoolFindings];
 }
 ```
 
-The `dispatch` function also receives `owner` and `repo` - pass them to your adapter if the tool needs them (for example, to load per-repo config).
+`scanContext.scanWorkspacePath` is the directory containing the files to scan (may be a diff-only projection in `diff_only` mode). `scanContext.scanFiles` is the list of changed file paths relative to the repo root. `owner` and `repo` are also available if the tool needs them.
 
 ### 3. Install the tool in the Dockerfile
 
@@ -122,8 +131,25 @@ Adapters return findings - they don't call the reporter directly. Understanding 
                             ┌─────────────┐
                             │  dispatcher │  (src/dispatcher.js)
                             └──────┬──────┘
-                                   │
                                    │ merged findings[]
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │  filterFindingsToChangedLines │  (src/scan-context.js)
+                    │  (diff_only mode only)        │
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │    validateFindingLocations   │  (src/location-validator.js)
+                    └──────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │       suppressFindings        │  (src/suppressor.js)
+                    │  (drops findings with a       │
+                    │   SECURITY: comment at base)  │
+                    └──────────────┬───────────────┘
+                                   │ actionable findings[]
                                    ▼
                             ┌─────────────┐
                             │   reporter  │  (src/reporter.js)
@@ -141,6 +167,14 @@ Adapters return findings - they don't call the reporter directly. Understanding 
 1. Runs all scanners in parallel via `Promise.all`
 2. Merges all findings into a single array
 3. Returns the merged array to the worker
+
+**What happens after the dispatcher:**
+
+Before findings reach the reporter, the worker applies three more passes:
+
+- **`filterFindingsToChangedLines`** - in `diff_only` mode, drops findings that fall outside the actual changed line ranges. In `changed_files` mode (the default) this is a no-op.
+- **`validateFindingLocations`** - checks that each finding's line number exists in the actual file content and resolves the precise start/end line range. Claude findings that cannot be resolved to an exact location are marked ineligible and dropped.
+- **`suppressFindings`** - reads each flagged line at the merge-base commit and drops the finding if a `// SECURITY:` comment is already present there (opt-out for pre-existing accepted findings).
 
 **What the reporter does:**
 

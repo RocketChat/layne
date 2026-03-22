@@ -36,7 +36,7 @@ This means the comment only appears when there is something worth flagging, and 
 
 ### Global vs per-repo
 
-Per-repo `comment` keys **merge** into the global block - set only what differs. This is the one exception to the usual full-replacement behaviour for top-level blocks.
+Per-repo `comment` keys **merge** into the global block - set only what differs. This is the one exception to the usual full-replacement behavior for top-level blocks.
 
 To disable comments for a specific repo when they are globally enabled:
 ```json title="config/layne.json"

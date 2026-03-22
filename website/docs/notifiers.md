@@ -33,7 +33,7 @@ Notifications use per-notifier-key merging:
 - A repo can opt out of a global notifier by setting `"enabled": false` for that key.
 - If neither `$global` nor the repo defines a `notifications` block, no notifications are sent.
 
-See [Configuration](./configuration.md#override-behaviour-by-key) for the full override behaviour table.
+See [Configuration](./configuration.md#override-behavior-by-key) for the full override behavior table.
 
 
 ## Template variables

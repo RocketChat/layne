@@ -117,7 +117,7 @@ Layne does not maintain a database of findings. If Redis is lost, the only conse
 
 Semgrep and Trufflehog run as subprocesses inside the worker container via `execFile` (not a shell). Arguments are passed as an array, so shell injection through file paths or config values is not possible.
 
-The worker container has no outbound network restrictions by default. Semgrep's `--config auto` fetches rules from the internet; Trufflehog's `--no-update` flag prevents version checks but does not restrict its scanning behaviour. If your threat model requires network isolation, configure Docker network policies accordingly.
+The worker container has no outbound network restrictions by default. Semgrep's `--config auto` fetches rules from the internet; Trufflehog's `--no-update` flag prevents version checks but does not restrict its scanning behavior. If your threat model requires network isolation, configure Docker network policies accordingly.
 
 
 ## Finding Suppression
