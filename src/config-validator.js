@@ -8,8 +8,8 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
-const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
@@ -82,6 +82,10 @@ function validateScanMode(block, ctx, errors) {
   if (block.contextLines !== undefined) {
     if (!Number.isInteger(block.contextLines) || block.contextLines < 0)
       errors.push(`${ctx}.contextLines: must be a non-negative integer`);
+  }
+  if (block.timeoutMinutes !== undefined) {
+    if (!Number.isInteger(block.timeoutMinutes) || block.timeoutMinutes < 1)
+      errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
   }
 }
 

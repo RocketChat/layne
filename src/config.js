@@ -7,8 +7,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'layne.json');
 
 export const DEFAULT_CONFIG = Object.freeze({
-  mode:         'changed_files',
-  contextLines: 8,
+  mode:           'changed_files',
+  contextLines:   8,
+  timeoutMinutes: 10,
   semgrep: Object.freeze({
     enabled:   true,
     extraArgs: ['--config', 'auto'],
@@ -78,8 +79,9 @@ export async function loadScanConfig({ owner, repo }) {
   const repoExceptionApprovers   = repoOverrides.exceptionApprovers ?? null;
 
   return {
-    mode:          repoOverrides.mode         ?? reposConfig['$global']?.mode         ?? DEFAULT_CONFIG.mode,
-    contextLines:  repoOverrides.contextLines ?? reposConfig['$global']?.contextLines ?? DEFAULT_CONFIG.contextLines,
+    mode:           repoOverrides.mode           ?? reposConfig['$global']?.mode           ?? DEFAULT_CONFIG.mode,
+    contextLines:   repoOverrides.contextLines   ?? reposConfig['$global']?.contextLines   ?? DEFAULT_CONFIG.contextLines,
+    timeoutMinutes: repoOverrides.timeoutMinutes ?? reposConfig['$global']?.timeoutMinutes ?? DEFAULT_CONFIG.timeoutMinutes,
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
     claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },

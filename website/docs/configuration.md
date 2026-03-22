@@ -64,7 +64,7 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 
 | Key | How per-repo overrides `$global` |
 |---|---|
-| `mode`, `contextLines` | Per-repo value replaces global value |
+| `mode`, `contextLines`, `timeoutMinutes` | Per-repo value replaces global value |
 | `semgrep`, `trufflehog`, `claude` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
 | `trigger` | Full replacement - per-repo `trigger` replaces the global block entirely |
 | `labels` | Full replacement - per-repo `labels` replaces the global block entirely |
@@ -105,6 +105,26 @@ Number of surrounding lines to include around each changed hunk when `mode` is `
 
 - **Default:** `8`
 - Ignored when `mode` is `"changed_files"`
+
+### `timeoutMinutes`
+
+Hard time limit for a single scan job. If the limit is reached, the job is rethrown so BullMQ can retry it. The Check Run is only marked as failed on the final attempt.
+
+- **Default:** `10`
+- Accepts any positive integer
+
+Raise this for large monorepos where Semgrep takes a long time, or lower it to fail fast on repos that should scan quickly.
+
+```json title="config/layne.json"
+{
+  "$global": {
+    "timeoutMinutes": 10
+  },
+  "org/monorepo": {
+    "timeoutMinutes": 25
+  }
+}
+```
 
 ### Examples
 

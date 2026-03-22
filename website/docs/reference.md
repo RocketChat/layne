@@ -35,7 +35,7 @@ For how findings are converted to GitHub annotations and how severities affect P
 
 ## Scan timeout
 
-Each job has a hard 10-minute timeout. If a scan exceeds this limit:
+Each job has a configurable timeout (default 10 minutes, controlled by [`timeoutMinutes`](configuration.md#timeoutminutes) in `layne.json`). If a scan exceeds this limit:
 - The job is rethrown so BullMQ can retry it
 - The Check Run is only marked as failed on the **final** attempt (not on intermediate retries)
 - `layne_scan_timeouts_total` is incremented (when metrics are enabled)
