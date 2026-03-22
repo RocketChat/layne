@@ -51,9 +51,9 @@ Scroll to **Repository permissions** and set exactly these:
 
 ### 1.4 Subscribe to events
 
-Under **Subscribe to events**, check **Pull request**, **Workflow run**, and **Workflow job**.
+Under **Subscribe to events**, check **Pull request**, **Workflow run**, **Workflow job**, and **Issue comment**.
 
-> If you only need to test the default `pull_request` trigger, checking just **Pull request** is sufficient. Add **Workflow run** and **Workflow job** if you want to test deferred trigger modes locally.
+> If you only need to test the default `pull_request` trigger, checking just **Pull request** is sufficient. Add **Workflow run** and **Workflow job** if you want to test deferred trigger modes locally. **Issue comment** is required to test exception approvals.
 
 ### 1.5 Limit the installation scope
 
@@ -430,7 +430,7 @@ npm run dev:stop
 | Worker logs `getInstallationToken failed` or GitHub API returns 404 | `installation.id` in the fixture is wrong, or the App is not installed on that repo | Use your real installation ID from `https://github.com/settings/installations` |
 | `semgrep: command not found` | Semgrep is not installed on the host | See [Installing scanners locally](#installing-scanners-locally) |
 | `trufflehog: command not found` | Trufflehog is not installed on the host | See [Installing scanners locally](#installing-scanners-locally) |
-| smee delivers duplicate webhooks on reconnect | GitHub queued the event while smee was disconnected | Normal behaviour - Layne's Redis deduplication drops the duplicate |
+| smee delivers duplicate webhooks on reconnect | GitHub queued the event while smee was disconnected | Normal behavior - Layne's Redis deduplication drops the duplicate |
 | `[replay] Error: could not reach the server` | Server is not running | `npm start` in another terminal |
 | `[replay] response → 401 Invalid signature` | `GITHUB_WEBHOOK_SECRET` in `.env` does not match what the server expects | They must be identical - both processes load the same `.env` |
 | Check Run never appears on GitHub | The worker failed to authenticate | Check worker logs for `getInstallationToken` errors; verify `GITHUB_APP_PRIVATE_KEY` is a valid single-line PEM |

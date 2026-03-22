@@ -9,7 +9,7 @@ You can deploy Layne anywhere you want. The way we deploy it requires:
 - An AWS account with EC2 access
 - A domain name you control (for TLS)
 - Docker and Docker Compose installed on the EC2 instance
-- GitHub organisation admin access (to create and install the GitHub App)
+- GitHub organization admin access (to create and install the GitHub App)
 
 Everything runs inside Docker Compose - nginx, Certbot, Redis, the server, and the worker. No manual nginx install on the host is required.
 
@@ -35,7 +35,7 @@ Everything runs inside Docker Compose - nginx, Certbot, Redis, the server, and t
    Under **Organization permissions**, set:
    | Permission | Access |
    |---|---|
-   | Members | Read-only (required when `exceptionApprovers.teams` is configured) |
+   | Organization members | Read-only (required when `exceptionApprovers.teams` is configured) |
 
 4. Under **Subscribe to events**, check **Pull request**, **Workflow run**, **Workflow job**, and **Issue comment** (required for exception approvals).
 
@@ -156,7 +156,7 @@ curl https://your-domain.com/health
 
 ## Step 5 - Verify
 
-Open a pull request on one of the repos where Layne is installed. Within a few seconds you should see a **Layne** check appear on the PR in `queued` status, then `in progress`, then `success` or `failure` with inline annotations if issues were found.
+If you're using default settings/the pull request trigger, just open a PR on one of the repos where Layne is installed. Within a few seconds you should see a **Layne** check appear on the PR in `queued` status, then `in progress`, then `success` or `failure` with inline annotations if issues were found.
 
 
 ## Operations
@@ -288,10 +288,10 @@ The workflow uses a GitHub [**environment**](https://docs.github.com/en/actions/
 
 ### Scaling Workers
 
-The worker runs with `concurrency: 5` by default (5 jobs per process). To handle more simultaneous PRs, run additional worker containers:
+The worker runs with `concurrency: 5` by default (5 jobs per process). To handle more simultaneous PRs, you can run additional worker containers:
 
 ```bash
-docker compose up --scale worker=3 -d
+docker compose up --scale worker=6 -d
 ```
 
 

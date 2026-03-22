@@ -1,10 +1,10 @@
 # Configuration
 
-Everything about how Layne behaves on a given repo lives in `config/layne.json`. Change it, restart both server and worker, and the new behaviour takes effect.
+Everything about how Layne behaves on a given repo lives in `config/layne.json`. Change it, restart both server and worker, and the new behavior takes effect.
 
 ## Global Defaults
 
-`$global` is a special key that sets organisation-wide defaults. Every repository Layne scans inherits these values. A per-repo entry only needs to specify what differs - everything else falls back to `$global`.
+`$global` is a special key that sets organization-wide defaults. Every repository Layne scans inherits these values. A per-repo entry only needs to specify what differs - everything else falls back to `$global`.
 
 ```json title="config/layne.json"
 {
@@ -42,7 +42,7 @@ Everything about how Layne behaves on a given repo lives in `config/layne.json`.
 
 Overrides are keyed by `"owner/repo"`. A repository with no entry - or whose entry omits a tool block - gets the global defaults:
 
-| Tool | Default behaviour |
+| Tool | Default behavior |
 |---|---|
 | Semgrep | Enabled - `semgrep scan --config auto --json <files>` |
 | Trufflehog | Enabled - `trufflehog filesystem --json --no-update <files>` |
@@ -58,7 +58,7 @@ And for notifications and comments:
 - [PR Comments](pr-comments.md)
 
 
-## Override Behaviour by Key
+## Override Behavior by Key
 
 Not all keys merge the same way when a per-repo entry overrides `$global`. The reason is intentional - some blocks like `labels` and `trigger` are semantically atomic (a partial label config makes no sense), while scanner blocks are designed to be tweaked one key at a time without repeating everything.
 
@@ -75,12 +75,12 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 
 ## Scan Mode
 
-Controls how much of each changed file the scanners analyse.
+Controls how much of each changed file the scanners analyze.
 
 ```json title="config/layne.json"
 {
   "$global": {
-    "mode": "changed_files",
+    "mode": "diff_only",
     "contextLines": 8
   }
 }
@@ -88,7 +88,7 @@ Controls how much of each changed file the scanners analyse.
 
 ### `mode`
 
-| Value | Behaviour |
+| Value | Behavior |
 |---|---|
 | `"changed_files"` | *(default)* Each scanner receives the full content of every file touched by the PR. Findings anywhere in those files are reported. |
 | `"diff_only"` | A projected copy of each file is built containing only the changed hunks plus `contextLines` lines of surrounding context (blank lines preserve line numbers). Scanners receive the projected copy. After scanning, findings are filtered to lines that fall within the actual changed ranges. |
@@ -156,31 +156,19 @@ Raise this for large monorepos where Semgrep takes a long time, or lower it to f
 
 ## Trigger
 
-By default Layne scans every pull request immediately when it is opened, synchronised, or reopened (`pull_request` trigger). This is the right choice for private or internal repositories where all contributors are trusted and every PR is worth scanning.
+By default Layne scans every pull request immediately when it is opened, synchronised, or reopened (`pull_request` trigger). This may be the right choice for private or internal repositories where all contributors are trusted and every PR is worth scanning.
 
 For public repositories, two problems arise:
 
-**1. Scanning unapproved contributions.** GitHub requires maintainer approval before running Actions for first-time external contributors. The `pull_request` event fires regardless - meaning Layne scans spam PRs, bot noise, and low-effort contributions that may never be reviewed.
+**1. Scanning unapproved contributions.** Your GitHub organization may require maintainer approval before running Actions for first-time external contributors. The `pull_request` event fires regardless - meaning Layne scans spam PRs, bot noise, and low-effort contributions that may never be reviewed.
 
-**2. Wasted spend on failing code.** A PR that breaks CI within minutes is unlikely to merge. Scanning it burns Semgrep CPU time and - most importantly - Anthropic API credits on a result no one will act on.
+**2. Wasted spend on failing code.** A PR that breaks CI within minutes is unlikely to merge. Scanning it burns Semgrep CPU time and - most importantly, if you're using Claude or another AI provider - credits on a result no one will act on.
 
 The `workflow_run` and `workflow_job` triggers solve both by deferring the scan until after CI has run. You only scan code that cleared your quality gate.
 
-### Cost impact
+Long story short, you can choose between the following:
 
-On a busy public repository, deferring to after CI passes can substantially reduce Claude API spend. PRs that fail CI quickly are never scanned. A 30-second CI failure gate that rejects 40% of PRs saves 40% of scan costs immediately.
-
-### Choosing between `workflow_run` and `workflow_job`
-
-| | `workflow_run` | `workflow_job` |
-|---|---|---|
-| Gates on | An entire workflow completing | A single named job completing |
-| Use when | You want CI fully done before scanning | You have a fast early gate (e.g. lint, approval job) |
-| Latency | Scan starts after the longest job in the workflow | Scan starts as soon as the named job finishes |
-
-### Modes
-
-| `on` | Behaviour |
+| `on` | Behavior |
 |---|---|
 | `pull_request` | *(default)* Scan fires immediately on `opened`, `synchronize`, and `reopened` |
 | `workflow_run` | Scan fires when the named CI workflow completes with a matching conclusion |
@@ -316,7 +304,7 @@ All four keys are optional. Omitting a key is a no-op.
 
 ### Exception labels
 
-When an exception approval is used, you can configure a label to be added:
+When an exception approval is used, you can configure a label to be added or removed:
 
 ```json title="config/layne.json"
 {
@@ -336,7 +324,7 @@ When an exception approval is used, you can configure a label to be added:
 
 ### Label auto-creation
 
-If a label listed in `onFailure`, `onSuccess`, or `onException` does not exist on the repository, Layne creates it automatically with a neutral gray colour (`#ededed`). You do not need to pre-create labels.
+If a label listed in `onFailure`, `onSuccess`, or `onException` does not exist on the repository, Layne creates it automatically with a neutral gray color (`#ededed`). You do not need to pre-create labels.
 
 ### Global vs per-repo
 
