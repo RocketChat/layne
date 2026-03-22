@@ -31,7 +31,6 @@ import {
   queueFailed,
 } from './metrics.js';
 
-const SCAN_TIMEOUT_MS  = 10 * 60 * 1000; // 10 minutes
 const NOTIFY_COUNT_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
 const METRICS_ENABLED  = process.env.METRICS_ENABLED === 'true';
 const METRICS_PORT     = parseInt(process.env.METRICS_PORT ?? '9091', 10);
@@ -83,20 +82,24 @@ function appendDiscardedCandidateSummary(summary, discardedCount) {
  * without needing a live BullMQ worker or Redis connection.
  */
 export async function processJob(job) {
+  const { owner, repo } = job.data;
+  const scanConfig = await loadScanConfig({ owner, repo });
+  const timeoutMs = scanConfig.timeoutMinutes * 60 * 1000;
+
   // Resolving sentinel rather than a rejecting promise so there is no risk of an
   // unhandled rejection if the race settles before handlers attach.
   let timer;
   const timeoutSentinel = Symbol('timeout');
   const timeoutPromise  = new Promise(resolve => {
-    timer = setTimeout(() => resolve(timeoutSentinel), SCAN_TIMEOUT_MS);
+    timer = setTimeout(() => resolve(timeoutSentinel), timeoutMs);
   });
 
   try {
-    const result = await Promise.race([runScan(job).then(() => null), timeoutPromise]);
+    const result = await Promise.race([runScan(job, scanConfig).then(() => null), timeoutPromise]);
 
     if (result === timeoutSentinel) {
       scanTimeoutsTotal.inc();
-      throw new Error(`Scan timed out after ${SCAN_TIMEOUT_MS / 60000} minutes`);
+      throw new Error(`Scan timed out after ${timeoutMs / 60000} minutes`);
     }
   } catch (err) {
     const safeMessage = sanitizeError(err.message);
@@ -134,7 +137,7 @@ export async function processJob(job) {
   }
 }
 
-async function runScan(job) {
+async function runScan(job, scanConfig) {
   const {
     installationId,
     owner,
@@ -173,8 +176,6 @@ async function runScan(job) {
     const rawChanged   = await getChangedFiles({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedLineRanges = await getChangedLineRanges({ workspacePath, baseSha: mergeBaseSha, headSha });
     const changedFiles = await checkoutFiles({ workspacePath, headSha, files: rawChanged });
-
-    const scanConfig = await loadScanConfig({ owner, repo });
 
     const scanContext = await createScanContext({ workspacePath, changedFiles, baseSha: mergeBaseSha, headSha, scanConfig });
     debug('worker', `dispatching ${scanContext.scanFiles.length} file(s) to scanners (mode: ${scanContext.mode})`);

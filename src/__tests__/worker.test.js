@@ -72,6 +72,7 @@ vi.mock('../config.js', () => ({
   loadScanConfig: vi.fn().mockResolvedValue({
     mode:               'changed_files',
     contextLines:       8,
+    timeoutMinutes:     10,
     semgrep:            { enabled: true, extraArgs: ['--config', 'auto'] },
     trufflehog:         { enabled: true, extraArgs: [] },
     claude:             { enabled: false, model: 'claude-haiku-4-5-20251001' },

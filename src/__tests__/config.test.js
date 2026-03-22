@@ -380,4 +380,30 @@ describe('loadScanConfig()', () => {
     expect(config.mode).toBe('diff_only');
     expect(config.contextLines).toBe(4);
   });
+
+  // --- timeoutMinutes ---
+
+  it('returns timeoutMinutes 10 by default', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.timeoutMinutes).toBe(10);
+  });
+
+  it('inherits $global timeoutMinutes when the repo has no timeoutMinutes', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { timeoutMinutes: 20 },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect(config.timeoutMinutes).toBe(20);
+  });
+
+  it('repo-level timeoutMinutes overrides $global timeoutMinutes', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { timeoutMinutes: 20 },
+      'acme/monorepo': { timeoutMinutes: 30 },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'monorepo' });
+    expect(config.timeoutMinutes).toBe(30);
+  });
 });
