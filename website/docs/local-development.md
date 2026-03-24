@@ -1,6 +1,6 @@
 # Local Development
 
-This guide explains how to run Layne entirely on your own machine so you can develop and test features without touching production. By the end, you will have a real GitHub App delivering live webhooks to your laptop, and a way to replay those webhooks instantly without opening a real pull request every time.
+When developing new features or modifying Layne in general, you should avoid doing so in production. These steps will guide you through setting up a local development environment for Layne. 
 
 ## Prerequisites
 
