@@ -40,6 +40,19 @@
   --ifm-navbar-link-color: #e5e5e5;
 }
 
+/* Links — underline so they're distinguishable from body text */
+.markdown a,
+.theme-doc-markdown a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown a:hover,
+.theme-doc-markdown a:hover {
+  text-decoration: underline;
+  opacity: 0.75;
+}
+
 /* Headings */
 h1, h2, h3, h4, h5, h6 {
   font-family: 'Oxanium', monospace;

@@ -9,20 +9,27 @@ Everything about how Layne behaves on a given repo lives in `config/layne.json`.
 ```json title="config/layne.json"
 {
   "$global": {
+    "mode": "changed_files",
+    "contextLines": 8,
+    "timeoutMinutes": 10,
     "semgrep": {
+      "enabled": true,
       "extraArgs": ["--config", "auto"]
     },
     "trufflehog": {
+      "enabled": true,
       "extraArgs": []
     },
     "trigger": {
       "on": "pull_request"
     },
     "labels": {
-      "onFailure":       ["needs-security-review"],
-      "removeOnFailure": ["security-ok"],
-      "onSuccess":       ["security-ok"],
-      "removeOnSuccess": ["needs-security-review"]
+      "onFailure":        ["needs-security-review"],
+      "removeOnFailure":  ["security-ok"],
+      "onSuccess":        ["security-ok"],
+      "removeOnSuccess":  ["needs-security-review"],
+      "onException":      ["security-exception-used"],
+      "removeOnException": ["needs-security-review"]
     },
     "notifications": {
       "rocketchat": {
@@ -31,7 +38,12 @@ Everything about how Layne behaves on a given repo lives in `config/layne.json`.
       }
     },
     "comment": {
-      "enabled": false
+      "enabled":  false,
+      "template": null
+    },
+    "exceptionApprovers": {
+      "users": ["security-lead"],
+      "teams": ["acme/security-team"]
     }
   }
 }
@@ -113,7 +125,7 @@ Hard time limit for a single scan job. If the limit is reached, the job is rethr
 - **Default:** `10`
 - Accepts any positive integer
 
-Raise this for large monorepos where Semgrep takes a long time, or lower it to fail fast on repos that should scan quickly.
+Raise this for large monorepos where scanners may take a long time, or lower it to fail fast on repos that should scan quickly.
 
 ```json title="config/layne.json"
 {
@@ -325,11 +337,6 @@ When an exception approval is used, you can configure a label to be added or rem
 ### Label auto-creation
 
 If a label listed in `onFailure`, `onSuccess`, or `onException` does not exist on the repository, Layne creates it automatically with a neutral gray color (`#ededed`). You do not need to pre-create labels.
-
-### Global vs per-repo
-
-A per-repo `labels` block replaces the `$global` block entirely - it is not merged key-by-key. If neither `$global` nor the repo defines a `labels` key, the feature is a no-op for that repo.
-
 
 ## Exception Approvals
 

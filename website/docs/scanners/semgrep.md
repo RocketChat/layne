@@ -53,6 +53,10 @@ Layne's reporter also handles `critical` severity (mapped to `failure`), but Sem
 
 **`extraArgs` replaces the default entirely.** If you set per-repo `extraArgs`, include everything you need - there is no merging with the global value.
 
+:::warning paths.include and paths.exclude in rules are not effective
+Semgrep rules support a `paths:` block to restrict which files a rule applies to. This does not work reliably with Layne. Because Layne passes an explicit list of file paths to Semgrep rather than a directory, Semgrep bypasses rule-level path filtering — `paths.include` and `paths.exclude` entries are silently ignored. This is a known issue. Avoid writing or relying on rules that use `paths:` filters when using Layne.
+:::
+
 ### `--disable-nosem`
 
 :::warning

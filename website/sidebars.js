@@ -22,7 +22,7 @@ const sidebars = {
     { type: 'doc', id: 'notifiers',             label: 'Notifiers' },
     { type: 'doc', id: 'pr-comments',           label: 'PR Comments' },
     { type: 'doc', id: 'metrics',               label: 'Metrics' },
-    { type: 'doc', id: 'security-architecture', label: 'Security Architecture' },
+    { type: 'doc', id: 'threat-model', label: 'Threat Model' },
     { type: 'doc', id: 'extending',             label: 'Extending Layne' },
     { type: 'doc', id: 'reference',             label: 'Reference' },
   ],
