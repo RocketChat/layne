@@ -14,6 +14,11 @@ const FINDING_HIGH = {
   message: 'SQL injection', ruleId: 'semgrep/sql-injection', tool: 'semgrep',
 };
 
+const FINDING_MEDIUM = {
+  file: 'src/utils.js', line: 5, severity: 'medium',
+  message: 'Weak hash function', ruleId: 'semgrep/weak-hash', tool: 'semgrep',
+};
+
 const BASE = {
   owner:          'acme',
   repo:           'frontend',
@@ -121,13 +126,67 @@ describe('postComment()', () => {
   });
 
   describe('success conclusion — no prior comment', () => {
-    it('does nothing when there is no existing comment to resolve', async () => {
+    it('does nothing when there are no findings and no existing comment to resolve', async () => {
       const { createComment, updateComment } = makeOctokit({ existingComments: [] });
 
       await postComment({ ...BASE, findings: [], conclusion: 'success' });
 
       expect(createComment).not.toHaveBeenCalled();
       expect(updateComment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('success with warnings — no prior comment', () => {
+    it('creates a new comment when there are warning findings and no existing comment', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({ ...BASE, findings: [FINDING_MEDIUM], conclusion: 'success' });
+
+      expect(createComment).toHaveBeenCalledOnce();
+      expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+        owner: 'acme', repo: 'frontend', issue_number: 42,
+      }));
+    });
+
+    it('includes the comment marker and warning count in the body', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({ ...BASE, findings: [FINDING_MEDIUM], conclusion: 'success' });
+
+      const { body } = createComment.mock.calls[0][0];
+      expect(body).toContain(COMMENT_MARKER);
+      expect(body).toContain('1 warning(s)');
+    });
+  });
+
+  describe('success with warnings — existing comment', () => {
+    it('updates the existing comment with the warning summary', async () => {
+      const { createComment, updateComment } = makeOctokit({
+        existingComments: [{ id: 55, body: `${COMMENT_MARKER}\nprevious failure` }],
+      });
+
+      await postComment({ ...BASE, findings: [FINDING_MEDIUM], conclusion: 'success' });
+
+      expect(updateComment).toHaveBeenCalledOnce();
+      expect(createComment).not.toHaveBeenCalled();
+      expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 55 }));
+    });
+  });
+
+  describe('custom warning template', () => {
+    it('uses a custom warning template when provided', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+      const warningTemplate = `${COMMENT_MARKER}\nWarnings in {{repo}}: {{total}}`;
+
+      await postComment({
+        ...BASE,
+        findings:      [FINDING_MEDIUM],
+        conclusion:    'success',
+        commentConfig: { enabled: true, template: null, warningTemplate },
+      });
+
+      const { body } = createComment.mock.calls[0][0];
+      expect(body).toBe(`${COMMENT_MARKER}\nWarnings in acme/frontend: 1`);
     });
   });
 
