@@ -13,6 +13,8 @@ export function buildContext(findings, owner, repo, prNumber) {
     .map(([k, v]) => `${v} ${k}`)
     .join(', ');
 
+  const rules = [...new Set(findings.map(f => f.ruleId).filter(Boolean))].join(', ');
+
   return {
     repo:     `${owner}/${repo}`,
     owner,
@@ -22,6 +24,7 @@ export function buildContext(findings, owner, repo, prNumber) {
     total,
     ...counts,
     summary: `Found ${total} issue(s): ${nonZero || 'none'}.`,
+    rules,
   };
 }
 

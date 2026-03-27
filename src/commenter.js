@@ -10,6 +10,13 @@ const DEFAULT_FAILURE_TEMPLATE = [
   '{{summary}}',
 ].join('\n');
 
+const DEFAULT_WARNING_TEMPLATE = [
+  COMMENT_MARKER,
+  '## ⚠️ Layne — {{total}} warning(s)',
+  '',
+  '{{summary}}',
+].join('\n');
+
 const SUCCESS_BODY = [
   COMMENT_MARKER,
   '✅ **Layne — scan passed**',
@@ -27,7 +34,8 @@ async function findExistingComment(octokit, owner, repo, prNumber) {
 /**
  * Creates or updates a Layne security comment on a PR.
  * On failure: posts/updates with finding summary.
- * On success: updates existing Layne comment to show scan passed; skips if none exists.
+ * On success with warnings: posts/updates with warning summary.
+ * On clean success: updates existing Layne comment to show scan passed; skips if none exists.
  * Never throws.
  */
 export async function postComment({ findings, owner, repo, prNumber, installationId, conclusion, commentConfig }) {
@@ -39,8 +47,11 @@ export async function postComment({ findings, owner, repo, prNumber, installatio
     if (conclusion === 'failure') {
       const ctx = buildContext(findings, owner, repo, prNumber);
       body = renderTemplate(commentConfig.template ?? DEFAULT_FAILURE_TEMPLATE, ctx);
+    } else if (findings.length > 0) {
+      const ctx = buildContext(findings, owner, repo, prNumber);
+      body = renderTemplate(commentConfig.warningTemplate ?? DEFAULT_WARNING_TEMPLATE, ctx);
     } else {
-      if (!existingId) return; // no prior failure comment — nothing to resolve
+      if (!existingId) return; // no prior comment — nothing to resolve
       body = SUCCESS_BODY;
     }
 

@@ -60,6 +60,22 @@ describe('buildContext()', () => {
     expect(ctx.summary).toBe('Found 0 issue(s): none.');
   });
 
+  it('sets rules to a deduplicated comma-separated list of ruleIds', () => {
+    const ctx = buildContext([FINDING_HIGH, FINDING_MEDIUM, FINDING_HIGH], 'o', 'r', 1);
+    expect(ctx.rules).toBe('r/h, r/m');
+  });
+
+  it('sets rules to empty string when findings have no ruleId', () => {
+    const noRule = { ...FINDING_HIGH, ruleId: undefined };
+    const ctx = buildContext([noRule], 'o', 'r', 1);
+    expect(ctx.rules).toBe('');
+  });
+
+  it('sets rules to empty string with no findings', () => {
+    const ctx = buildContext([], 'o', 'r', 1);
+    expect(ctx.rules).toBe('');
+  });
+
   it('ignores unknown severity values in counts', () => {
     const unknownSev = { ...FINDING_HIGH, severity: 'info' };
     const ctx = buildContext([unknownSev], 'o', 'r', 1);
