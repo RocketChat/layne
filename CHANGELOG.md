@@ -4,6 +4,20 @@
 
 ### Minor Changes
 
+- [#27](https://github.com/RocketChat/layne/pull/27) [`25248cc`](https://github.com/RocketChat/layne/commit/25248cca3658ecbf5aae3cdfd3eff0187af7cb3f) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds a new diff_only mode and allows mode to be configured
+
+- [#35](https://github.com/RocketChat/layne/pull/35) [`23f1b32`](https://github.com/RocketChat/layne/commit/23f1b32cfb0092330d2fe467e7d6c45993bd7a83) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Rewrites the codebase from JavaScript to TypeScript for improved type safety and developer experience. No behavioral changes; deployment, configuration schema, and all external interfaces are identical.
+
+- [#22](https://github.com/RocketChat/layne/pull/22) [`294d984`](https://github.com/RocketChat/layne/commit/294d9840a732154610e9be8141609a85732f4d63) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds a new feature that allows exceptions to be approved by specific teams or people
+
+- [#29](https://github.com/RocketChat/layne/pull/29) [`2427573`](https://github.com/RocketChat/layne/commit/242757385abd1b45607b8b97ccf7987c4e0cd3e1) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Makes timeouts configurable on global and per repo levels
+
+- [#34](https://github.com/RocketChat/layne/pull/34) [`8a4126f`](https://github.com/RocketChat/layne/commit/8a4126f07c33621b1b8c58cf57cb7707a61ac67b) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds support for warnings for commenter as well as rule names
+
+## 1.2.0
+
+### Minor Changes
+
 - **Exception Approvals**: Configure specific users or teams who can approve PRs that would otherwise fail the security scan. When an authorized approver approves a PR, Layne automatically re-runs the scan and passes it with a clear audit trail. Features include:
   - Automatic re-run on `pull_request_review` webhook when authorized approver approves
   - Team membership resolution via GitHub API
