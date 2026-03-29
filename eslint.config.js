@@ -1,12 +1,19 @@
+import tsPlugin from '@typescript-eslint/eslint-plugin';
+import tsParser from '@typescript-eslint/parser';
+
 export default [
   {
-    ignores: ['coverage/**', 'node_modules/**', 'website/.docusaurus/**', 'website/build/**'],
+    ignores: ['coverage/**', 'node_modules/**', 'dist/**', 'dist-scripts/**', 'website/.docusaurus/**', 'website/build/**'],
   },
   {
-    files: ['**/*.js'],
+    files: ['**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
+      parser: tsParser,
+      parserOptions: {
+        project: ['./tsconfig.json', './tsconfig.test.json', './tsconfig.scripts.json'],
+      },
       globals: {
         Buffer:        'readonly',
         clearInterval: 'readonly',
@@ -18,20 +25,23 @@ export default [
         setTimeout:    'readonly',
       },
     },
+    plugins: {
+      '@typescript-eslint': tsPlugin,
+    },
     rules: {
       eqeqeq: ['error', 'always'],
-      'no-undef': 'error',
-      'no-unused-vars': ['error', {
+      'no-var': 'error',
+      'prefer-const': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', {
         argsIgnorePattern: '^_',
         caughtErrors: 'all',
         caughtErrorsIgnorePattern: '^_',
       }],
-      'no-var': 'error',
-      'prefer-const': 'error',
+      '@typescript-eslint/no-explicit-any': 'warn',
     },
   },
   {
-    files: ['src/__tests__/**/*.js'],
+    files: ['src/__tests__/**/*.ts'],
     languageOptions: {
       globals: {
         afterEach: 'readonly',

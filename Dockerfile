@@ -5,6 +5,16 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
+FROM node:22-alpine AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig*.json ./
+COPY src/ ./src/
+RUN npm run build
+
 FROM node:22-alpine AS runtime
 
 # Pin tool versions for reproducible builds. Update periodically and verify in staging.
@@ -25,8 +35,8 @@ RUN addgroup -S layne && adduser -S layne -G layne
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
 COPY package*.json ./
-COPY src/ ./src/
 COPY config/ ./config/
 COPY assets/ ./assets/
 
@@ -36,4 +46,4 @@ VOLUME ["/tmp"]
 
 USER layne
 
-CMD ["node", "src/server.js"]
+CMD ["node", "dist/server.js"]
