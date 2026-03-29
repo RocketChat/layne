@@ -3,7 +3,7 @@ import tsParser from '@typescript-eslint/parser';
 
 export default [
   {
-    ignores: ['coverage/**', 'node_modules/**', 'dist/**', 'website/.docusaurus/**', 'website/build/**'],
+    ignores: ['coverage/**', 'node_modules/**', 'dist/**', 'dist-scripts/**', 'website/.docusaurus/**', 'website/build/**'],
   },
   {
     files: ['**/*.ts'],
@@ -12,7 +12,7 @@ export default [
       sourceType: 'module',
       parser: tsParser,
       parserOptions: {
-        project: './tsconfig.json',
+        project: ['./tsconfig.json', './tsconfig.test.json', './tsconfig.scripts.json'],
       },
       globals: {
         Buffer:        'readonly',
@@ -37,6 +37,7 @@ export default [
         caughtErrors: 'all',
         caughtErrorsIgnorePattern: '^_',
       }],
+      '@typescript-eslint/no-explicit-any': 'warn',
     },
   },
   {

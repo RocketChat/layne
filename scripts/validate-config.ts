@@ -5,12 +5,10 @@
  */
 
 import { readFile } from 'fs/promises';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { validateConfig } from '../src/config-validator.js';
 
-const __dirname  = dirname(fileURLToPath(import.meta.url));
-const configPath = join(__dirname, '..', 'config', 'layne.json');
+const configPath = join(process.cwd(), 'config', 'layne.json');
 
 let raw: unknown;
 try {

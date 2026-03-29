@@ -32,7 +32,6 @@ async function findExistingComment(
   repo: string,
   prNumber: number,
 ): Promise<number | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const comments = await octokit.paginate(octokit.issues.listComments, {
     owner, repo, issue_number: prNumber,
   }) as Array<{ id: number; body?: string }>;
