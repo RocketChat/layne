@@ -15,7 +15,7 @@ services:
 
   server:
     build: .
-    command: node src/server.js
+    command: node dist/server.js
     restart: unless-stopped
     env_file: .env
     environment:
@@ -28,7 +28,7 @@ services:
   # Scale horizontally with: docker compose up --scale worker=N
   worker:
     build: .
-    command: node src/worker.js
+    command: node dist/worker.js
     restart: unless-stopped
     env_file: .env
     environment:

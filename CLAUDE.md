@@ -10,10 +10,14 @@ Layne is a self-hosted GitHub App that centralises security scanning across repo
 
 ```bash
 # Run the webhook server
-npm start           # node src/server.js
+npm start           # node dist/server.js
 
 # Run the job worker
-npm run worker      # node src/worker.js
+npm run worker      # node dist/worker.js
+
+# Build TypeScript
+npm run build       # tsc -p tsconfig.build.json
+npm run typecheck   # tsc --noEmit
 
 # Tests
 npm test            # vitest run (single pass)
@@ -21,7 +25,7 @@ npm run test:watch  # vitest (watch mode)
 npm run test:coverage
 
 # Run a single test file
-npx vitest run src/__tests__/github.test.js
+npx vitest run src/__tests__/github.test.ts
 
 # Lint
 npm run lint
@@ -29,7 +33,7 @@ npm run lint
 
 ## Environment variables
 
-Required (checked at startup by `validateEnv()` in `src/env.js`):
+Required (checked at startup by `validateEnv()` in `src/env.ts`):
 ```
 GITHUB_APP_ID
 GITHUB_APP_PRIVATE_KEY   # single-line PEM with literal \n between lines
@@ -51,7 +55,7 @@ DEBUG_MODE               # set to "true" for verbose logging
 
 Two separate Node.js processes:
 
-**`src/server.js` - Webhook receiver**
+**`src/server.ts` - Webhook receiver**
 - Express app with `POST /webhook`, `GET /health`, `GET /metrics` (when enabled), `GET /assets/layne-logo.png`
 - Verifies GitHub HMAC signature before processing
 - Handles four event types: `pull_request`, `workflow_run`, `workflow_job`, and `issue_comment`
@@ -62,7 +66,7 @@ Two separate Node.js processes:
 - Job ID is deduplicated by `{repo}#{pr}@{sha}` - duplicate webhook deliveries are no-ops (Redis lock + queue check)
 - Exported `app` and `processWebhookRequest` for use in tests
 
-**`src/worker.js` - Job processor**
+**`src/worker.ts` - Job processor**
 - BullMQ `Worker` consuming the `scans` queue with concurrency 5
 - `processJob()` is exported for direct testing without Redis
 - Per-job 10-minute timeout via `Promise.race`
@@ -71,29 +75,29 @@ Two separate Node.js processes:
 
 **Job lifecycle (inside `runScan`):**
 1. Mark Check Run `in_progress`
-2. Authenticate as installation via `src/auth.js` → short-lived token
-3. Resolve merge base SHA via `src/github.js` → `getMergeBaseSha` (three-dot diff base)
-4. Create temp workspace (`src/fetcher.js` → `createWorkspace`)
-5. Partial-clone head and merge-base SHAs with `--filter=blob:none` (`src/fetcher.js` → `setupRepo`)
+2. Authenticate as installation via `src/auth.ts` → short-lived token
+3. Resolve merge base SHA via `src/github.ts` → `getMergeBaseSha` (three-dot diff base)
+4. Create temp workspace (`src/fetcher.ts` → `createWorkspace`)
+5. Partial-clone head and merge-base SHAs with `--filter=blob:none` (`src/fetcher.ts` → `setupRepo`)
 6. Diff the two commits to get changed file paths (`getChangedFiles`) and per-file changed line ranges (`getChangedLineRanges`)
 7. Sparse-checkout only the changed files - blobs fetched on demand (`checkoutFiles`)
-8. Load per-repo config via `src/config.js` → `loadScanConfig`
-9. Run scanners in parallel via `src/dispatcher.js` → `dispatch()`
-10. Validate finding locations against the actual file content (`src/location-validator.js` → `validateFindingLocations`)
-11. Suppress findings that have a `// SECURITY:` comment at the merge base (`src/suppressor.js` → `suppressFindings`)
-12. Filter to actionable findings; stamp each with a deterministic `_findingId` (`LAYNE-xxxxxxxxxxxxxxxx`) via `src/exception-approvals.js` → `generateFindingId`
-13. Convert findings to annotations via `src/reporter.js` → `buildAnnotations()`
+8. Load per-repo config via `src/config.ts` → `loadScanConfig`
+9. Run scanners in parallel via `src/dispatcher.ts` → `dispatch()`
+10. Validate finding locations against the actual file content (`src/location-validator.ts` → `validateFindingLocations`)
+11. Suppress findings that have a `// SECURITY:` comment at the merge base (`src/suppressor.ts` → `suppressFindings`)
+12. Filter to actionable findings; stamp each with a deterministic `_findingId` (`LAYNE-xxxxxxxxxxxxxxxx`) via `src/exception-approvals.ts` → `generateFindingId`
+13. Convert findings to annotations via `src/reporter.ts` → `buildAnnotations()`
 14. If `exceptionApprovers` is configured: load stored exceptions from Redis (`loadExceptions`), remove stale ones whose flagged line changed (`filterStaleExceptions`), resolve approvals that survived a line-number shift via rebase (`resolveDriftedExceptions`), then call `buildExceptionSummary` to potentially override conclusion to `success`
 15. Complete Check Run
-16. Post PR comment if `comment.enabled` via `src/commenter.js` → `postComment`
-17. Apply/remove PR labels via `src/github.js` → `ensureLabelsExist` + `setLabels`
-18. Notify via `src/notifiers/index.js` → `notify()` (always fires on exception approval; otherwise only when finding count increases)
+16. Post PR comment if `comment.enabled` via `src/commenter.ts` → `postComment`
+17. Apply/remove PR labels via `src/github.ts` → `ensureLabelsExist` + `setLabels`
+18. Notify via `src/notifiers/index.ts` → `notify()` (always fires on exception approval; otherwise only when finding count increases)
 19. Clean up workspace in `finally`
 
 **Scanners (`src/adapters/`):**
-- `semgrep.js` - runs `semgrep scan --config auto --json`; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low
-- `trufflehog.js` - runs `trufflehog filesystem --json --no-update`; exit code 183 = secrets found (not an error); batched at 200 files to stay under ARG_MAX; all findings are severity `high`
-- `claude.js` - calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `config/layne.json`):
+- `semgrep.ts` - runs `semgrep scan --config auto --json`; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low
+- `trufflehog.ts` - runs `trufflehog filesystem --json --no-update`; exit code 183 = secrets found (not an error); batched at 200 files to stay under ARG_MAX; all findings are severity `high`
+- `claude.ts` - calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `config/layne.json`):
   - **Prompt mode** (default): single `messages.create` call with a system prompt; use `claude.prompt` to override
   - **Skill mode**: uses the Anthropic [API Skills beta](https://platform.claude.com/docs/en/build-with-claude/skills-guide) - adds a `code_execution` tool + an uploaded skill to each batch call, enabling runtime decoding, registry lookups, and richer static analysis; set `claude.skill: { id, version }` to enable; handles `pause_turn` continuations automatically (up to 10 turns per batch)
 
@@ -113,13 +117,13 @@ Two separate Node.js processes:
 
 | Module | Purpose |
 |--------|---------|
-| `src/config.js` | Loads and merges `config/layne.json`; cached after first read |
-| `src/github.js` | Check Run CRUD + label management (`ensureLabelsExist`, `setLabels`) |
-| `src/metrics.js` | Prometheus metric definitions; exports no-op stubs when `METRICS_ENABLED` is not `true` |
-| `src/notifiers/index.js` | Notification orchestrator; iterates registered notifiers |
-| `src/notifiers/rocketchat.js` | Rocket.Chat incoming webhook notifier |
-| `src/queue.js` | Shared Redis + BullMQ queue instance |
-| `src/debug.js` | Conditional debug logging via `DEBUG_MODE` |
+| `src/config.ts` | Loads and merges `config/layne.json`; cached after first read |
+| `src/github.ts` | Check Run CRUD + label management (`ensureLabelsExist`, `setLabels`) |
+| `src/metrics.ts` | Prometheus metric definitions; exports no-op stubs when `METRICS_ENABLED` is not `true` |
+| `src/notifiers/index.ts` | Notification orchestrator; iterates registered notifiers |
+| `src/notifiers/rocketchat.ts` | Rocket.Chat incoming webhook notifier |
+| `src/queue.ts` | Shared Redis + BullMQ queue instance |
+| `src/debug.ts` | Conditional debug logging via `DEBUG_MODE` |
 
 ## Per-repo configuration (`config/layne.json`)
 
@@ -127,7 +131,7 @@ See [docs/2-configuration.md](docs/2-configuration.md) for the full schema and e
 
 Key points for code navigation:
 - Read once per process startup - **restart both server and worker to pick up changes**
-- Loaded and merged by `src/config.js` → `loadScanConfig`
+- Loaded and merged by `src/config.ts` → `loadScanConfig`
 - Supports `$global` key for defaults inherited by all repos
 - Scanner blocks: per-repo spread over defaults (`{ ...DEFAULT_CONFIG.semgrep, ...repoOverrides.semgrep }`)
 - `trigger`: controls when scanning fires - `pull_request` (default, immediate) or `workflow_run` (deferred until a named CI workflow completes); global default → per-repo override
@@ -141,7 +145,7 @@ Key points for code navigation:
 
 ## Metrics
 
-- `src/metrics.js` exports real prom-client objects when `METRICS_ENABLED=true`, silent no-op stubs otherwise
+- `src/metrics.ts` exports real prom-client objects when `METRICS_ENABLED=true`, silent no-op stubs otherwise
 - No `if (METRICS_ENABLED)` guards needed at call sites - stubs absorb all calls
 - Worker: metrics HTTP server + BullMQ queue poller (15 s interval) started only when enabled
 - Server: `GET /metrics` route registered only when enabled
@@ -150,9 +154,11 @@ Key points for code navigation:
 ## Testing conventions
 
 - Tests use Vitest with ESM (`"type": "module"` in package.json)
-- `src/__tests__/setup.js` sets all required env vars before each test file; `ANTHROPIC_API_KEY` and `METRICS_ENABLED` are intentionally not set - adapters and metrics are mocked
+- All test files are TypeScript (`.ts`); imports use `.js` extensions (NodeNext resolution)
+- `src/__tests__/setup.ts` sets all required env vars before each test file; `ANTHROPIC_API_KEY` and `METRICS_ENABLED` are intentionally not set - adapters and metrics are mocked
 - External dependencies (`@octokit/auth-app`, `@octokit/rest`, `bullmq`, `ioredis`, `@anthropic-ai/sdk`, `prom-client`) are always mocked - no live connections in tests
-- `src/metrics.js` is mocked in worker and server tests with `vi.fn()` stubs; tested in isolation in `src/__tests__/metrics.test.js`
+- `src/metrics.ts` is mocked in worker and server tests with `vi.fn()` stubs; tested in isolation in `src/__tests__/metrics.test.ts`
 - `processJob` and `dispatch` are exported specifically for unit testing without live infrastructure
 - Tests import modules with `await import(...)` after `vi.mock()` calls to handle ESM module caching
 - The `@anthropic-ai/sdk` mock uses a regular `function` constructor (not an arrow function) because `new Anthropic()` must be constructable
+- Typed mock call access pattern: `(mockFn as ReturnType<typeof vi.fn>).mock.calls[0] as [T1, T2]`
