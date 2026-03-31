@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Build a mock Octokit instance with spies for the methods we use.
 const mockChecksCreate          = vi.fn().mockResolvedValue({ data: { id: 42 } });
@@ -11,6 +11,7 @@ const mockListPRsForCommit       = vi.fn().mockResolvedValue({ data: [] });
 const mockCompareCommits         = vi.fn().mockResolvedValue({ data: { merge_base_commit: { sha: 'merge-base-sha' } } });
 const mockPullsGet               = vi.fn().mockResolvedValue({ data: { number: 7, head: { sha: 'abc', ref: 'feat' }, base: { sha: 'base', ref: 'main' }, labels: [] } });
 const mockIssuesCreateComment    = vi.fn().mockResolvedValue({});
+const mockListMembersInOrg       = vi.fn().mockResolvedValue({ data: [{ login: 'alice' }, { login: 'bob' }] });
 
 const mockOctokit = {
   checks: {
@@ -31,6 +32,9 @@ const mockOctokit = {
     listPullRequestsAssociatedWithCommit: mockListPRsForCommit,
     compareCommits:                       mockCompareCommits,
   },
+  teams: {
+    listMembersInOrg: mockListMembersInOrg,
+  },
 };
 
 vi.mock('../auth.js', () => ({
@@ -41,6 +45,7 @@ const {
   createCheckRun, startCheckRun, completeCheckRun,
   skipCheckRun, findPullRequestBySha, getMergeBaseSha,
   ensureLabelsExist, setLabels, getPullRequest, createPrComment,
+  getTeamMembers, clearTeamMemberCache,
 } = await import('../github.js');
 
 const BASE = {
@@ -366,5 +371,83 @@ describe('createPrComment()', () => {
       issue_number: 42,
       body:         'Hello!',
     }));
+  });
+});
+
+describe('getTeamMembers()', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearTeamMemberCache();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns empty array when no team slugs are provided', async () => {
+    const result = await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: [] });
+    expect(result).toEqual([]);
+    expect(mockListMembersInOrg).not.toHaveBeenCalled();
+  });
+
+  it('calls the API and returns members for each slug', async () => {
+    const result = await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+
+    expect(mockListMembersInOrg).toHaveBeenCalledOnce();
+    expect(mockListMembersInOrg).toHaveBeenCalledWith({ org: 'org', team_slug: 'security-team' });
+    expect(result).toEqual(['alice', 'bob']);
+  });
+
+  it('uses the cached result on a second call within TTL', async () => {
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+
+    expect(mockListMembersInOrg).toHaveBeenCalledOnce();
+  });
+
+  it('re-fetches after the TTL expires', async () => {
+    vi.useFakeTimers();
+
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+    vi.advanceTimersByTime(31 * 60 * 1000); // past 30-minute TTL
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+
+    expect(mockListMembersInOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches slugs independently so shared teams are not double-fetched', async () => {
+    mockListMembersInOrg
+      .mockResolvedValueOnce({ data: [{ login: 'alice' }] })
+      .mockResolvedValueOnce({ data: [{ login: 'carol' }] });
+
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['team-a', 'team-b'] });
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['team-a'] });
+
+    // team-a and team-b fetched once each on first call; second call hits cache
+    expect(mockListMembersInOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it('scopes the cache by installationId', async () => {
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['security-team'] });
+    await getTeamMembers({ installationId: 2, org: 'org', teamSlugs: ['security-team'] });
+
+    expect(mockListMembersInOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it('parses org/slug format and uses the explicit org', async () => {
+    await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['other-org/security-team'] });
+
+    expect(mockListMembersInOrg).toHaveBeenCalledWith({ org: 'other-org', team_slug: 'security-team' });
+  });
+
+  it('logs and continues when the API call fails for a slug', async () => {
+    mockListMembersInOrg.mockRejectedValueOnce(new Error('API error'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await getTeamMembers({ installationId: 1, org: 'org', teamSlugs: ['bad-team'] });
+
+    expect(result).toEqual([]);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('[github]'));
+    error.mockRestore();
   });
 });

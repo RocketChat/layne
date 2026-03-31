@@ -4,6 +4,20 @@ import type { Annotation } from './types.js';
 
 const CHECK_NAME = 'Layne Security Scan';
 
+const TEAM_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+interface TeamCacheEntry {
+  members: string[];
+  expiresAt: number;
+}
+
+const teamMemberCache = new Map<string, TeamCacheEntry>();
+
+/** Clears the in-process team member cache. Exposed for testing. */
+export function clearTeamMemberCache(): void {
+  teamMemberCache.clear();
+}
+
 /**
  * Creates a Check Run in "queued" state immediately after receiving the webhook.
  * Returns the Check Run ID, which the worker uses to update it later.
@@ -309,12 +323,22 @@ export async function getTeamMembers({ installationId, org, teamSlugs }: {
       teamSlug = slug;
     }
 
+    const cacheKey = `${installationId}:${teamOrg}/${teamSlug}`;
+    const cached = teamMemberCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      debug('github', `team cache hit for ${teamOrg}/${teamSlug}: ${cached.members.length} member(s)`);
+      cached.members.forEach(m => members.add(m));
+      continue;
+    }
+
     try {
       const { data } = await octokit.teams.listMembersInOrg({
         org: teamOrg,
         team_slug: teamSlug,
       });
-      data.forEach(m => members.add(m.login));
+      const slugMembers = data.map(m => m.login);
+      slugMembers.forEach(m => members.add(m));
+      teamMemberCache.set(cacheKey, { members: slugMembers, expiresAt: Date.now() + TEAM_CACHE_TTL_MS });
       debug('github', `resolved team ${teamOrg}/${teamSlug}: ${data.length} member(s)`);
     } catch (err) {
       console.error(`[github] Failed to list members for team ${teamOrg}/${teamSlug}: ${(err as Error).message}`);
