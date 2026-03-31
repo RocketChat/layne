@@ -1,5 +1,11 @@
 # layne
 
+## 1.2.1
+
+### Patch Changes
+
+- [#38](https://github.com/RocketChat/layne/pull/38) [`eb7d3f6`](https://github.com/RocketChat/layne/commit/eb7d3f6e480c0546528d322fded402279864cbd2) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Cache GitHub team member lookups for 30 minutes to avoid redundant API calls on every exception-approve command.
+
 ## 1.2.0
 
 ### Minor Changes
