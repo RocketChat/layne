@@ -6,7 +6,7 @@ import {
   type ToolDefinition,
 } from '@mariozechner/pi-coding-agent';
 import { createConfinedTools } from './pi-agent-tools.js';
-import { getModel } from '@mariozechner/pi-ai';
+import { getModel, getEnvApiKey } from '@mariozechner/pi-ai';
 import { debug } from '../debug.js';
 import { DEFAULT_CONFIG } from '../config.js';
 import type { PiAgentRawFinding, PiAgentConfig, LineRangesByFile, LineRange } from '../types.js';
@@ -122,19 +122,26 @@ export async function runPiAgent({
     console.log('[pi-agent] skipping — not enabled for this repo (set "piAgent": {"enabled": true} in config/layne.json)');
     return [];
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('[pi-agent] skipping — ANTHROPIC_API_KEY not set');
+  if (!toolConfig.provider) {
+    console.log('[pi-agent] skipping — no provider configured (set "piAgent": {"provider": "anthropic"} in config/layne.json)');
+    return [];
+  }
+
+  const provider = toolConfig.provider;
+
+  if (!getEnvApiKey(provider)) {
+    console.log(`[pi-agent] skipping — no credentials found for provider "${provider}"`);
     return [];
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const model = getModel('anthropic', toolConfig.model as any);
+  const model = getModel(provider as any, toolConfig.model as any);
   if (!model) {
-    console.error(`[pi-agent] model "${toolConfig.model}" not found in pi-ai model registry — skipping`);
+    console.error(`[pi-agent] model "${toolConfig.model}" not found for provider "${provider}" — skipping`);
     return [];
   }
 
-  console.log(`[pi-agent] scanning ${changedFiles.length} file(s) with model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
+  console.log(`[pi-agent] scanning ${changedFiles.length} file(s) with provider ${provider}, model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
 
   const findings: PiAgentRawFinding[] = [];
 

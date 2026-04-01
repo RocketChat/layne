@@ -4,6 +4,10 @@ The Claude scanner uses Anthropic's Claude LLM to detect **malicious intent** in
 
 Unlike Semgrep and Trufflehog, the Claude scanner **sends code to Anthropic's API**. It is disabled by default and must be opted in per repo. It requires `ANTHROPIC_API_KEY` to be set in the environment.
 
+:::warning Experimental
+The Claude scanner is experimental. It may produce inconsistent results, miss findings, or behave unexpectedly. Do not rely on it as your sole security gate.
+:::
+
 
 ## What it detects
 

@@ -59,11 +59,13 @@ Overrides are keyed by `"owner/repo"`. A repository with no entry - or whose ent
 | Semgrep | Enabled - `semgrep scan --config auto --json <files>` |
 | Trufflehog | Enabled - `trufflehog filesystem --json --no-update <files>` |
 | Claude | Disabled - must opt in per repo |
+| Pi Agent | Disabled - must opt in per repo |
 
 See the individual scanner pages for full configuration options:
 - [Semgrep](scanners/semgrep.md)
 - [Trufflehog](scanners/trufflehog.md)
 - [Claude](scanners/claude.md)
+- [Pi Agent](scanners/pi-agent.md)
 
 And for notifications and comments:
 - [Notifiers](notifiers.md)
@@ -77,7 +79,7 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 | Key | How per-repo overrides `$global` |
 |---|---|
 | `mode`, `contextLines`, `timeoutMinutes` | Per-repo value replaces global value |
-| `semgrep`, `trufflehog`, `claude` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
+| `semgrep`, `trufflehog`, `claude`, `piAgent` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
 | `trigger` | Full replacement - per-repo `trigger` replaces the global block entirely |
 | `labels` | Full replacement - per-repo `labels` replaces the global block entirely |
 | `notifications` | Per-notifier-key - per-repo `rocketchat` replaces global `rocketchat`; a per-repo `slack` entry stacks alongside a global `rocketchat` entry |

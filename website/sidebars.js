@@ -15,6 +15,7 @@ const sidebars = {
         { type: 'doc', id: 'scanners/semgrep',    label: 'Semgrep' },
         { type: 'doc', id: 'scanners/trufflehog', label: 'Trufflehog' },
         { type: 'doc', id: 'scanners/claude',     label: 'Claude' },
+        { type: 'doc', id: 'scanners/pi-agent',  label: 'Pi Agent' },
       ],
     },
     { type: 'doc', id: 'finding-suppression',   label: 'Finding Suppression' },
