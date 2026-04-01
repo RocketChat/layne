@@ -271,7 +271,8 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 | `GH_WEBHOOK_SECRET` | Webhook HMAC secret (maps to `GITHUB_WEBHOOK_SECRET` in `.env`) |
 | `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude scanning (required when any repo has `claude.enabled: true`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key - required when any repo has `claude.enabled: true`, or when Pi Agent uses `provider: "anthropic"` |
+| *(provider key)* | Pi Agent provider credentials - add the variable for whichever provider you configure (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`). See [Pi Agent - Provider credentials](scanners/pi-agent.md#provider-credentials) for the full list |
 | `ROCKETCHAT_WEBHOOK_URL` | Global Rocket.Chat incoming webhook URL (required when `$global.notifications.rocketchat.webhookUrl` is `"$ROCKETCHAT_WEBHOOK_URL"`) |
 
 **Optional GitHub Actions variables** (Settings → Secrets and variables → Actions → Variables):

@@ -1,8 +1,10 @@
 # Pi Agent
 
-The Pi Agent scanner uses an autonomous AI agent to detect **malicious intent** in changed code - reverse shells, backdoors, obfuscated payloads, credential exfiltration, and supply-chain attacks.
+The Pi Agent scanner uses an autonomous AI agent to analyze changed code. By default it looks for **malicious intent** - reverse shells, backdoors, obfuscated payloads, credential exfiltration, and supply-chain attacks. That is the starting point, not a constraint. Security engineers implementing Layne should adapt or replace the system prompt to match their threat model and use cases.
 
-Pi Agent **sends code to an external AI provider's API**. It is disabled by default and must be opted in per repo. A `provider` must be configured explicitly - omitting it disables Pi Agent even when `enabled: true` is set.
+Pi Agent was added alongside the Claude scanner because its SDK natively supports multiple AI providers. You can route through Anthropic's API, Amazon Bedrock (useful for accessing cheaper or private models), OpenAI, Google, Mistral, and others - without changing any Layne code.
+
+Pi Agent **sends code to an external AI provider's API**. It is disabled by default and must be opted in per repo. A `provider` must be configured explicitly - omitting it disables Pi Agent even when `enabled: true` is set. The provider must also be configured with the correct credentials in the environment - see [Provider credentials](#provider-credentials) below.
 
 :::warning Experimental
 Pi Agent is an experimental scanner. It may produce inconsistent results, miss findings, or behave unexpectedly across runs. Do not rely on it as your sole security gate.
@@ -11,7 +13,7 @@ Pi Agent is an experimental scanner. It may produce inconsistent results, miss f
 
 ## What it detects
 
-Pi Agent looks specifically for confirmed malicious patterns with high confidence:
+With the built-in prompt, Pi Agent looks specifically for confirmed malicious patterns with high confidence:
 
 - Reverse shells and command-and-control callbacks
 - Backdoors and authentication bypasses
@@ -20,7 +22,7 @@ Pi Agent looks specifically for confirmed malicious patterns with high confidenc
 - Supply-chain attacks (postinstall hooks, URL dependencies with hostile execution, dependency confusion)
 - Covert execution (dangerous dynamic execution where the surrounding logic is clearly hostile)
 
-Pi Agent does **not** report style issues, bugs, or theoretical vulnerabilities. The built-in prompt instructs it to omit any finding it cannot validate with a verbatim evidence snippet from the file.
+The built-in prompt instructs Pi Agent to omit anything it cannot validate with a verbatim evidence snippet, and to ignore style issues, bugs, and theoretical vulnerabilities. Replace the prompt entirely with a custom `prompt` to scan for different threat classes or apply domain-specific rules.
 
 
 ## Data privacy
@@ -66,7 +68,7 @@ Because the agent drives its own investigation path, the same code may produce f
 |---|---|---|---|
 | `enabled` | boolean | `false` | Must be `true` to enable Pi Agent scanning for this repo |
 | `provider` | string | (none) | **Required.** AI provider to use. Omitting this disables Pi Agent even if `enabled: true`. Supported values: `anthropic`, `openai`, `azure-openai-responses`, `google`, `google-gemini-cli`, `google-vertex`, `mistral`, `amazon-bedrock` |
-| `model` | string | `claude-opus-4-6` | Model ID to use. Must be a valid model ID for the configured provider |
+| `model` | string | `claude-opus-4-6` | Model ID to use. Must be a valid model ID for the configured provider. **Bedrock uses provider-prefixed IDs** (e.g. `anthropic.claude-opus-4-6-v1`) - the default `claude-opus-4-6` will not resolve and the scan will be silently skipped |
 | `thinkingLevel` | string | `"medium"` | Depth of reasoning: `"low"`, `"medium"`, or `"high"`. `"high"` enables extended thinking |
 | `timeoutMinutes` | number | `3` | Hard timeout for the agent session in minutes. Partial findings are returned if the timeout fires |
 | `prompt` | string | built-in | Custom system prompt. Replaces the default prompt entirely |
@@ -97,20 +99,13 @@ The most effective cost control is the `workflow_run` or `workflow_job` trigger,
 Use `thinkingLevel: "low"` for fast, cheap scans on low-risk repositories. Use `"high"` when you need deeper analysis of obfuscated or complex code.
 
 
-## Pi Agent vs Claude scanner
+## Provider credentials
 
-Both scanners detect malicious intent. The difference is in how they investigate:
+Each provider reads credentials from environment variables. The worker logs a warning and skips Pi Agent if credentials are missing rather than failing the scan.
 
-| | Claude | Pi Agent |
-|---|---|---|
-| Approach | Single batch API call | Full agent session with file tools |
-| Can follow imports | No | Yes |
-| Can search across files | No | Yes |
-| Deterministic | Yes | No |
-| Default model | Haiku (cheap) | Opus (expensive) |
-| Timeout | No (single call) | Yes (default 3 min) |
+For the complete list of required environment variables per provider - including providers with complex auth like Azure OpenAI, Vertex AI, and Amazon Bedrock - see the [pi-ai documentation](https://github.com/badlogic/pi-mono/tree/main/packages/ai#environment-variables-nodejs-only).
 
-Use Pi Agent when deeper cross-file investigation is valuable and the cost and non-determinism tradeoffs are acceptable. Use Claude when you want faster, cheaper, deterministic scanning with a simpler configuration surface.
+Add the relevant variable(s) to your `.env` file and to your production secrets store.
 
 
 ## Examples
@@ -155,6 +150,21 @@ Use Pi Agent when deeper cross-file investigation is valuable and the cost and n
   }
 }
 ```
+
+**Use Amazon Bedrock:**
+```json
+{
+  "acme/backend": {
+    "piAgent": {
+      "enabled": true,
+      "provider": "amazon-bedrock",
+      "model": "anthropic.claude-opus-4-6-v1"
+    }
+  }
+}
+```
+
+Bedrock model IDs use a provider-prefixed format. Cross-region inference profile variants are also available (`us.anthropic.claude-opus-4-6-v1`, `eu.anthropic.claude-opus-4-6-v1`). The region defaults to `us-east-1` unless `AWS_REGION` or `AWS_DEFAULT_REGION` is set. See the [pi-ai documentation](https://github.com/badlogic/pi-mono/tree/main/packages/ai#environment-variables-nodejs-only) for the full list of available Bedrock models and credential options.
 
 **Use a custom system prompt for domain-specific analysis:**
 ```json

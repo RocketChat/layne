@@ -1,6 +1,6 @@
 # Claude
 
-The Claude scanner uses Anthropic's Claude LLM to detect **malicious intent** in changed code by default - reverse shells, backdoors, obfuscated payloads, and supply-chain attacks. Default Claude settings are just a blueprint. You should definitely adapt your system prompt or use a skill instead of the default prompt.
+The Claude scanner uses Anthropic's Claude LLM to analyze changed code. By default it looks for **malicious intent** - reverse shells, backdoors, obfuscated payloads, and supply-chain attacks. That is a starting point, not a fixed ruleset. Security engineers implementing Layne should adapt the system prompt (or build a skill) to reflect their threat model and use cases - the scanner is a framework for AI-assisted code review, not a prescribed detector.
 
 Unlike Semgrep and Trufflehog, the Claude scanner **sends code to Anthropic's API**. It is disabled by default and must be opted in per repo. It requires `ANTHROPIC_API_KEY` to be set in the environment.
 
@@ -11,7 +11,7 @@ The Claude scanner is experimental. It may produce inconsistent results, miss fi
 
 ## What it detects
 
-Claude, as it's configured by default, looks specifically for confirmed malicious patterns with high confidence:
+With the built-in prompt, Claude looks specifically for confirmed malicious patterns with high confidence:
 
 - Reverse shells and command-and-control callbacks
 - Backdoors and authentication bypasses
@@ -19,7 +19,7 @@ Claude, as it's configured by default, looks specifically for confirmed maliciou
 - Obfuscated payloads (base64/hex encoded, eval chains)
 - Supply-chain attacks (package typosquatting, postinstall hooks, dependency confusion)
 
-Claude does **not** report style issues, bugs, or theoretical vulnerabilities. The built-in prompt instructs it to omit any finding it cannot validate with a verbatim evidence snippet from the file.
+The built-in prompt instructs Claude to omit anything it cannot validate with a verbatim evidence snippet, and to ignore style issues, bugs, and theoretical vulnerabilities. Replace it with a custom `prompt` or a skill to scan for different threat classes or apply domain-specific rules.
 
 
 ## Data privacy
