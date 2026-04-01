@@ -142,6 +142,7 @@ export interface ClaudeConfig {
 
 export interface PiAgentConfig {
   enabled: boolean;
+  provider?: string;
   model: string;
   thinkingLevel?: string;
   timeoutMinutes?: number;

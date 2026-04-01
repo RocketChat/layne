@@ -31,7 +31,7 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     thinkingLevel:  'medium',
     timeoutMinutes: 3,
     prompt:         null,
-  } as PiAgentConfig),
+  } as PiAgentConfig),  // note: no default provider — omitting provider disables Pi Agent even when enabled: true
   labels:  Object.freeze({} as LabelConfig),
   trigger: Object.freeze({ on: 'pull_request' } as TriggerConfig),
   comment: Object.freeze({ enabled: false, template: null } as CommentConfig),

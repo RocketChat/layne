@@ -149,10 +149,16 @@ function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
   if (b['enabled'] !== undefined && typeof b['enabled'] !== 'boolean')
     errors.push(`${ctx}.enabled: must be a boolean`);
 
+  if (b['provider'] !== undefined && typeof b['provider'] !== 'string')
+    errors.push(`${ctx}.provider: must be a string`);
+
   if (b['model'] !== undefined) {
     if (typeof b['model'] !== 'string')
       errors.push(`${ctx}.model: must be a string`);
-    else if (!CLAUDE_MODELS.test(b['model']))
+    else if (
+      (b['provider'] === undefined || b['provider'] === 'anthropic') &&
+      !CLAUDE_MODELS.test(b['model'])
+    )
       errors.push(`${ctx}.model: expected a Claude model ID (e.g. "claude-opus-4-6"), got "${b['model']}"`);
   }
 
