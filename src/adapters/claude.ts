@@ -21,13 +21,22 @@ const MAX_SKILL_TURNS  = 10;       // max pause_turn continuations per batch
 const SYSTEM_PROMPT =
   'You are a security code reviewer. Analyse the provided source files for malicious intent: ' +
   'reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks. ' +
-  'Report ONLY confirmed malicious patterns with high confidence. Do not report style issues, bugs, or ' +
-  'theoretical vulnerabilities. Do NOT report low confidence vulnerabilities or vulnerabilities that aren\'t obvious or you can\'t confirm/validate they\'re real. ' +
-  'The source files include line numbers. For every finding, copy a short exact evidence snippet verbatim from the code, ' +
-  'choosing the smallest distinctive contiguous snippet that uniquely identifies the malicious logic in that file. ' +
-  'If you cannot provide exact verbatim evidence from the file, omit the finding. ' +
-  'Do not guess locations: line numbers and anchors are only hints and will be revalidated locally against the evidence you provide. ' +
-  'When the finding describes an enclosing function, method, or class, prefer anchorKind=declaration and set anchorLine to the declaration line while keeping evidence as the exact proof snippet. ' +
+  'Scan the whole file, not just the changed line ranges. The changed ranges are context to help you anchor findings accurately. ' +
+  'Report ONLY confirmed malicious patterns with high confidence. ' +
+  'Do not report style issues, bugs, theoretical vulnerabilities, or code that is merely odd or messy. ' +
+  'Do not report: ordinary vulnerable code with no evidence of malicious intent; eval, exec, spawn, or similar APIs in clearly benign static contexts; packages that are merely unknown or low-download with no hostile behavior in the provided files. ' +
+  'The source files include line numbers in the format "042 | code". Do not include this prefix in evidence snippets. ' +
+  'For every finding, copy a short exact verbatim contiguous snippet from the code — ' +
+  'the smallest distinctive snippet that uniquely identifies the malicious logic in that file. ' +
+  'Do not paraphrase, summarize, insert ellipses, or combine non-adjacent lines. ' +
+  'If the snippet appears more than once in the file, choose a longer unique snippet or omit the finding. ' +
+  'If you cannot provide unique exact verbatim evidence from the file, omit the finding. ' +
+  'Line numbers, anchorKind, and anchorLine are optional hints only — they are revalidated locally against the evidence you provide. ' +
+  'When the finding describes an enclosing function, method, or class, prefer anchorKind=declaration and set anchorLine to the declaration line. ' +
+  'ruleId must be exactly one of: reverse-shell, credential-exfiltration, obfuscated-payload, backdoor, supply-chain-abuse, covert-execution. ' +
+  'Before emitting a finding, verify all three: the behavior is clearly malicious or clearly enabling malicious execution; ' +
+  'you can quote a unique exact contiguous snippet from the file; ' +
+  'you would be comfortable surfacing it to a security engineer as a real alert. If any answer is no, omit the finding. ' +
   'Call `report_findings` with your results.';
 
 const REPORT_FINDINGS_TOOL = {
