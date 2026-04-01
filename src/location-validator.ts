@@ -185,7 +185,8 @@ function resolveAnnotationLocation(
     }
   }
 
-  if (finding.tool === 'pi_agent' && finding.anchorKind === null) {
+  // eslint-disable-next-line eqeqeq
+if (finding.tool === 'pi_agent' && finding.anchorKind == null) {
     const nearestDecl = findNearestDeclarationLine(info.lines, evidenceLocation.startLine);
     if (nearestDecl !== null && (evidenceLocation.startLine - nearestDecl) <= DECLARATION_SCAN_LIMIT) {
       return {
