@@ -127,11 +127,11 @@ describe('validateFindingLocations()', () => {
     expect(finding.evidenceStartLine).toBe(7);
     expect(finding.evidenceEndLine).toBe(7);
     expect(finding.startLine).toBe(1);
-    expect(finding.endLine).toBe(1);
+    expect(finding.endLine).toBe(7);
     expect(finding.anchorKind).toBe('declaration');
     expect(finding.anchorLine).toBe(1);
     expect(finding.annotationStartLine).toBe(1);
-    expect(finding.annotationEndLine).toBe(1);
+    expect(finding.annotationEndLine).toBe(7);
     expect(finding.suppressionLine).toBe(1);
     expect(finding.annotationReason).toBe('anchored-by-validated-declaration');
   });
@@ -285,7 +285,7 @@ describe('validateFindingLocations()', () => {
   // pi_agent findings
   // ---------------------------------------------------------------------------
 
-  it('routes pi_agent findings through the evidence pipeline (Fix 1)', async () => {
+  it('routes pi_agent findings through the evidence pipeline (strict evidence-only)', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function createHealthCheck(options = {}) {\n' +
       '  const socket = net.connect(options.port ?? 4444, options.host ?? \'198.51.100.42\');\n' +
@@ -315,13 +315,14 @@ describe('validateFindingLocations()', () => {
     expect(finding.evidenceStatus).toBe('unique');
     expect(finding.locationReason).toBe('validated-by-evidence');
     expect(finding.annotationEligible).toBe(true);
-    expect(finding.startLine).toBe(1);
-    expect(finding.endLine).toBe(1);
-    expect(finding.anchorKind).toBe('declaration');
-    expect(finding.annotationReason).toBe('anchored-by-validated-declaration');
+    // Pi Agent uses strict evidence-only positioning - ignores anchorKind/anchorLine
+    expect(finding.startLine).toBe(2);
+    expect(finding.endLine).toBe(2);
+    expect(finding.anchorKind).toBe('line');
+    expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('auto-anchors pi_agent findings to the enclosing declaration when anchorKind is not set (Fix 2)', async () => {
+  it('always uses evidence location for pi_agent findings regardless of function size', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function createHealthCheck(options = {}) {\n' +
       '  const socket = net.connect(options.port ?? 4444, options.host ?? \'198.51.100.42\');\n' +
@@ -350,14 +351,15 @@ describe('validateFindingLocations()', () => {
 
     expect(finding.locationValidated).toBe(true);
     expect(finding.evidenceStatus).toBe('unique');
-    expect(finding.startLine).toBe(1);
-    expect(finding.endLine).toBe(1);
-    expect(finding.anchorKind).toBe('declaration');
-    expect(finding.annotationReason).toBe('anchored-by-auto-declaration');
+    // Pi Agent uses strict evidence-only positioning - no declaration scanning
+    expect(finding.startLine).toBe(7);
+    expect(finding.endLine).toBe(7);
+    expect(finding.anchorKind).toBe('line');
+    expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('falls back to evidence start line when pi_agent evidence is more than 20 lines from a declaration', async () => {
-    const fillerLines = Array.from({ length: 20 }, (_, i) => `  // filler ${i + 1}\n`).join('');
+  it('uses evidence location for pi_agent regardless of distance from declaration', async () => {
+    const fillerLines = Array.from({ length: 55 }, (_, i) => `  // filler ${i + 1}\n`).join('');
     mockReadFile.mockResolvedValueOnce(
       'export function earlyDecl() {\n' +
       fillerLines +
@@ -367,7 +369,7 @@ describe('validateFindingLocations()', () => {
 
     const [finding] = await validateFindingLocations([{
       file: 'src/health.js',
-      line: 22,
+      line: 57,
       evidence: 'eval(remoteCode);',
       severity: 'high',
       message: 'covert execution',
@@ -379,12 +381,14 @@ describe('validateFindingLocations()', () => {
     });
 
     expect(finding.locationValidated).toBe(true);
-    expect(finding.startLine).toBe(22);
-    expect(finding.endLine).toBe(22);
+    // Pi Agent always uses evidence location - no declaration scanning
+    expect(finding.startLine).toBe(57);
+    expect(finding.endLine).toBe(57);
+    expect(finding.anchorKind).toBe('line');
     expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('respects explicit anchorKind=span on pi_agent findings — auto-declaration scan does not trigger', async () => {
+  it('ignores anchorKind on pi_agent findings — always uses evidence location', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function exfilData() {\n' +
       '  const a = collectSecrets();\n' +
@@ -408,6 +412,7 @@ describe('validateFindingLocations()', () => {
     });
 
     expect(finding.locationValidated).toBe(true);
+    // Pi Agent ignores anchorKind and always uses evidence location
     expect(finding.startLine).toBe(2);
     expect(finding.endLine).toBe(3);
     expect(finding.anchorKind).toBe('span');
