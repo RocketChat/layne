@@ -83,7 +83,7 @@ describe('buildAnnotations()', () => {
         end_line:         10,
         annotation_level: 'failure',
         title:            '[trufflehog] trufflehog/aws-key',
-        message:          'Hardcoded secret detected',
+        message:          '[R10] Hardcoded secret detected',
       });
     });
 

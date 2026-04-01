@@ -215,7 +215,8 @@ function inspectEvidence(info: FileInfo, evidence: string): EvidenceMatch {
     const matchIndex = info.content.indexOf(needle, index);
     if (matchIndex === -1) break;
 
-    matches.push(offsetsToSpan(info.lineOffsets, matchIndex, matchIndex + needle.length - 1));
+    const location = offsetsToSpan(info.lineOffsets, matchIndex, matchIndex + needle.length - 1);
+    matches.push(location);
     index = matchIndex + needle.length;
   }
 

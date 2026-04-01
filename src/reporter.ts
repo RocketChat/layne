@@ -17,14 +17,24 @@ const SEVERITY_TO_LEVEL: Record<string, AnnotationLevel> = {
 export function buildAnnotations(findings: ProcessedFinding[]): ReportResult {
   const inlineableFindings = findings.filter(f => f.annotationEligible !== false);
 
-  const annotations: Annotation[] = inlineableFindings.map(f => ({
-    path:             f.file,
-    start_line:       f.annotationStartLine ?? f.startLine ?? f.line,
-    end_line:         f.annotationEndLine ?? f.annotationStartLine ?? f.endLine ?? f.startLine ?? f.line,
-    annotation_level: SEVERITY_TO_LEVEL[f.severity] ?? 'notice',
-    title:            `[${f.tool}] ${f.ruleId}`,
-    message:          f.message,
-  }));
+  const annotations: Annotation[] = inlineableFindings.map(f => {
+    const startLine = f.annotationStartLine ?? f.startLine ?? f.line;
+    const endLine = f.annotationEndLine ?? f.annotationStartLine ?? f.endLine ?? f.startLine ?? f.line;
+
+    // Build line range prefix: [R49-R60] or [R49] for single line
+    const linePrefix = startLine === endLine
+      ? `[R${startLine}] `
+      : `[R${startLine}-R${endLine}] `;
+
+    return {
+      path:             f.file,
+      start_line:       startLine,
+      end_line:         endLine,
+      annotation_level: SEVERITY_TO_LEVEL[f.severity] ?? 'notice',
+      title:            `[${f.tool}] ${f.ruleId}`,
+      message:          `${linePrefix}${f.message}`,
+    };
+  });
 
   // Only critical and high severity findings fail the check.
   const hasBlockingFindings = findings.some(
