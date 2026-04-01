@@ -153,7 +153,8 @@ export async function runPiAgent({
     label:       'Report Finding',
     description: 'Report a confirmed malicious code finding. Call once per finding.',
     parameters:  ReportFindingParams,
-    execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
       const finding = normalizeFinding(params as RawFindingInput);
       findings.push(finding);
       debug('pi-agent', `finding recorded: ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine} [${finding.ruleId}]`);
