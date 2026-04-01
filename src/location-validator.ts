@@ -2,6 +2,8 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { ProcessedFinding, EvidenceStatus, AnchorKind } from './types.js';
 
+const DECLARATION_SCAN_LIMIT = 20;
+
 const DECLARATION_PATTERNS = [
   /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b/,
   /^\s*(?:export\s+default\s+)?class\b/,
@@ -67,7 +69,7 @@ export async function validateFindingLocations(
   const validated: ProcessedFinding[] = [];
 
   for (const finding of findings) {
-    if (finding.tool !== 'claude') {
+    if (finding.tool !== 'claude' && finding.tool !== 'pi_agent') {
       const startLine = finding.startLine ?? finding.line;
       const endLine = finding.endLine ?? finding.line;
       validated.push({
@@ -179,6 +181,19 @@ function resolveAnnotationLocation(
         anchorKind: 'declaration',
         anchorLine: declarationLine,
         reason: 'anchored-by-validated-declaration',
+      };
+    }
+  }
+
+  if (finding.tool === 'pi_agent' && finding.anchorKind == null) {
+    const nearestDecl = findNearestDeclarationLine(info.lines, evidenceLocation.startLine);
+    if (nearestDecl !== null && (evidenceLocation.startLine - nearestDecl) <= DECLARATION_SCAN_LIMIT) {
+      return {
+        startLine: nearestDecl,
+        endLine: nearestDecl,
+        anchorKind: 'declaration',
+        anchorLine: nearestDecl,
+        reason: 'anchored-by-auto-declaration',
       };
     }
   }

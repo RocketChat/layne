@@ -26,7 +26,7 @@ const SYSTEM_PROMPT =
   'If the snippet appears more than once in the file, choose a longer unique snippet or omit the finding. ' +
   'If you cannot provide unique exact verbatim evidence, omit the finding. ' +
   'startLine, endLine, anchorKind, and anchorLine are optional hints only — they are revalidated locally against the evidence you provide. ' +
-  'When the finding describes an enclosing function, method, or class, prefer anchorKind=declaration and set anchorLine to the declaration line. ' +
+  'For any finding whose malicious behavior is implemented inside a function, method, or class, you MUST set anchorKind=declaration and anchorLine to the exact line number of that function, method, or class declaration. ' +
   'ruleId must be exactly one of: reverse-shell, credential-exfiltration, obfuscated-payload, backdoor, supply-chain-abuse, covert-execution. ' +
   'Before emitting a finding, verify all three: the behavior is clearly malicious or clearly enabling malicious execution; ' +
   'you can quote a unique exact contiguous snippet from the file; ' +
