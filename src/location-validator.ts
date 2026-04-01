@@ -2,20 +2,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import type { ProcessedFinding, EvidenceStatus, AnchorKind } from './types.js';
 
-const DECLARATION_SCAN_LIMIT = 20;
 
-const DECLARATION_PATTERNS = [
-  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b/,
-  /^\s*(?:export\s+default\s+)?class\b/,
-  /^\s*(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/,
-  /^\s*(?:async\s+)?def\b/,
-  /^\s*class\b/,
-  /^\s*func\b/,
-  /^\s*fn\b/,
-  /^\s*(?:def|class|module)\b/,
-  /^\s*(?:public|private|protected|internal|static|final|abstract|sealed|virtual|override|async)\b.*\([^;]*\)\s*(?:\{|:)/,
-  /^\s*(?!if\b|for\b|while\b|switch\b|catch\b|with\b|return\b|else\b|elseif\b|elif\b|try\b|finally\b|do\b)(?:async\s+)?[A-Za-z_$][\w$]*\s*\([^;]*\)\s*\{/,
-];
 
 interface FileInfo {
   content: string;
@@ -151,6 +138,18 @@ function normalizeForMatch(value: string): string {
   return value.replace(/\r\n/g, '\n').trim();
 }
 
+// Minimal declaration patterns for Claude anchor validation
+const DECLARATION_PATTERNS = [
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b/,
+  /^\s*(?:export\s+default\s+)?class\b/,
+  /^\s*(?:async\s+)?def\b/,
+  /^\s*class\b/,
+];
+
+function looksLikeDeclaration(line: string): boolean {
+  return DECLARATION_PATTERNS.some(pattern => pattern.test(line));
+}
+
 interface AnnotationLocation {
   startLine: number;
   endLine: number;
@@ -164,66 +163,43 @@ function resolveAnnotationLocation(
   info: FileInfo,
   evidenceLocation: EvidenceLocation,
 ): AnnotationLocation {
-  const fallback: AnnotationLocation = {
+  // Pi Agent: Always use evidence location only (Option 1 - strict evidence-only positioning)
+  if (finding.tool === 'pi_agent') {
+    return {
+      startLine: evidenceLocation.startLine,
+      endLine: evidenceLocation.endLine,
+      anchorKind: evidenceLocation.startLine === evidenceLocation.endLine ? 'line' : 'span',
+      anchorLine: evidenceLocation.startLine,
+      reason: 'anchored-by-evidence',
+    };
+  }
+
+  // Claude: Use declaration anchoring if provided and valid
+  if (finding.anchorKind === 'declaration') {
+    const declarationLine = finding.anchorLine;
+    if (typeof declarationLine === 'number' && declarationLine > 0 && declarationLine <= evidenceLocation.startLine) {
+      // Validate that the line actually looks like a declaration
+      const line = info.lines[declarationLine - 1] ?? '';
+      if (looksLikeDeclaration(line)) {
+        return {
+          startLine: declarationLine,
+          endLine: Math.max(declarationLine, evidenceLocation.endLine),
+          anchorKind: 'declaration',
+          anchorLine: declarationLine,
+          reason: 'anchored-by-validated-declaration',
+        };
+      }
+    }
+  }
+
+  // Default: Use evidence location
+  return {
     startLine: evidenceLocation.startLine,
     endLine: evidenceLocation.endLine,
     anchorKind: evidenceLocation.startLine === evidenceLocation.endLine ? 'line' : 'span',
     anchorLine: evidenceLocation.startLine,
     reason: 'anchored-by-evidence',
   };
-
-  if (finding.anchorKind === 'declaration') {
-    const declarationLine = validateDeclarationAnchor(info.lines, finding.anchorLine, evidenceLocation.startLine);
-    if (declarationLine !== null) {
-      return {
-        startLine: declarationLine,
-        endLine: declarationLine,
-        anchorKind: 'declaration',
-        anchorLine: declarationLine,
-        reason: 'anchored-by-validated-declaration',
-      };
-    }
-  }
-
-  // eslint-disable-next-line eqeqeq
-if (finding.tool === 'pi_agent' && finding.anchorKind == null) {
-    const nearestDecl = findNearestDeclarationLine(info.lines, evidenceLocation.startLine);
-    if (nearestDecl !== null && (evidenceLocation.startLine - nearestDecl) <= DECLARATION_SCAN_LIMIT) {
-      return {
-        startLine: nearestDecl,
-        endLine: nearestDecl,
-        anchorKind: 'declaration',
-        anchorLine: nearestDecl,
-        reason: 'anchored-by-auto-declaration',
-      };
-    }
-  }
-
-  return fallback;
-}
-
-function validateDeclarationAnchor(lines: string[], anchorLine: number | undefined, evidenceStartLine: number): number | null {
-  const normalizedAnchorLine = normalizePositiveInt(anchorLine);
-  if (normalizedAnchorLine === null) return null;
-  if (normalizedAnchorLine > evidenceStartLine) return null;
-  if (normalizedAnchorLine > lines.length) return null;
-
-  const line = lines[normalizedAnchorLine - 1] ?? '';
-  if (!looksLikeDeclaration(line)) return null;
-
-  const nearestDeclarationLine = findNearestDeclarationLine(lines, evidenceStartLine);
-  return nearestDeclarationLine === normalizedAnchorLine ? normalizedAnchorLine : null;
-}
-
-function findNearestDeclarationLine(lines: string[], startLine: number): number | null {
-  for (let lineNumber = startLine; lineNumber >= 1; lineNumber--) {
-    if (looksLikeDeclaration(lines[lineNumber - 1] ?? '')) return lineNumber;
-  }
-  return null;
-}
-
-function looksLikeDeclaration(line: string): boolean {
-  return DECLARATION_PATTERNS.some(pattern => pattern.test(line));
 }
 
 function inspectEvidence(info: FileInfo, evidence: string): EvidenceMatch {
@@ -282,10 +258,4 @@ function offsetToLine(lineOffsets: number[], offset: number): number {
 function applyEvidenceLocation(finding: ProcessedFinding, relocated: EvidenceLocation): void {
   finding.evidenceStartLine = relocated.startLine;
   finding.evidenceEndLine = relocated.endLine;
-}
-
-function normalizePositiveInt(value: number | undefined): number | null {
-  if (value === undefined) return null;
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }

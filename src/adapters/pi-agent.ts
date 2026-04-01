@@ -9,7 +9,7 @@ import { createConfinedTools } from './pi-agent-tools.js';
 import { getModel } from '@mariozechner/pi-ai';
 import { debug } from '../debug.js';
 import { DEFAULT_CONFIG } from '../config.js';
-import type { PiAgentRawFinding, PiAgentConfig, AnchorKind, LineRangesByFile, LineRange } from '../types.js';
+import type { PiAgentRawFinding, PiAgentConfig, LineRangesByFile, LineRange } from '../types.js';
 
 const SYSTEM_PROMPT =
   'You are a security code reviewer with access to tools that let you read and explore a code repository. ' +
@@ -25,8 +25,8 @@ const SYSTEM_PROMPT =
   'Do not paraphrase, summarize, insert ellipses, or combine non-adjacent lines. ' +
   'If the snippet appears more than once in the file, choose a longer unique snippet or omit the finding. ' +
   'If you cannot provide unique exact verbatim evidence, omit the finding. ' +
-  'startLine, endLine, anchorKind, and anchorLine are optional hints only — they are revalidated locally against the evidence you provide. ' +
-  'For any finding whose malicious behavior is implemented inside a function, method, or class, you MUST set anchorKind=declaration and anchorLine to the exact line number of that function, method, or class declaration. ' +
+  'Line numbers you report will be ignored — only the evidence string is used to determine the annotation location. ' +
+  'Focus on providing accurate, unique evidence snippets. ' +
   'ruleId must be exactly one of: reverse-shell, credential-exfiltration, obfuscated-payload, backdoor, supply-chain-abuse, covert-execution. ' +
   'Before emitting a finding, verify all three: the behavior is clearly malicious or clearly enabling malicious execution; ' +
   'you can quote a unique exact contiguous snippet from the file; ' +
@@ -39,14 +39,12 @@ const SYSTEM_PROMPT =
 
 const ReportFindingParams = Type.Object({
   file:       Type.String({ description: 'File path relative to the repository root' }),
-  startLine:  Type.Optional(Type.Integer({ description: 'Start line of the finding (hint only — resolved from evidence)' })),
-  endLine:    Type.Optional(Type.Integer({ description: 'End line of the finding (hint only — resolved from evidence)' })),
+  startLine:  Type.Optional(Type.Integer({ description: 'Start line of the finding (ignored — only evidence is used for positioning)' })),
+  endLine:    Type.Optional(Type.Integer({ description: 'End line of the finding (ignored — only evidence is used for positioning)' })),
   severity:   Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
   message:    Type.String({ description: 'Description of the malicious pattern' }),
   ruleId:     Type.String({ description: 'Short kebab-case rule identifier, e.g. "reverse-shell"' }),
-  evidence:   Type.String({ description: 'Exact verbatim contiguous snippet copied from the file that uniquely identifies the malicious code' }),
-  anchorKind: Type.Optional(Type.Union([Type.Literal('line'), Type.Literal('declaration'), Type.Literal('span')])),
-  anchorLine: Type.Optional(Type.Integer({ description: 'Hint only — resolved from evidence' })),
+  evidence:   Type.String({ description: 'Exact verbatim contiguous snippet copied from the file that uniquely identifies the malicious code. This is the ONLY field used to determine annotation location.' }),
 });
 
 // ---------------------------------------------------------------------------
@@ -61,8 +59,6 @@ interface RawFindingInput {
   message: string;
   ruleId: string;
   evidence?: string;
-  anchorKind?: unknown;
-  anchorLine?: unknown;
 }
 
 function formatLineRanges(ranges: LineRange[]): string {
@@ -72,12 +68,6 @@ function formatLineRanges(ranges: LineRange[]): string {
 function normalizePositiveInt(value: unknown): number | null {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function normalizeAnchorKind(value: unknown): AnchorKind | undefined {
-  return value === 'line' || value === 'declaration' || value === 'span'
-    ? value as AnchorKind
-    : undefined;
 }
 
 function normalizeFinding(raw: RawFindingInput): PiAgentRawFinding {
@@ -94,8 +84,9 @@ function normalizeFinding(raw: RawFindingInput): PiAgentRawFinding {
     startLine,
     endLine:    endLine >= startLine ? endLine : startLine,
     evidence:   typeof raw.evidence === 'string' ? raw.evidence.trim() : '',
-    anchorKind: normalizeAnchorKind(raw.anchorKind),
-    anchorLine: normalizePositiveInt(raw.anchorLine) ?? undefined,
+    // Pi Agent uses strict evidence-only positioning - these are not used
+    anchorKind: undefined,
+    anchorLine: undefined,
   };
 }
 
