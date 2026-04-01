@@ -27,6 +27,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
+    "@mariozechner/pi-ai": "^0.64.0",
+    "@mariozechner/pi-coding-agent": "^0.64.0",
+    "@sinclair/typebox": "^0.34.49",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
     "bullmq": "^5.0.0",

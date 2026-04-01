@@ -8,12 +8,13 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'piAgent', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
-const CLAUDE_MODELS      = /^claude-/;
+const CLAUDE_MODELS        = /^claude-/;
+const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const REPO_KEY_RE        = /^[^/]+\/[^/]+$/;
 
 export type ValidateConfigResult =
@@ -73,6 +74,7 @@ function validateRepo(block: Record<string, unknown>, ctx: string, errors: strin
   if (block['semgrep']       !== undefined) validateScanner(block['semgrep'],    `${ctx}.semgrep`,    errors);
   if (block['trufflehog']    !== undefined) validateScanner(block['trufflehog'], `${ctx}.trufflehog`, errors);
   if (block['claude']        !== undefined) validateClaude(block['claude'],       `${ctx}.claude`,     errors);
+  if (block['piAgent']       !== undefined) validatePiAgent(block['piAgent'],    `${ctx}.piAgent`,    errors);
   if (block['notifications'] !== undefined) validateNotifications(block['notifications'], `${ctx}.notifications`, errors);
   if (block['labels']        !== undefined) validateLabels(block['labels'], `${ctx}.labels`, errors);
   if (block['trigger']       !== undefined) validateTrigger(block['trigger'], `${ctx}.trigger`, errors);
@@ -138,6 +140,34 @@ function validateClaude(block: unknown, ctx: string, errors: string[]): void {
   if (b['prompt'] && b['skill']) {
     errors.push(`${ctx}: "prompt" and "skill" are mutually exclusive — remove one`);
   }
+}
+
+function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
+  if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
+  const b = block as Record<string, unknown>;
+
+  if (b['enabled'] !== undefined && typeof b['enabled'] !== 'boolean')
+    errors.push(`${ctx}.enabled: must be a boolean`);
+
+  if (b['model'] !== undefined) {
+    if (typeof b['model'] !== 'string')
+      errors.push(`${ctx}.model: must be a string`);
+    else if (!CLAUDE_MODELS.test(b['model']))
+      errors.push(`${ctx}.model: expected a Claude model ID (e.g. "claude-opus-4-6"), got "${b['model']}"`);
+  }
+
+  if (b['thinkingLevel'] !== undefined) {
+    if (typeof b['thinkingLevel'] !== 'string' || !VALID_THINKING_LEVELS.has(b['thinkingLevel']))
+      errors.push(`${ctx}.thinkingLevel: must be one of ${[...VALID_THINKING_LEVELS].join(', ')}`);
+  }
+
+  if (b['timeoutMinutes'] !== undefined) {
+    if (!Number.isInteger(b['timeoutMinutes']) || (b['timeoutMinutes'] as number) < 1)
+      errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
+  }
+
+  if (b['prompt'] !== undefined && b['prompt'] !== null && typeof b['prompt'] !== 'string')
+    errors.push(`${ctx}.prompt: must be a string or null`);
 }
 
 function validateTrigger(block: unknown, ctx: string, errors: string[]): void {

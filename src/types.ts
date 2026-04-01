@@ -1,7 +1,7 @@
 // src/types.ts
 
 export type Severity        = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type Tool            = 'semgrep' | 'trufflehog' | 'claude';
+export type Tool            = 'semgrep' | 'trufflehog' | 'claude' | 'pi_agent';
 export type AnnotationLevel = 'failure' | 'warning' | 'notice';
 export type ScanMode        = 'changed_files' | 'diff_only';
 export type TriggerOn       = 'pull_request' | 'workflow_run' | 'workflow_job';
@@ -38,7 +38,16 @@ export interface ClaudeRawFinding extends BaseFinding {
   anchorLine?: number;
 }
 
-export type RawFinding = SemgrepFinding | TrufflehogFinding | ClaudeRawFinding;
+export interface PiAgentRawFinding extends BaseFinding {
+  tool: 'pi_agent';
+  startLine?: number;
+  endLine?: number;
+  evidence?: string;
+  anchorKind?: AnchorKind;
+  anchorLine?: number;
+}
+
+export type RawFinding = SemgrepFinding | TrufflehogFinding | ClaudeRawFinding | PiAgentRawFinding;
 
 // ---- Post-pipeline finding (after location validation + exception stamping) ----
 
@@ -131,6 +140,14 @@ export interface ClaudeConfig {
   skill?: SkillConfig | null;
 }
 
+export interface PiAgentConfig {
+  enabled: boolean;
+  model: string;
+  thinkingLevel?: string;
+  timeoutMinutes?: number;
+  prompt?: string | null;
+}
+
 export interface LabelConfig {
   onFailure?: string[];
   onSuccess?: string[];
@@ -167,6 +184,7 @@ export interface ScanConfig {
   semgrep: SemgrepConfig;
   trufflehog: TrufflehogConfig;
   claude: ClaudeConfig;
+  piAgent: PiAgentConfig;
   labels: LabelConfig;
   trigger: TriggerConfig;
   comment: CommentConfig;

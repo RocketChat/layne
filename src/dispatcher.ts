@@ -1,6 +1,7 @@
 import { runTrufflehog } from './adapters/trufflehog.js';
 import { runSemgrep } from './adapters/semgrep.js';
 import { runClaude } from './adapters/claude.js';
+import { runPiAgent } from './adapters/pi-agent.js';
 import { debug } from './debug.js';
 import { loadScanConfig } from './config.js';
 import type { ScanContext, LineRangesByFile, RawFinding } from './types.js';
@@ -16,11 +17,12 @@ export async function dispatch({ scanContext, changedLineRanges, owner, repo }: 
 
   const scanConfig = await loadScanConfig({ owner, repo });
 
-  const [trufflehogFindings, semgrepFindings, claudeFindings] = await Promise.all([
+  const [trufflehogFindings, semgrepFindings, claudeFindings, piAgentFindings] = await Promise.all([
     runTrufflehog({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.trufflehog }),
     runSemgrep({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.semgrep }),
     runClaude({ workspacePath: repoWorkspacePath, changedFiles: scanFiles, changedLineRanges, promptFiles, toolConfig: scanConfig.claude }),
+    runPiAgent({ workspacePath: repoWorkspacePath, changedFiles: scanFiles, changedLineRanges, toolConfig: scanConfig.piAgent }),
   ]);
 
-  return [...trufflehogFindings, ...semgrepFindings, ...claudeFindings];
+  return [...trufflehogFindings, ...semgrepFindings, ...claudeFindings, ...piAgentFindings];
 }

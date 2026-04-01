@@ -2,7 +2,7 @@ import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { validateConfig } from './config-validator.js';
-import type { ScanConfig, SemgrepConfig, TrufflehogConfig, ClaudeConfig, LabelConfig, TriggerConfig, CommentConfig, ExceptionApproversConfig } from './types.js';
+import type { ScanConfig, SemgrepConfig, TrufflehogConfig, ClaudeConfig, PiAgentConfig, LabelConfig, TriggerConfig, CommentConfig, ExceptionApproversConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'layne.json');
@@ -25,6 +25,13 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     prompt:  null,   // custom system prompt (string); mutually exclusive with skill
     skill:   null,   // API Skill config: { id: "skill_01...", version: "latest" }
   } as ClaudeConfig),
+  piAgent: Object.freeze({
+    enabled:        false,
+    model:          'claude-opus-4-6',
+    thinkingLevel:  'medium',
+    timeoutMinutes: 3,
+    prompt:         null,
+  } as PiAgentConfig),
   labels:  Object.freeze({} as LabelConfig),
   trigger: Object.freeze({ on: 'pull_request' } as TriggerConfig),
   comment: Object.freeze({ enabled: false, template: null } as CommentConfig),
@@ -90,6 +97,7 @@ export async function loadScanConfig({ owner, repo }: { owner: string; repo: str
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
     claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
+    piAgent:       { ...DEFAULT_CONFIG.piAgent,    ...(repoOverrides.piAgent    ?? {}) },
     notifications: { ...globalNotifications, ...repoNotifications },
     labels:        { ...globalLabels, ...repoLabels },
     trigger:       { ...DEFAULT_CONFIG.trigger, ...globalTrigger, ...(repoOverrides.trigger ?? {}) },

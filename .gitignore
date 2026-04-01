@@ -1,4 +1,6 @@
 node_modules/
+dist/
+dist-scripts/
 .env
 data/
 coverage/

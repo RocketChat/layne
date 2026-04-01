@@ -297,8 +297,8 @@ describe('runClaude()', () => {
 
     const callArgs = mockCreate.mock.calls[0][0] as { system: string; messages: Array<{ content: string }> };
     const userContent = callArgs.messages[0].content;
-    expect(callArgs.system).toContain('copy a short exact evidence snippet verbatim');
-    expect(callArgs.system).toContain('Do not guess locations');
+    expect(callArgs.system).toContain('exact verbatim contiguous snippet');
+    expect(callArgs.system).toContain('revalidated locally against the evidence');
     expect(userContent).toContain('Changed lines in this PR: 2-2');
     expect(userContent).toContain('1 | first();');
     expect(userContent).toContain('2 | second();');
