@@ -59,7 +59,7 @@ Overrides are keyed by `"owner/repo"`. A repository with no entry - or whose ent
 | Semgrep | Enabled - `semgrep scan --config auto --json <files>` |
 | Trufflehog | Enabled - `trufflehog filesystem --json --no-update <files>` |
 | Claude | Disabled - must opt in per repo; requires `ANTHROPIC_API_KEY` |
-| Pi Agent | Disabled - must opt in per repo; requires a configured `provider` and the corresponding provider credentials in the environment |
+| Pi Agent | Disabled - must opt in per repo; requires **both** `enabled: true` and a `provider` value - omitting either keeps it disabled; also requires the corresponding provider credentials in the environment |
 
 See the individual scanner pages for full configuration options:
 - [Semgrep](scanners/semgrep.md)

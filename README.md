@@ -33,24 +33,28 @@ This tool was based on [Reddit's Implementation](https://web.archive.org/web/202
 │                                                        │─▶│   SEMGREP  │──┼─▶│ REPORTER ││
 │                                                        │  └────────────┘  │  └──────────┘│
 │                                                        │  ┌────────────┐  │              │
-│                                                        └─▶│   CLAUDE   │──┘              │
+│                                                        ├─▶│   CLAUDE   │──┤              │
+│                                                        │  └────────────┘  │              │
+│                                                        │  ┌────────────┐  │              │
+│                                                        └─▶│  PI AGENT  │──┘              │
 │                                                           └────────────┘                 │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-When a PR is opened or updated - or after a workflow/job runs, depending on your configured trigger -, GitHub sends a webhook to Layne. The server immediately enqueues a scan job and returns `200 OK` to GitHub. A worker picks up the job, clones exactly the commit that triggered the event, hands the changed files off to each configured scanner (Semgrep, Trufflehog, Claude), collects their findings, and posts the results as inline annotations on the Check Run.
+When a PR is opened or updated - or after a workflow/job runs, depending on your configured trigger -, GitHub sends a webhook to Layne. The server immediately enqueues a scan job and returns `200 OK` to GitHub. A worker picks up the job, clones exactly the commit that triggered the event, hands the changed files off to each configured scanner (Semgrep, Trufflehog, Claude, Pi Agent), collects their findings, and posts the results as inline annotations on the Check Run.
 
 Only the files modified in the PR are passed to each scanner. Findings in files you did not touch are never reported.
 
 ### Scanners
 
-Layne ships with three built-in scanners. You can enable, disable, or configure each one per repository in `config/layne.json`.
+Layne ships with four built-in scanners. You can enable, disable, or configure each one per repository in `config/layne.json`.
 
 | Scanner | What it detects | Notes |
 |---|---|---|
 | [Semgrep](https://semgrep.dev) | SAST - bugs, vulnerabilities, insecure patterns | Runs `semgrep scan --config auto` by default; fully configurable via `extraArgs` |
 | [Trufflehog](https://github.com/trufflesecurity/trufflehog) | Secrets, API keys and credentials | Runs `trufflehog filesystem`; use `--only-verified` to reduce noise |
 | [Claude](https://www.anthropic.com) | Bugs, vulnerabilities, backdoors, obfuscated payloads, supply-chain attacks (you can define a system prompt or a skill to use) | Disabled by default; opt in per repo; requires `ANTHROPIC_API_KEY` |
+| [Pi Agent](https://pi.dev) | Agentic deep code review - autonomously traverses imports and follows suspicious patterns across file boundaries | Disabled by default; opt in per repo; supports multiple AI providers |
 
 You can also add your own scanners. See [Extending Layne](website/docs/extending.md).
 
