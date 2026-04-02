@@ -161,7 +161,7 @@ You should see `redis` with status `running (healthy)`.
 **Terminal 2 - Webhook server:**
 
 ```bash
-npm start
+npm run dev:server
 ```
 
 Expected output:
@@ -180,7 +180,7 @@ curl http://localhost:3000/health
 **Terminal 3 - Worker:**
 
 ```bash
-npm run worker
+npm run dev:worker
 ```
 
 Expected output:
@@ -188,6 +188,10 @@ Expected output:
 ```
 [worker] Layne worker started - concurrency: 5
 ```
+
+:::tip Hot reload
+`dev:server` and `dev:worker` use `tsx watch`, which automatically restarts the process whenever you save a TypeScript file. Use `npm start` / `npm run worker` (compiled dist) only if you need to run a production build locally.
+:::
 
 Semgrep and Trufflehog are only installed inside the Docker image. When running the worker directly on your machine, the worker will fail to run them unless you install them locally. See [Installing scanners locally](#installing-scanners-locally) below.
 

@@ -103,7 +103,17 @@ Use `thinkingLevel: "low"` for fast, cheap scans on low-risk repositories. Use `
 
 Each provider reads credentials from environment variables. The worker logs a warning and skips Pi Agent if credentials are missing rather than failing the scan.
 
-For the complete list of required environment variables per provider - including providers with complex auth like Azure OpenAI, Vertex AI, and Amazon Bedrock - see the [pi-ai documentation](https://github.com/badlogic/pi-mono/tree/main/packages/ai#environment-variables-nodejs-only).
+| Provider value | Required environment variable(s) |
+|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `google` / `google-gemini-cli` | `GEMINI_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `amazon-bedrock` | Standard AWS credentials: `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` (or an active AWS profile) |
+| `azure-openai-responses` | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (or `AZURE_OPENAI_RESOURCE_NAME`) |
+| `google-vertex` | `GOOGLE_CLOUD_API_KEY`, or `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` + Application Default Credentials |
+
+For the full list of options and alternative auth methods (OAuth, service accounts, cross-region Bedrock profiles) see the [pi-ai documentation](https://github.com/badlogic/pi-mono/tree/main/packages/ai#environment-variables-nodejs-only).
 
 Add the relevant variable(s) to your `.env` file and to your production secrets store.
 
