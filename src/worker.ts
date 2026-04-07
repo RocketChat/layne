@@ -289,8 +289,10 @@ async function runScan(job: Job<JobData>, scanConfig: Awaited<ReturnType<typeof 
     const prevCount = await getNotifyCount(owner, repo, prNumber);
     await setNotifyCount(owner, repo, prNumber, actionableFindings.length);
 
-    // Always notify on exception approval, otherwise only on new findings
-    if (exceptionApproval?.approved || actionableFindings.length > prevCount) {
+    // Notify on exception approval (only when this scan was triggered by the approval comment),
+    // or when the finding count has increased since the last scan.
+    const isExceptionApprovalScan = job.data.triggeredByException === true;
+    if ((isExceptionApprovalScan && exceptionApproval?.approved) || actionableFindings.length > prevCount) {
       await notify({ findings: actionableFindings, owner, repo, prNumber, notificationConfig: scanConfig.notifications, exceptionApproval })
         .catch(err => console.error('[worker] notification dispatch error:', (err as Error).message));
     }
