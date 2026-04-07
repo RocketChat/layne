@@ -270,6 +270,7 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
       installation,
       jobId,
       action: 'issue_comment',
+      triggeredByException: true,
     }).catch(err => console.error(`[server] Failed to enqueue scan: ${(err as Error).message}`));
   }
 
@@ -513,7 +514,7 @@ async function isJobActive(jobId: string): Promise<boolean> {
   return false;
 }
 
-async function enqueueScan({ pull_request, repository, installation, jobId, action }: {
+async function enqueueScan({ pull_request, repository, installation, jobId, action, triggeredByException }: {
   pull_request: {
     number: number;
     head: { sha: string; ref: string };
@@ -524,6 +525,7 @@ async function enqueueScan({ pull_request, repository, installation, jobId, acti
   installation: Record<string, unknown>;
   jobId: string;
   action: string;
+  triggeredByException?: boolean;
 }): Promise<{ status: number; body: string }> {
   if (await isJobActive(jobId)) {
     debug('server', `duplicate webhook ignored: job already active for ${jobId}`);
@@ -566,6 +568,7 @@ async function enqueueScan({ pull_request, repository, installation, jobId, acti
       prNumber:       pull_request.number,
       labels:         pull_request.labels?.map(l => l.name) ?? [],
       checkRunId,
+      ...(triggeredByException ? { triggeredByException: true } : {}),
     }, {
       jobId,
     });

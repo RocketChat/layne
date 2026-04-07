@@ -95,6 +95,7 @@ export interface JobData {
   prNumber: number;
   labels: string[];
   checkRunId: number;
+  triggeredByException?: boolean;
 }
 
 export interface PRCacheData {

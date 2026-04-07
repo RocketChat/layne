@@ -1045,15 +1045,27 @@ describe('processJob()', () => {
       }));
     });
 
-    it('always notifies when exception is approved, even if finding count did not increase', async () => {
+    it('notifies when exception is approved and the job was triggered by the approval comment', async () => {
       const exceptions = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'ok', timestamp: '' }]]);
       (loadExceptions as ReturnType<typeof vi.fn>).mockResolvedValueOnce(exceptions);
       (buildExceptionSummary as ReturnType<typeof vi.fn>).mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
       (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('1'); // same count as current finding
 
-      await processJob(baseJob);
+      const exceptionTriggeredJob = { ...baseJob, data: { ...baseJob.data, triggeredByException: true } };
+      await processJob(exceptionTriggeredJob);
 
       expect(notify).toHaveBeenCalledOnce();
+    });
+
+    it('does not notify on exception approval when the scan was triggered by a new commit push', async () => {
+      const exceptions = new Map([['LAYNE-a3f29c81', { approver: 'alice', reason: 'ok', timestamp: '' }]]);
+      (loadExceptions as ReturnType<typeof vi.fn>).mockResolvedValueOnce(exceptions);
+      (buildExceptionSummary as ReturnType<typeof vi.fn>).mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
+      (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('1'); // same count as current finding — no increase
+
+      await processJob(baseJob); // triggeredByException is absent
+
+      expect(notify).not.toHaveBeenCalled();
     });
 
     it('passes exceptionApproval: null to notify when no exception approvers are configured', async () => {
