@@ -233,7 +233,12 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
     return { status: 200, body: 'PR not found' };
   }
 
-  const prData = pr as { head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+  const prData = pr as { state?: string; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+
+  if (prData.state !== 'open') {
+    debug('server', `issue_comment on non-open PR #${issueData.number} (state=${prData.state ?? 'unknown'}), ignoring`);
+    return { status: 200, body: 'PR not open' };
+  }
   const headSha = prData.head.sha;
 
   await storeExceptions({
@@ -464,40 +469,63 @@ async function resolvePrData({ installation, repository, headSha }: {
   const cacheKey = prCacheKey(repository.full_name, headSha);
   const cached   = await redis.get(cacheKey);
 
+  let prData: PRCacheData | null = null;
+
   if (cached) {
-    // JSON.parse result typed as PRCacheData shape
-    return JSON.parse(cached) as PRCacheData;
+    prData = JSON.parse(cached) as PRCacheData;
+  } else {
+    debug('server', `PR cache miss for ${repository.full_name}@${headSha} — querying GitHub API`);
+
+    try {
+      const pr = await findPullRequestBySha({
+        installationId: (installation as { id: number }).id,
+        owner:          repository.owner.login,
+        repo:           repository.name,
+        headSha,
+      });
+
+      if (!pr) return null;
+
+      const apiPr = pr as { number: number; head: { ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+
+      prData = {
+        prNumber:       apiPr.number,
+        headSha,
+        headRef:        apiPr.head.ref,
+        baseSha:        apiPr.base.sha,
+        baseRef:        apiPr.base.ref,
+        labels:         apiPr.labels?.map(l => l.name) ?? [],
+        installationId: (installation as { id: number }).id,
+        cloneUrl:       repository.clone_url ?? '',
+        repoFullName:   repository.full_name,
+      };
+    } catch (err) {
+      console.error(`[server] Failed to recover PR from GitHub API: ${(err as Error).message}`);
+      return null;
+    }
   }
 
-  debug('server', `PR cache miss for ${repository.full_name}@${headSha} — querying GitHub API`);
+  if (!prData) return null;
 
+  // Confirm the PR is still open — the cache may be stale (written when the PR
+  // was open) and the workflow may have fired after merge.
   try {
-    const pr = await findPullRequestBySha({
-      installationId: (installation as { id: number }).id,
+    const livePr = await getPullRequest({
+      installationId: prData.installationId,
       owner:          repository.owner.login,
       repo:           repository.name,
-      headSha,
+      prNumber:       prData.prNumber,
     });
-
-    if (!pr) return null;
-
-    const prData = pr as { number: number; head: { ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
-
-    return {
-      prNumber:       prData.number,
-      headSha,
-      headRef:        prData.head.ref,
-      baseSha:        prData.base.sha,
-      baseRef:        prData.base.ref,
-      labels:         prData.labels?.map(l => l.name) ?? [],
-      installationId: (installation as { id: number }).id,
-      cloneUrl:       repository.clone_url ?? '',
-      repoFullName:   repository.full_name,
-    };
+    if ((livePr as { state?: string }).state !== 'open') {
+      debug('server', `PR #${prData.prNumber} is no longer open, skipping scan`);
+      return null;
+    }
   } catch (err) {
-    console.error(`[server] Failed to recover PR from GitHub API: ${(err as Error).message}`);
+    console.error(`[server] Failed to verify PR state: ${(err as Error).message}`);
     return null;
   }
+
+  return prData;
 }
 
 // ---------------------------------------------------------------------------
