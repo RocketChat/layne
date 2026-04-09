@@ -1,5 +1,21 @@
 # layne
 
+## 1.3.0
+
+### Minor Changes
+
+- [#46](https://github.com/RocketChat/layne/pull/46) [`995fbc9`](https://github.com/RocketChat/layne/commit/995fbc999a932bb6220b6a843c0a676f63139662) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Ensures that Pi Agent can support different providers and adds docs
+
+- [#40](https://github.com/RocketChat/layne/pull/40) [`ff4acb6`](https://github.com/RocketChat/layne/commit/ff4acb65d25d5e444c2e88630fbe400c690546cc) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds Pi Agent as an adapter
+
+- [#45](https://github.com/RocketChat/layne/pull/45) [`2ee9fae`](https://github.com/RocketChat/layne/commit/2ee9fae512d176197547d274f47265c6991b37b1) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Add line range prefix (e.g., `[R49-R60]`) to GitHub annotation messages for all security scanners
+
+### Patch Changes
+
+- [#50](https://github.com/RocketChat/layne/pull/50) [`6701cd6`](https://github.com/RocketChat/layne/commit/6701cd691cf6f8290ee30f3d09ea6902c3a0389c) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Fix duplicate notifications being sent on every scan when exception approvals are active
+
+- [#54](https://github.com/RocketChat/layne/pull/54) [`3d78f29`](https://github.com/RocketChat/layne/commit/3d78f2922fdae8ebde72d4b5962bdf751750f423) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Checks if the PR has already been merged and doesn't run Layne
+
 ## 1.2.1
 
 ### Patch Changes
