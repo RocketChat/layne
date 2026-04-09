@@ -175,7 +175,7 @@ export async function findPullRequestBySha({ installationId, owner, repo, headSh
     commit_sha: headSha,
   });
 
-  return data[0] ?? null;
+  return data.find(pr => pr.state === 'open') ?? null;
 }
 
 /**

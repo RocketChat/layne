@@ -210,9 +210,9 @@ describe('findPullRequestBySha()', () => {
     }));
   });
 
-  it('returns the first PR when results are found', async () => {
-    const pr = { number: 7, head: { ref: 'feat/x', sha: 'sha123' }, base: { ref: 'main', sha: 'base1' }, labels: [] };
-    mockListPRsForCommit.mockResolvedValueOnce({ data: [pr, { number: 8 }] });
+  it('returns the first open PR when results are found', async () => {
+    const pr = { number: 7, state: 'open', head: { ref: 'feat/x', sha: 'sha123' }, base: { ref: 'main', sha: 'base1' }, labels: [] };
+    mockListPRsForCommit.mockResolvedValueOnce({ data: [pr, { number: 8, state: 'closed' }] });
 
     const result = await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
 
@@ -225,6 +225,23 @@ describe('findPullRequestBySha()', () => {
     const result = await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
 
     expect(result).toBeNull();
+  });
+
+  it('returns null when all associated PRs are closed or merged', async () => {
+    mockListPRsForCommit.mockResolvedValueOnce({ data: [{ number: 5, state: 'closed' }, { number: 6, state: 'merged' }] });
+
+    const result = await findPullRequestBySha({ ...BASE, headSha: 'sha123' });
+
+    expect(result).toBeNull();
+  });
+
+  it('returns the open PR when the list has mixed states', async () => {
+    const openPr = { number: 9, state: 'open', head: { ref: 'feat/y', sha: 'sha456' }, base: { ref: 'main', sha: 'base2' }, labels: [] };
+    mockListPRsForCommit.mockResolvedValueOnce({ data: [{ number: 8, state: 'closed' }, openPr] });
+
+    const result = await findPullRequestBySha({ ...BASE, headSha: 'sha456' });
+
+    expect(result).toBe(openPr);
   });
 });
 

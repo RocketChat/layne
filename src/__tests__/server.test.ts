@@ -148,6 +148,7 @@ beforeEach(() => {
   (findPullRequestBySha as ReturnType<typeof vi.fn>).mockResolvedValue(null);
   (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'failure' });
   (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({
+    state:  'open',
     head:   { sha: 'abc123', ref: 'feature/login' },
     base:   { sha: 'def456', ref: 'main' },
     labels: [],
@@ -610,6 +611,41 @@ describe('workflow_run trigger — workflow_run event', () => {
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(scanQueue.add).toHaveBeenCalledOnce();
   });
+
+  it('does not enqueue a scan when cache hits but PR is already merged', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'closed' });
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(findPullRequestBySha).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue when PR is merged by the time getPullRequest state check runs', async () => {
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    (findPullRequestBySha as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      number: 42,
+      head:   { ref: 'feature/login', sha: 'abc123' },
+      base:   { ref: 'main',          sha: 'def456' },
+      labels: [],
+    });
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'closed' });
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('returns PR not found when getPullRequest throws during state validation', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('GitHub API error'));
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -836,6 +872,16 @@ describe('workflow_job trigger — workflow_job event', () => {
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('does not enqueue a scan when cache hits but PR is already merged', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'closed' });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(findPullRequestBySha).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
   });
 });
 
@@ -1093,6 +1139,23 @@ describe('issue_comment handler', () => {
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(storeExceptions).toHaveBeenCalled();
     expect(createPrComment).toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not store exceptions or enqueue scan when PR is already merged', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      state:  'closed',
+      head:   { sha: 'abc123', ref: 'feature/login' },
+      base:   { sha: 'def456', ref: 'main' },
+      labels: [],
+    });
+
+    const res = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(res).toEqual({ status: 200, body: 'PR not open' });
+    expect(storeExceptions).not.toHaveBeenCalled();
     expect(scanQueue.add).not.toHaveBeenCalled();
   });
 });
