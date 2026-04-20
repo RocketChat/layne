@@ -8,7 +8,14 @@ const mockReadFile  = vi.fn();
 const mockAccess    = vi.fn();
 const mockStat      = vi.fn();
 const mockReaddir   = vi.fn();
+const mockMkdir     = vi.fn();
+const mockWriteFile = vi.fn();
 const mockGlob      = vi.fn();
+const mockExecFile  = vi.fn();
+
+vi.mock('child_process', () => ({
+  execFile: (...args: unknown[]) => mockExecFile(...args),
+}));
 
 vi.mock('fs/promises', () => ({
   default: {
@@ -16,11 +23,15 @@ vi.mock('fs/promises', () => ({
     access:    (...args: unknown[]) => mockAccess(...args),
     stat:      (...args: unknown[]) => mockStat(...args),
     readdir:   (...args: unknown[]) => mockReaddir(...args),
+    mkdir:     (...args: unknown[]) => mockMkdir(...args),
+    writeFile: (...args: unknown[]) => mockWriteFile(...args),
   },
   readFile:  (...args: unknown[]) => mockReadFile(...args),
   access:    (...args: unknown[]) => mockAccess(...args),
   stat:      (...args: unknown[]) => mockStat(...args),
   readdir:   (...args: unknown[]) => mockReaddir(...args),
+  mkdir:     (...args: unknown[]) => mockMkdir(...args),
+  writeFile: (...args: unknown[]) => mockWriteFile(...args),
 }));
 
 vi.mock('tinyglobby', () => ({
@@ -40,11 +51,36 @@ const { createConfinedTools } = await import('../../adapters/pi-agent-tools.js')
 // Helpers
 // ---------------------------------------------------------------------------
 
-const WS = '/workspace/repo';
+const WS      = '/workspace/repo';
+const HEAD_SHA = 'abc123def456';
+
+type ToolRecord = { name: string; ops: Record<string, Function> };
 
 function getOps(toolName: string) {
-  const tools = createConfinedTools(WS) as unknown as Array<{ name: string; ops: Record<string, Function> }>;
+  const tools = createConfinedTools(WS) as unknown as ToolRecord[];
   return tools.find(t => t.name === toolName)!.ops;
+}
+
+function getOpsWithImports(toolName: string, followImports = true) {
+  const tools = createConfinedTools(WS, { headSha: HEAD_SHA, followImports }) as unknown as ToolRecord[];
+  return tools.find(t => t.name === toolName)!.ops;
+}
+
+// Simulate execFile calling its callback for git cat-file or git show
+function stubExecFile({ catFileType, showContent, showError }: {
+  catFileType?: string;
+  showContent?: Buffer;
+  showError?: Error;
+}) {
+  mockExecFile.mockImplementation((_cmd: string, args: string[], optsOrCb: unknown, maybeCb?: unknown) => {
+    const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as Function;
+    if (args.includes('cat-file')) {
+      cb(catFileType ? null : new Error('not found'), catFileType ? `${catFileType}\n` : '', '');
+    } else if (args.includes('show')) {
+      if (showError) cb(showError, null, '');
+      else cb(null, showContent ?? Buffer.from('fetched content'), '');
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +90,8 @@ function getOps(toolName: string) {
 describe('createConfinedTools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMkdir.mockResolvedValue(undefined);
+    mockWriteFile.mockResolvedValue(undefined);
   });
 
   it('returns four tools', () => {
@@ -61,8 +99,13 @@ describe('createConfinedTools', () => {
     expect(tools).toHaveLength(4);
   });
 
+  it('returns four tools when options are provided', () => {
+    const tools = createConfinedTools(WS, { headSha: HEAD_SHA, followImports: true });
+    expect(tools).toHaveLength(4);
+  });
+
   // -------------------------------------------------------------------------
-  // read operations
+  // read operations — baseline (no lazy fetching)
   // -------------------------------------------------------------------------
 
   describe('read operations', () => {
@@ -103,6 +146,120 @@ describe('createConfinedTools', () => {
       const ops = getOps('read');
       await expect(ops.access('/home/user/.ssh/id_rsa')).rejects.toThrow('access denied');
       expect(mockAccess).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // read operations — lazy fetching (followImports: true)
+  // -------------------------------------------------------------------------
+
+  describe('read operations — lazy fetching', () => {
+    it('readFile: falls back to git show on ENOENT when followImports is true', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockReadFile.mockRejectedValue(enoent);
+      stubExecFile({ showContent: Buffer.from('fetched content') });
+
+      const ops = getOpsWithImports('read');
+      const result = await ops.readFile(`${WS}/src/unchanged.ts`);
+
+      expect(result).toEqual(Buffer.from('fetched content'));
+      // should have written to disk
+      expect(mockMkdir).toHaveBeenCalled();
+      expect(mockWriteFile).toHaveBeenCalledWith(`${WS}/src/unchanged.ts`, Buffer.from('fetched content'));
+      // git show should have been called with relative path
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['show', `${HEAD_SHA}:src/unchanged.ts`]),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it('readFile: re-throws original ENOENT when git show also fails', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockReadFile.mockRejectedValue(enoent);
+      stubExecFile({ showError: new Error('not in repo') });
+
+      const ops = getOpsWithImports('read');
+      await expect(ops.readFile(`${WS}/src/missing.ts`)).rejects.toThrow('ENOENT');
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it('readFile: does not call git when followImports is false', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockReadFile.mockRejectedValue(enoent);
+
+      const ops = getOpsWithImports('read', false);
+      await expect(ops.readFile(`${WS}/src/unchanged.ts`)).rejects.toThrow('ENOENT');
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it('readFile: does not call git for non-ENOENT errors', async () => {
+      const permError = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      mockReadFile.mockRejectedValue(permError);
+
+      const ops = getOpsWithImports('read');
+      await expect(ops.readFile(`${WS}/src/locked.ts`)).rejects.toThrow('EACCES');
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it('readFile: confinement still blocks paths outside workspace even with followImports', async () => {
+      const ops = getOpsWithImports('read');
+      await expect(ops.readFile('/etc/shadow')).rejects.toThrow('access denied');
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(mockExecFile).not.toHaveBeenCalled();
+    });
+
+    it('readFile: disk write failure is non-fatal — content still returned', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockReadFile.mockRejectedValue(enoent);
+      stubExecFile({ showContent: Buffer.from('content') });
+      mockWriteFile.mockRejectedValue(new Error('disk full'));
+
+      const ops = getOpsWithImports('read');
+      const result = await ops.readFile(`${WS}/src/unchanged.ts`);
+      expect(result).toEqual(Buffer.from('content'));
+    });
+
+    it('access: returns void when git cat-file reports blob', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockAccess.mockRejectedValue(enoent);
+      stubExecFile({ catFileType: 'blob' });
+
+      const ops = getOpsWithImports('read');
+      await expect(ops.access(`${WS}/src/unchanged.ts`)).resolves.toBeUndefined();
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['cat-file', '-t', `${HEAD_SHA}:src/unchanged.ts`]),
+        expect.any(Function),
+      );
+    });
+
+    it('access: re-throws ENOENT when git cat-file reports tree (directory)', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockAccess.mockRejectedValue(enoent);
+      stubExecFile({ catFileType: 'tree' });
+
+      const ops = getOpsWithImports('read');
+      await expect(ops.access(`${WS}/src`)).rejects.toThrow('ENOENT');
+    });
+
+    it('access: re-throws ENOENT when git cat-file fails (path not in repo)', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockAccess.mockRejectedValue(enoent);
+      stubExecFile({ catFileType: undefined });
+
+      const ops = getOpsWithImports('read');
+      await expect(ops.access(`${WS}/src/nowhere.ts`)).rejects.toThrow('ENOENT');
+    });
+
+    it('access: does not call git when followImports is false', async () => {
+      const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      mockAccess.mockRejectedValue(enoent);
+
+      const ops = getOpsWithImports('read', false);
+      await expect(ops.access(`${WS}/src/unchanged.ts`)).rejects.toThrow('ENOENT');
+      expect(mockExecFile).not.toHaveBeenCalled();
     });
   });
 

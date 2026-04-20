@@ -172,6 +172,9 @@ function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
       errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
   }
 
+  if (b['followImports'] !== undefined && typeof b['followImports'] !== 'boolean')
+    errors.push(`${ctx}.followImports: must be a boolean`);
+
   if (b['prompt'] !== undefined && b['prompt'] !== null && typeof b['prompt'] !== 'string')
     errors.push(`${ctx}.prompt: must be a string or null`);
 }

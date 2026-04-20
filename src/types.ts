@@ -147,6 +147,7 @@ export interface PiAgentConfig {
   model: string;
   thinkingLevel?: string;
   timeoutMinutes?: number;
+  followImports?: boolean;
   prompt?: string | null;
 }
 
@@ -210,6 +211,7 @@ export type LineMap = Map<number, number | null>;
 export interface ScanContext {
   mode: ScanMode;
   contextLines: number;
+  headSha: string;
   repoWorkspacePath: string;
   scanWorkspacePath: string;
   scanFiles: string[];
