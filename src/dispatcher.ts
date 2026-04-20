@@ -12,7 +12,7 @@ export async function dispatch({ scanContext, changedLineRanges, owner, repo }: 
   owner: string;
   repo: string;
 }): Promise<RawFinding[]> {
-  const { scanWorkspacePath, scanFiles, repoWorkspacePath, promptFiles } = scanContext;
+  const { scanWorkspacePath, scanFiles, repoWorkspacePath, promptFiles, headSha } = scanContext;
   debug('dispatcher', `running scanners on ${scanFiles?.length ?? 0} file(s)`);
 
   const scanConfig = await loadScanConfig({ owner, repo });
@@ -21,7 +21,7 @@ export async function dispatch({ scanContext, changedLineRanges, owner, repo }: 
     runTrufflehog({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.trufflehog }),
     runSemgrep({ workspacePath: scanWorkspacePath, changedFiles: scanFiles, toolConfig: scanConfig.semgrep }),
     runClaude({ workspacePath: repoWorkspacePath, changedFiles: scanFiles, changedLineRanges, promptFiles, toolConfig: scanConfig.claude }),
-    runPiAgent({ workspacePath: repoWorkspacePath, changedFiles: scanFiles, changedLineRanges, toolConfig: scanConfig.piAgent }),
+    runPiAgent({ workspacePath: repoWorkspacePath, changedFiles: scanFiles, changedLineRanges, toolConfig: scanConfig.piAgent, headSha }),
   ]);
 
   return [...trufflehogFindings, ...semgrepFindings, ...claudeFindings, ...piAgentFindings];

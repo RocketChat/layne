@@ -29,7 +29,8 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     enabled:        false,
     model:          'claude-opus-4-6',
     thinkingLevel:  'medium',
-    timeoutMinutes: 3,
+    timeoutMinutes: 10,
+    followImports:  true,
     prompt:         null,
   } as PiAgentConfig),  // note: no default provider — omitting provider disables Pi Agent even when enabled: true
   labels:  Object.freeze({} as LabelConfig),

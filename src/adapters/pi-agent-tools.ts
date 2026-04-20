@@ -1,3 +1,4 @@
+import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { glob as globFn } from 'tinyglobby';
@@ -35,15 +36,94 @@ function confinePath(absolutePath: string, workspacePath: string): string {
   return resolved;
 }
 
-function confinedReadOperations(workspacePath: string): ReadOperations {
+// ---------------------------------------------------------------------------
+// Git helpers for lazy blob fetching
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the git object type ('blob', 'tree', etc.) for the given path at sha.
+ * Tree objects are always available after setupRepo (--filter=blob:none fetches
+ * everything except blobs), so this is cheap and does not trigger a network fetch.
+ * Rejects if the path does not exist at that commit.
+ */
+function gitObjectType(workspacePath: string, sha: string, relativePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', workspacePath, 'cat-file', '-t', `${sha}:${relativePath}`], (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout.trim());
+    });
+  });
+}
+
+/**
+ * Fetches the blob content for the given path at sha via `git show` and writes
+ * it to disk so subsequent grep/find/ls calls can also see the file.
+ * Returns the file content as a Buffer.
+ */
+function gitShow(workspacePath: string, sha: string, relativePath: string, absolutePath: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-C', workspacePath, 'show', `${sha}:${relativePath}`],
+      { encoding: 'buffer', maxBuffer: 50 * 1024 * 1024 },
+      async (err, stdout) => {
+        if (err) { reject(err); return; }
+        const content = stdout as unknown as Buffer;
+        try {
+          await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+          await fs.writeFile(absolutePath, content);
+        } catch {
+          // Materialization failure is non-fatal — return content in memory
+        }
+        resolve(content);
+      },
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Confined operations
+// ---------------------------------------------------------------------------
+
+function confinedReadOperations(
+  workspacePath: string,
+  options?: { headSha?: string; followImports?: boolean },
+): ReadOperations {
+  const { headSha, followImports = false } = options ?? {};
+
   return {
     readFile: async (absolutePath: string) => {
       const safe = confinePath(absolutePath, workspacePath);
-      return fs.readFile(safe);
+      try {
+        return await fs.readFile(safe);
+      } catch (err: unknown) {
+        const nodeErr = err as NodeJS.ErrnoException;
+        if (!followImports || !headSha || nodeErr.code !== 'ENOENT') throw err;
+        const relative = path.relative(workspacePath, safe);
+        try {
+          return await gitShow(workspacePath, headSha, relative, safe);
+        } catch {
+          throw err; // re-throw original ENOENT — file doesn't exist in repo
+        }
+      }
     },
     access: async (absolutePath: string) => {
       const safe = confinePath(absolutePath, workspacePath);
-      return fs.access(safe);
+      try {
+        return await fs.access(safe);
+      } catch (err: unknown) {
+        const nodeErr = err as NodeJS.ErrnoException;
+        if (!followImports || !headSha || nodeErr.code !== 'ENOENT') throw err;
+        const relative = path.relative(workspacePath, safe);
+        let type: string;
+        try {
+          type = await gitObjectType(workspacePath, headSha, relative);
+        } catch {
+          throw err; // path doesn't exist in git either
+        }
+        if (type !== 'blob') throw err; // directories are not lazily materialized
+        // File exists in git as a blob — readFile will fetch it on demand
+      }
     },
   };
 }
@@ -110,10 +190,17 @@ function confinedLsOperations(workspacePath: string): LsOperations {
  * Creates read-only file tools (read, grep, find, ls) confined to workspacePath.
  * Replaces createReadOnlyTools() from @mariozechner/pi-coding-agent, which allows
  * absolute paths to escape the workspace boundary.
+ *
+ * When options.followImports is true (default in PiAgentConfig) and options.headSha
+ * is provided, the read tool will lazily fetch files from git on ENOENT so the agent
+ * can follow imports beyond the sparse-checked-out changed files.
  */
-export function createConfinedTools(workspacePath: string) {
+export function createConfinedTools(
+  workspacePath: string,
+  options?: { headSha?: string; followImports?: boolean },
+) {
   return [
-    createReadTool(workspacePath, { operations: confinedReadOperations(workspacePath) }),
+    createReadTool(workspacePath, { operations: confinedReadOperations(workspacePath, options) }),
     createGrepTool(workspacePath, { operations: confinedGrepOperations(workspacePath) }),
     createFindTool(workspacePath, { operations: confinedFindOperations(workspacePath) }),
     createLsTool(workspacePath,  { operations: confinedLsOperations(workspacePath) }),

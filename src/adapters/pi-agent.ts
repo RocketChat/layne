@@ -111,11 +111,13 @@ export async function runPiAgent({
   changedFiles,
   changedLineRanges = new Map(),
   toolConfig = DEFAULT_CONFIG.piAgent,
+  headSha,
 }: {
   workspacePath: string;
   changedFiles?: string[] | null;
   changedLineRanges?: LineRangesByFile;
   toolConfig?: PiAgentConfig;
+  headSha?: string;
 }): Promise<PiAgentRawFinding[]> {
   if (!changedFiles || changedFiles.length === 0) return [];
   if (!toolConfig.enabled) {
@@ -176,7 +178,10 @@ export async function runPiAgent({
 
   const { session } = await createAgentSession({
     cwd:           workspacePath,
-    tools:         createConfinedTools(workspacePath),
+    tools:         createConfinedTools(workspacePath, {
+      headSha,
+      followImports: toolConfig.followImports ?? true,
+    }),
     customTools:   [reportFindingTool],
     sessionManager: SessionManager.inMemory(),
     model,

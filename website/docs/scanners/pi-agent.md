@@ -29,15 +29,17 @@ The built-in prompt instructs Pi Agent to omit anything it cannot validate with 
 
 Source code leaves your environment when Pi Agent is enabled. Consider whether this is appropriate for repositories containing sensitive business logic, PII, or regulated data. The destination depends on the configured `provider` - code may be sent to Anthropic, OpenAI, Google, or another third-party API.
 
-What is sent depends on the [scan mode](../configuration.md#scan-mode) configured for the repo:
+What is sent depends on the [scan mode](../configuration.md#scan-mode) configured for the repo and the `followImports` setting:
 
-- **`changed_files` mode (default):** The full content of every changed source file is available for the agent to read on demand. Binary files are skipped.
-- **`diff_only` mode:** The workspace contains projected copies of each file with only the changed hunks and surrounding context. The agent reads these projected files.
+- **`changed_files` mode (default):** The full content of every changed source file is available for the agent to read on demand. With `followImports: true` (the default), unchanged files that the agent requests while following imports are also fetched from git and sent to the provider.
+- **`diff_only` mode:** The workspace contains projected copies of each file with only the changed hunks and surrounding context. With `followImports: true`, the agent can still read full unchanged files it follows imports into.
+
+Set `followImports: false` to restrict the agent strictly to files already in the workspace and avoid sending any unchanged code to the provider.
 
 
 ## How Layne runs it
 
-1. A confined agent session is created with read-only tools (`read`, `grep`, `find`, `ls`) scoped strictly to the scan workspace - the agent cannot access paths outside it.
+1. A confined agent session is created with read-only tools (`read`, `grep`, `find`, `ls`) scoped strictly to the scan workspace - the agent cannot access paths outside it. When `followImports: true` (the default), the read tool lazily fetches files from git on demand if the agent requests a file that wasn't in the sparse checkout - this allows the agent to follow import chains into unchanged files without pre-fetching the entire repo.
 2. The agent receives the list of changed files with their changed line ranges as context.
 3. The agent autonomously investigates: it reads files in full, searches for patterns with grep, follows imports, and traverses related code. Changed line ranges are provided as anchoring context, not as a hard boundary.
 4. For each confirmed finding, the agent calls `report_finding` with a verbatim evidence snippet. Line numbers are hints only - Layne re-validates each finding against the evidence string before reporting it.
@@ -70,7 +72,8 @@ Because the agent drives its own investigation path, the same code may produce f
 | `provider` | string | (none) | **Required.** AI provider to use. Omitting this disables Pi Agent even if `enabled: true`. Supported values: `anthropic`, `openai`, `azure-openai-responses`, `google`, `google-gemini-cli`, `google-vertex`, `mistral`, `amazon-bedrock` |
 | `model` | string | `claude-opus-4-6` | Model ID to use. Must be a valid model ID for the configured provider. **Bedrock uses provider-prefixed IDs** (e.g. `anthropic.claude-opus-4-6-v1`) - the default `claude-opus-4-6` will not resolve and the scan will be silently skipped |
 | `thinkingLevel` | string | `"medium"` | Depth of reasoning: `"low"`, `"medium"`, or `"high"`. `"high"` enables extended thinking |
-| `timeoutMinutes` | number | `3` | Hard timeout for the agent session in minutes. Partial findings are returned if the timeout fires |
+| `timeoutMinutes` | number | `10` | Hard timeout for the agent session in minutes. Partial findings are returned if the timeout fires |
+| `followImports` | boolean | `true` | When `true`, files not in the sparse checkout are fetched from git on demand as the agent follows imports. Set to `false` to restrict the agent strictly to changed files |
 | `prompt` | string | built-in | Custom system prompt. Replaces the default prompt entirely |
 
 Pi Agent scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly opt in with both `enabled: true` and a `provider`.
@@ -154,8 +157,21 @@ Add the relevant variable(s) to your `.env` file and to your production secrets 
       "enabled": true,
       "provider": "anthropic",
       "model": "claude-opus-4-6",
-      "thinkingLevel": "high",
-      "timeoutMinutes": 10
+      "thinkingLevel": "high"
+    }
+  }
+}
+```
+
+**Restrict to changed files only (disable lazy import fetching):**
+```json
+{
+  "acme/backend": {
+    "piAgent": {
+      "enabled": true,
+      "provider": "anthropic",
+      "model": "claude-opus-4-6",
+      "followImports": false
     }
   }
 }

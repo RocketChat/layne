@@ -89,6 +89,7 @@ vi.mock('../scan-context.js', () => ({
   createScanContext: vi.fn().mockResolvedValue({
     mode:              'changed_files',
     contextLines:      8,
+    headSha:           'test-head-sha',
     repoWorkspacePath: '/tmp/layne-test-workspace',
     scanWorkspacePath: '/tmp/layne-test-workspace',
     scanFiles:         ['src/app.js'],
@@ -417,7 +418,7 @@ describe('processJob()', () => {
       (getChangedFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
       (checkoutFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
       (createScanContext as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        mode: 'changed_files', contextLines: 8,
+        mode: 'changed_files', contextLines: 8, headSha: 'test-head-sha',
         repoWorkspacePath: '/tmp/layne-test-workspace',
         scanWorkspacePath: '/tmp/layne-test-workspace',
         scanFiles: [], promptFiles: [], changedLineRanges: new Map(),

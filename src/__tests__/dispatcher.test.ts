@@ -39,6 +39,7 @@ const { dispatch }       = await import('../dispatcher.js');
 const BASE_SCAN_CONTEXT: ScanContext = {
   mode:              'changed_files',
   contextLines:      8,
+  headSha:           'abc123',
   repoWorkspacePath: '/tmp/ws',
   scanWorkspacePath: '/tmp/ws',
   scanFiles:         ['src/app.js', 'src/utils.js'],
@@ -186,6 +187,13 @@ describe('dispatch()', () => {
     await dispatch(BASE);
     expect(runPiAgent).toHaveBeenCalledWith(expect.objectContaining({
       toolConfig: { enabled: false, model: 'claude-opus-4-6', thinkingLevel: 'medium', timeoutMinutes: 3 },
+    }));
+  });
+
+  it('passes headSha from scanContext to runPiAgent', async () => {
+    await dispatch(BASE);
+    expect(runPiAgent).toHaveBeenCalledWith(expect.objectContaining({
+      headSha: 'abc123',
     }));
   });
 });

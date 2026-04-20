@@ -35,6 +35,7 @@ describe('createScanContext()', () => {
     expect(context).toEqual({
       mode: 'changed_files',
       contextLines: 3,
+      headSha: 'head',
       repoWorkspacePath: workspacePath,
       scanWorkspacePath: workspacePath,
       scanFiles: ['src/app.js'],
@@ -92,6 +93,7 @@ describe('createScanContext()', () => {
     const filtered = filterFindingsToChangedLines(findings, {
       mode: 'diff_only',
       contextLines: 8,
+      headSha: 'head',
       repoWorkspacePath: '/tmp/ws',
       scanWorkspacePath: '/tmp/ws',
       scanFiles: [],

@@ -406,4 +406,34 @@ describe('loadScanConfig()', () => {
     const config = await loadScanConfig({ owner: 'acme', repo: 'monorepo' });
     expect(config.timeoutMinutes).toBe(30);
   });
+
+  // --- piAgent defaults ---
+
+  it('DEFAULT_CONFIG.piAgent has timeoutMinutes 10', () => {
+    expect((DEFAULT_CONFIG.piAgent as Record<string, unknown>).timeoutMinutes).toBe(10);
+  });
+
+  it('DEFAULT_CONFIG.piAgent has followImports true', () => {
+    expect((DEFAULT_CONFIG.piAgent as Record<string, unknown>).followImports).toBe(true);
+  });
+
+  it('repo can override piAgent.followImports to false', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/backend': {
+        piAgent: { enabled: true, provider: 'anthropic', followImports: false },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.piAgent as Record<string, unknown>).followImports).toBe(false);
+  });
+
+  it('repo piAgent.timeoutMinutes override propagates correctly', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/backend': {
+        piAgent: { enabled: true, provider: 'anthropic', timeoutMinutes: 15 },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.piAgent as Record<string, unknown>).timeoutMinutes).toBe(15);
+  });
 });
