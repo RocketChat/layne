@@ -151,7 +151,7 @@ export async function runPiAgent({
   const reportFindingTool: ToolDefinition = {
     name:        'report_finding',
     label:       'Report Finding',
-    description: 'Report a confirmed malicious code finding. Call once per finding.',
+    description: 'Report a confirmed security finding. Call once per finding.',
     parameters:  ReportFindingParams,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
@@ -197,13 +197,19 @@ export async function runPiAgent({
       : '';
     return `  - ${f}${rangeStr}`;
   }).join('\n');
-  const initialPrompt =
-    `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
-    'Investigate these files for malicious intent: reverse shells, backdoors, credential exfiltration, ' +
-    'obfuscated payloads, and supply-chain attacks. ' +
-    'Use the read, grep, find, and ls tools to explore the code. Follow imports and dependencies where suspicious. ' +
-    'Scan each whole file but use the changed line ranges above to prioritize where to anchor your findings. ' +
-    'For each confirmed finding, call report_finding. Report only high-confidence confirmed malicious patterns.';
+  const isCustomPrompt = toolConfig.prompt !== null && toolConfig.prompt !== undefined;
+  const initialPrompt = isCustomPrompt
+    ? `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
+      'Investigate these files thoroughly using the read, grep, find, and ls tools. ' +
+      'Follow imports and function calls as deeply as needed. ' +
+      'Use the changed line ranges above to anchor your findings accurately. ' +
+      'For each confirmed finding, call report_finding.'
+    : `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
+      'Investigate these files for malicious intent: reverse shells, backdoors, credential exfiltration, ' +
+      'obfuscated payloads, and supply-chain attacks. ' +
+      'Use the read, grep, find, and ls tools to explore the code. Follow imports and dependencies where suspicious. ' +
+      'Scan each whole file but use the changed line ranges above to prioritize where to anchor your findings. ' +
+      'For each confirmed finding, call report_finding. Report only high-confidence confirmed malicious patterns.';
 
   const timeoutMs = (toolConfig.timeoutMinutes ?? 3) * 60 * 1000;
   let timedOut = false;
