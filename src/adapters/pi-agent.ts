@@ -39,8 +39,8 @@ const SYSTEM_PROMPT =
 
 const ReportFindingParams = Type.Object({
   file:       Type.String({ description: 'File path relative to the repository root' }),
-  startLine:  Type.Optional(Type.Integer({ description: 'Start line of the finding (ignored — only evidence is used for positioning)' })),
-  endLine:    Type.Optional(Type.Integer({ description: 'End line of the finding (ignored — only evidence is used for positioning)' })),
+  startLine:  Type.Optional(Type.Integer({ description: 'Start line of the finding as shown in the read() output. Must match the line where the evidence string begins in the file. Do not use 1 unless the evidence is genuinely on line 1.' })),
+  endLine:    Type.Optional(Type.Integer({ description: 'End line of the finding as shown in the read() output. Must match the line where the evidence string ends in the file.' })),
   severity:   Type.Union([Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')]),
   message:    Type.String({ description: 'Description of the malicious pattern' }),
   ruleId:     Type.String({ description: 'Short kebab-case rule identifier, e.g. "reverse-shell"' }),
@@ -145,51 +145,6 @@ export async function runPiAgent({
 
   console.log(`[pi-agent] scanning ${changedFiles.length} file(s) with provider ${provider}, model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
 
-  const findings: PiAgentRawFinding[] = [];
-
-  // Build the report_finding tool — execute() accumulates into the closure array.
-  const reportFindingTool: ToolDefinition = {
-    name:        'report_finding',
-    label:       'Report Finding',
-    description: 'Report a confirmed security finding. Call once per finding.',
-    parameters:  ReportFindingParams,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
-      const finding = normalizeFinding(params as RawFindingInput);
-      findings.push(finding);
-      debug('pi-agent', `finding recorded: ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine} [${finding.ruleId}]`);
-      return {
-        content: [{ type: 'text' as const, text: 'Finding recorded.' }],
-        details: {},
-      };
-    },
-  };
-
-  const systemPrompt = toolConfig.prompt ?? SYSTEM_PROMPT;
-
-  const resourceLoader = new DefaultResourceLoader({
-    systemPromptOverride:       () => systemPrompt,
-    appendSystemPromptOverride: () => [],
-    noExtensions:               true,
-    noSkills:                   true,
-    noPromptTemplates:          true,
-  });
-  await resourceLoader.reload();
-
-  const { session } = await createAgentSession({
-    cwd:           workspacePath,
-    tools:         createConfinedTools(workspacePath, {
-      headSha,
-      followImports: toolConfig.followImports ?? true,
-    }),
-    customTools:   [reportFindingTool],
-    sessionManager: SessionManager.inMemory(),
-    model,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    thinkingLevel: (toolConfig.thinkingLevel ?? 'medium') as any,
-    resourceLoader,
-  });
-
   const fileList = changedFiles.map(f => {
     const ranges = changedLineRanges.get(f) ?? [];
     const rangeStr = ranges.length > 0
@@ -197,11 +152,16 @@ export async function runPiAgent({
       : '';
     return `  - ${f}${rangeStr}`;
   }).join('\n');
+
   const isCustomPrompt = toolConfig.prompt !== null && toolConfig.prompt !== undefined;
   const initialPrompt = isCustomPrompt
     ? `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
-      'Investigate these files thoroughly using the read, grep, find, and ls tools. ' +
-      'Follow imports and function calls as deeply as needed. ' +
+      'Start by reading each changed file in full using the read tool on the actual file path (not the .layne/diff-only/ path). ' +
+      'Then broaden your investigation beyond the changed files themselves: read the files they import from, ' +
+      'use grep to find where changed functions are called from elsewhere in the codebase, ' +
+      'and read any shared utilities, models, or middleware that the changed code interacts with. ' +
+      'Understanding the full context around each change — not just the changed lines — reveals vulnerabilities that span multiple files. ' +
+      'Follow imports and function calls as deeply as needed to trace data flows from source to sink. ' +
       'Use the changed line ranges above to anchor your findings accurately. ' +
       'For each confirmed finding, call report_finding.'
     : `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
@@ -211,33 +171,120 @@ export async function runPiAgent({
       'Scan each whole file but use the changed line ranges above to prioritize where to anchor your findings. ' +
       'For each confirmed finding, call report_finding. Report only high-confidence confirmed malicious patterns.';
 
+  const systemPrompt = toolConfig.prompt ?? SYSTEM_PROMPT;
   const timeoutMs = (toolConfig.timeoutMinutes ?? 3) * 60 * 1000;
-  let timedOut = false;
 
-  const timer = setTimeout(() => {
-    timedOut = true;
-    session.abort().catch(() => {});
-  }, timeoutMs);
+  // ---------------------------------------------------------------------------
+  // Session runner — extracted so it can be retried on silent failure
+  // ---------------------------------------------------------------------------
+  const runSession = async (attempt: number): Promise<{ findings: PiAgentRawFinding[]; hadActivity: boolean; timedOut: boolean }> => {
+    const sessionFindings: PiAgentRawFinding[] = [];
+    let hadActivity = false;
+    let timedOut = false;
 
-  try {
-    await session.prompt(initialPrompt);
-  } catch (err) {
-    if (!timedOut) {
-      console.error('[pi-agent] error during scan:', (err as Error).message ?? err);
+    const reportFindingTool: ToolDefinition = {
+      name:        'report_finding',
+      label:       'Report Finding',
+      description: 'Report a confirmed security finding. Call once per finding.',
+      parameters:  ReportFindingParams,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
+        hadActivity = true;
+        const finding = normalizeFinding(params as RawFindingInput);
+        sessionFindings.push(finding);
+        debug('pi-agent', `finding recorded: ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine} [${finding.ruleId}]`);
+        return {
+          content: [{ type: 'text' as const, text: 'Finding recorded.' }],
+          details: {},
+        };
+      },
+    };
+
+    const rawTools = createConfinedTools(workspacePath, {
+      headSha,
+      followImports: toolConfig.followImports ?? true,
+    });
+
+    // Wrap each tool's execute to detect model activity (any tool call = session engaged)
+    const tools = rawTools.map(tool => ({
+      ...tool,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      execute: async (...args: any[]) => {
+        hadActivity = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (tool.execute as any)(...args);
+      },
+    }));
+
+    const resourceLoader = new DefaultResourceLoader({
+      systemPromptOverride:       () => systemPrompt,
+      appendSystemPromptOverride: () => [],
+      noExtensions:               true,
+      noSkills:                   true,
+      noPromptTemplates:          true,
+    });
+    await resourceLoader.reload();
+
+    const { session } = await createAgentSession({
+      cwd:            workspacePath,
+      tools,
+      customTools:    [reportFindingTool],
+      sessionManager: SessionManager.inMemory(),
+      model,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      thinkingLevel:  (toolConfig.thinkingLevel ?? 'medium') as any,
+      resourceLoader,
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      session.abort().catch(() => {});
+    }, timeoutMs);
+
+    try {
+      await session.prompt(initialPrompt);
+    } catch (err) {
+      if (!timedOut) {
+        console.error(`[pi-agent] error during scan (attempt ${attempt}):`, (err as Error).message ?? err);
+      }
+    } finally {
+      clearTimeout(timer);
+      session.dispose();
     }
-  } finally {
-    clearTimeout(timer);
-    session.dispose();
+
+    return { findings: sessionFindings, hadActivity, timedOut };
+  };
+
+  // ---------------------------------------------------------------------------
+  // First attempt
+  // ---------------------------------------------------------------------------
+  const first = await runSession(1);
+
+  if (first.timedOut) {
+    console.warn(`[pi-agent] scan timed out after ${toolConfig.timeoutMinutes ?? 3}m — returning ${first.findings.length} partial finding(s)`);
   }
 
-  if (timedOut) {
-    console.warn(`[pi-agent] scan timed out after ${toolConfig.timeoutMinutes ?? 3}m — returning ${findings.length} partial finding(s)`);
+  // Retry once on two failure modes:
+  // 1. Silent failure — model didn't call any tools at all
+  // 2. Bad-evidence run — model produced findings but all at line 1, meaning it reported
+  //    from memory rather than reading the actual files (location validator will drop them all)
+  const silentFailure = first.findings.length === 0 && !first.hadActivity && !first.timedOut;
+  const badEvidenceRun = first.findings.length > 0 && first.findings.every(f => f.startLine === 1 && f.endLine === 1);
+
+  let result = first;
+  if (!first.timedOut && (silentFailure || badEvidenceRun)) {
+    console.warn(`[pi-agent] ${silentFailure ? 'session produced no output' : 'all findings at line 1 (bad evidence)'} — retrying once`);
+    const retry = await runSession(2);
+    if (retry.timedOut) {
+      console.warn(`[pi-agent] retry timed out after ${toolConfig.timeoutMinutes ?? 3}m — returning ${retry.findings.length} partial finding(s)`);
+    }
+    result = retry;
   }
 
-  console.log(`[pi-agent] ${findings.length} finding(s)${timedOut ? ' (partial — timed out)' : ''}:`);
-  for (const f of findings) {
+  console.log(`[pi-agent] ${result.findings.length} finding(s):`);
+  for (const f of result.findings) {
     console.log(`[pi-agent]   ${f.severity.toUpperCase()} ${f.file}:${f.startLine}-${f.endLine} [${f.ruleId}] ${f.message}`);
   }
 
-  return findings;
+  return result.findings;
 }
