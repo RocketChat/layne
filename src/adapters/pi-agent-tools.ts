@@ -13,6 +13,28 @@ import {
   type LsOperations,
 } from '@mariozechner/pi-coding-agent';
 
+const MAX_FILE_BYTES = 200 * 1024; // 200 KB
+
+async function readTruncated(absolutePath: string): Promise<Buffer> {
+  let size: number | null = null;
+  try {
+    const stat = await fs.stat(absolutePath);
+    size = stat?.size ?? null;
+  } catch {
+    // stat failed — fall through to readFile which will surface its own error
+  }
+  if (size === null || size <= MAX_FILE_BYTES) return fs.readFile(absolutePath);
+  const handle = await fs.open(absolutePath, 'r');
+  try {
+    const buf = Buffer.alloc(MAX_FILE_BYTES);
+    const { bytesRead } = await handle.read(buf, 0, MAX_FILE_BYTES, 0);
+    const notice = Buffer.from(`\n[file truncated: ${size} bytes total, showing first ${MAX_FILE_BYTES} bytes]\n`);
+    return Buffer.concat([buf.subarray(0, bytesRead), notice]);
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Resolves `absolutePath` and throws if it escapes `workspacePath`.
  * Returns the normalized absolute path on success.
@@ -95,13 +117,16 @@ function confinedReadOperations(
     readFile: async (absolutePath: string) => {
       const safe = confinePath(absolutePath, workspacePath);
       try {
-        return await fs.readFile(safe);
+        return await readTruncated(safe);
       } catch (err: unknown) {
         const nodeErr = err as NodeJS.ErrnoException;
         if (!followImports || !headSha || nodeErr.code !== 'ENOENT') throw err;
         const relative = path.relative(workspacePath, safe);
         try {
-          return await gitShow(workspacePath, headSha, relative, safe);
+          const buf = await gitShow(workspacePath, headSha, relative, safe);
+          if (buf.length <= MAX_FILE_BYTES) return buf;
+          const notice = Buffer.from(`\n[file truncated: ${buf.length} bytes total, showing first ${MAX_FILE_BYTES} bytes]\n`);
+          return Buffer.concat([buf.subarray(0, MAX_FILE_BYTES), notice]);
         } catch {
           throw err; // re-throw original ENOENT — file doesn't exist in repo
         }

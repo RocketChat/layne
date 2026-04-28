@@ -11,6 +11,22 @@ import { debug } from '../debug.js';
 import { DEFAULT_CONFIG } from '../config.js';
 import type { PiAgentRawFinding, PiAgentConfig, LineRangesByFile, LineRange } from '../types.js';
 
+const SKIP_PATTERNS = [
+  /\.test\.[jt]sx?$/,
+  /\.spec\.[jt]sx?$/,
+  /\.d\.ts$/,
+  /package-lock\.json$/,
+  /yarn\.lock$/,
+  /pnpm-lock\.yaml$/,
+  /\.lock$/,
+  /\.md$/,
+  /\.txt$/,
+  /\.css$/,
+  /\.scss$/,
+  /\.svg$/,
+  /\.(png|jpg|gif|ico|woff2?)$/,
+];
+
 const SYSTEM_PROMPT =
   'You are a security code reviewer with access to tools that let you read and explore a code repository. ' +
   'Your job is to detect malicious intent: reverse shells, backdoors, credential exfiltration, ' +
@@ -120,6 +136,17 @@ export async function runPiAgent({
   headSha?: string;
 }): Promise<PiAgentRawFinding[]> {
   if (!changedFiles || changedFiles.length === 0) return [];
+
+  const filteredFiles = changedFiles.filter(f => !SKIP_PATTERNS.some(p => p.test(f)));
+  const skippedCount = changedFiles.length - filteredFiles.length;
+  if (skippedCount > 0) {
+    console.log(`[pi-agent] skipping ${skippedCount} file(s) matched by skip patterns`);
+  }
+  if (filteredFiles.length === 0) {
+    console.log('[pi-agent] no files to scan after filtering');
+    return [];
+  }
+
   if (!toolConfig.enabled) {
     console.log('[pi-agent] skipping — not enabled for this repo (set "piAgent": {"enabled": true} in config/layne.json)');
     return [];
@@ -143,9 +170,9 @@ export async function runPiAgent({
     return [];
   }
 
-  console.log(`[pi-agent] scanning ${changedFiles.length} file(s) with provider ${provider}, model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
+  console.log(`[pi-agent] scanning ${filteredFiles.length} file(s) with provider ${provider}, model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
 
-  const fileList = changedFiles.map(f => {
+  const fileList = filteredFiles.map(f => {
     const ranges = changedLineRanges.get(f) ?? [];
     const rangeStr = ranges.length > 0
       ? ` (changed lines: ${formatLineRanges(ranges)})`
@@ -217,6 +244,8 @@ export async function runPiAgent({
     }));
 
     const resourceLoader = new DefaultResourceLoader({
+      cwd:                        workspacePath,
+      agentDir:                   workspacePath,
       systemPromptOverride:       () => systemPrompt,
       appendSystemPromptOverride: () => [],
       noExtensions:               true,
@@ -225,10 +254,13 @@ export async function runPiAgent({
     });
     await resourceLoader.reload();
 
+    // Pass confined tools as customTools (they override built-ins of the same name in the
+    // registry) and use their names as the tools allowlist so only our tools are active.
+    const activeToolNames = [...tools.map(t => t.name), reportFindingTool.name];
     const { session } = await createAgentSession({
       cwd:            workspacePath,
-      tools,
-      customTools:    [reportFindingTool],
+      tools:          activeToolNames,
+      customTools:    [...tools, reportFindingTool],
       sessionManager: SessionManager.inMemory(),
       model,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
