@@ -165,7 +165,6 @@ async function runFileSession({
   workspacePath,
   changedLineRanges,
   toolConfig,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   model,
   systemPrompt,
   headSha,
