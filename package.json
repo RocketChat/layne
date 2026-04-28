@@ -32,7 +32,7 @@
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
     "@sinclair/typebox": "^0.34.49",
-    "bullmq": "^5.0.0",
+    "bullmq": "^5.76.2",
     "dotenv": "^16.0.0",
     "express": "^4.18.0",
     "ioredis": "^5.0.0",
