@@ -374,7 +374,7 @@ export async function runPiAgent({
     return [];
   }
 
-  const concurrency = toolConfig.concurrency ?? 3;
+  const concurrency = toolConfig.concurrency ?? 5;
   const systemPrompt = toolConfig.prompt ?? SYSTEM_PROMPT;
 
   console.log(`[pi-agent] scanning ${filteredFiles.length} file(s) with provider ${provider}, model ${toolConfig.model}, concurrency ${concurrency} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
