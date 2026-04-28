@@ -172,6 +172,11 @@ function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
       errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
   }
 
+  if (b['concurrency'] !== undefined) {
+    if (!Number.isInteger(b['concurrency']) || (b['concurrency'] as number) < 1)
+      errors.push(`${ctx}.concurrency: must be a positive integer`);
+  }
+
   if (b['followImports'] !== undefined && typeof b['followImports'] !== 'boolean')
     errors.push(`${ctx}.followImports: must be a boolean`);
 

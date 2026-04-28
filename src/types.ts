@@ -147,6 +147,7 @@ export interface PiAgentConfig {
   model: string;
   thinkingLevel?: string;
   timeoutMinutes?: number;
+  concurrency?: number;
   followImports?: boolean;
   prompt?: string | null;
 }

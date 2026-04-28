@@ -7,11 +7,11 @@
       }
     },
     "labels": {
-      "onFailure":       ["needs-security-review"],
+      "onFailure": ["needs-security-review"],
       "removeOnSuccess": ["needs-security-review"],
-      "onSuccess":       [],
+      "onSuccess": [],
       "removeOnFailure": [],
-      "onException":     ["security-exception-used"]
+      "onException": ["security-exception-used"]
     }
   },
   "acme/frontend": {

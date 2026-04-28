@@ -10,7 +10,7 @@ const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'layne.json');
 export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
   mode:           'changed_files' as const,
   contextLines:   8,
-  timeoutMinutes: 10,
+  timeoutMinutes: 15,
   semgrep: Object.freeze({
     enabled:   true,
     extraArgs: ['--config', 'auto'],

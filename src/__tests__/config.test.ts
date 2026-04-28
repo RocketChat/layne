@@ -383,10 +383,10 @@ describe('loadScanConfig()', () => {
 
   // --- timeoutMinutes ---
 
-  it('returns timeoutMinutes 10 by default', async () => {
+  it('returns timeoutMinutes 15 by default', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.timeoutMinutes).toBe(10);
+    expect(config.timeoutMinutes).toBe(15);
   });
 
   it('inherits $global timeoutMinutes when the repo has no timeoutMinutes', async () => {

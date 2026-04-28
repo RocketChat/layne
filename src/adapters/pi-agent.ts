@@ -28,25 +28,33 @@ const SKIP_PATTERNS = [
 ];
 
 const SYSTEM_PROMPT =
-  'You are a security code reviewer with access to tools that let you read and explore a code repository. ' +
+  'You are a security code reviewer embedded in an automated SAST pipeline. ' +
+  'You are given one changed file to investigate per session. ' +
   'Your job is to detect malicious intent: reverse shells, backdoors, credential exfiltration, ' +
-  'obfuscated payloads, and supply-chain attacks. ' +
-  'Use the read, grep, find, and ls tools to explore the changed files and any related code they import or call. ' +
-  'Scan the whole file, not just the changed line ranges. The changed ranges are context to help you anchor findings accurately. ' +
+  'obfuscated payloads, and supply-chain attacks.\n\n' +
+  'TOOLS AVAILABLE\n' +
+  'You have exactly these tools:\n' +
+  '- read(file, [start_line], [end_line]): Read a file or a specific line range.\n' +
+  '- grep(pattern, path, [options]): Search for patterns across the repository.\n' +
+  '- find(path, [options]): Find files by name or pattern.\n' +
+  '- ls(path): List directory contents.\n' +
+  '- report_finding(...): Submit a confirmed finding.\n' +
+  'The full repository is available — you can read any file, not just the assigned file.\n\n' +
+  'INVESTIGATION STEPS\n' +
+  '1. Read the assigned file in full using the read tool on its actual file path.\n' +
+  '2. Follow any suspicious imports or dependencies into other files using read.\n' +
+  '3. Use grep to search for suspicious patterns (encoded strings, network calls, shell invocations) across the codebase.\n' +
+  '4. Before calling report_finding, call read() to confirm the exact verbatim evidence snippet in the file.\n\n' +
+  'WHAT TO REPORT\n' +
   'Report ONLY confirmed malicious patterns with high confidence. ' +
-  'Do not report style issues, bugs, theoretical vulnerabilities, or code that is merely odd or messy. ' +
-  'Do not report: ordinary vulnerable code with no evidence of malicious intent; eval, exec, spawn, or similar APIs in clearly benign static contexts; packages that are merely unknown or low-download with no hostile behavior in the provided files. ' +
-  'For each finding, call report_finding exactly once with an exact verbatim evidence snippet copied from the file. ' +
-  'evidence must be a short exact verbatim contiguous snippet — the smallest distinctive snippet that uniquely identifies the malicious logic in that file. ' +
-  'Do not paraphrase, summarize, insert ellipses, or combine non-adjacent lines. ' +
-  'If the snippet appears more than once in the file, choose a longer unique snippet or omit the finding. ' +
-  'If you cannot provide unique exact verbatim evidence, omit the finding. ' +
-  'Line numbers you report will be ignored — only the evidence string is used to determine the annotation location. ' +
-  'Focus on providing accurate, unique evidence snippets. ' +
-  'ruleId must be exactly one of: reverse-shell, credential-exfiltration, obfuscated-payload, backdoor, supply-chain-abuse, covert-execution. ' +
-  'Before emitting a finding, verify all three: the behavior is clearly malicious or clearly enabling malicious execution; ' +
-  'you can quote a unique exact contiguous snippet from the file; ' +
-  'you would be comfortable surfacing it to a security engineer as a real alert. If any answer is no, omit the finding. ' +
+  'Do not report bugs, style issues, theoretical vulnerabilities, or unusual-but-benign code. ' +
+  'ruleId must be exactly one of: reverse-shell, credential-exfiltration, obfuscated-payload, backdoor, supply-chain-abuse, covert-execution.\n\n' +
+  'EVIDENCE RULES\n' +
+  'Call report_finding exactly once per finding with an exact verbatim evidence snippet copied from the file.\n' +
+  '- evidence is the ONLY field used to place the annotation — if it does not exactly match file content, the finding is silently dropped.\n' +
+  '- Use the smallest contiguous snippet that uniquely identifies the malicious logic.\n' +
+  '- Do not paraphrase, insert ellipses, or combine non-adjacent lines.\n' +
+  '- If the snippet appears more than once in the file, extend it until unique or omit the finding.\n' +
   'Do not write, edit, or modify any files.';
 
 // ---------------------------------------------------------------------------
@@ -64,7 +72,7 @@ const ReportFindingParams = Type.Object({
 });
 
 // ---------------------------------------------------------------------------
-// Normalization (mirrors claude.ts)
+// Normalization
 // ---------------------------------------------------------------------------
 
 interface RawFindingInput {
@@ -107,15 +115,212 @@ function normalizeFinding(raw: RawFindingInput): PiAgentRawFinding {
 }
 
 // ---------------------------------------------------------------------------
+// Deduplication — drop findings whose evidence was already seen (cross-session)
+// ---------------------------------------------------------------------------
+
+function deduplicateByEvidence(findings: PiAgentRawFinding[]): PiAgentRawFinding[] {
+  const seen = new Set<string>();
+  return findings.filter(f => {
+    const key = f.evidence?.trim() ?? '';
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency pool — N workers drain a shared queue of files
+// ---------------------------------------------------------------------------
+
+async function runConcurrent(
+  files: string[],
+  concurrency: number,
+  fn: (file: string, index: number) => Promise<PiAgentRawFinding[]>,
+): Promise<PiAgentRawFinding[]> {
+  const results: PiAgentRawFinding[] = [];
+  let nextIndex = 0;
+
+  // JS is single-threaded: nextIndex++ is safe across concurrent async workers
+  const worker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= files.length) break;
+      const fileResults = await fn(files[index]!, index);
+      results.push(...fileResults);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Per-file session runner
+// ---------------------------------------------------------------------------
+
+async function runFileSession({
+  file,
+  index,
+  total,
+  workspacePath,
+  changedLineRanges,
+  toolConfig,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  model,
+  systemPrompt,
+  headSha,
+}: {
+  file: string;
+  index: number;
+  total: number;
+  workspacePath: string;
+  changedLineRanges: LineRangesByFile;
+  toolConfig: PiAgentConfig;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  model: any;
+  systemPrompt: string;
+  headSha?: string;
+}): Promise<PiAgentRawFinding[]> {
+  const label = `[${index + 1}/${total}] ${file}`;
+  const ranges = changedLineRanges.get(file) ?? [];
+  const rangeStr = ranges.length > 0 ? ` (changed lines: ${formatLineRanges(ranges)})` : '';
+  const timeoutMs = (toolConfig.timeoutMinutes ?? 3) * 60 * 1000;
+  const isCustomPrompt = toolConfig.prompt !== null && toolConfig.prompt !== undefined;
+
+  const initialPrompt = isCustomPrompt
+    ? `The following file was changed in this PR and requires a security review:\n  - ${file}${rangeStr}\n\n` +
+      'Start by reading this file in full using the read tool on the actual file path (not the .layne/diff-only/ path). ' +
+      'Then broaden your investigation: read the files it imports from, ' +
+      'use grep to find where changed functions are called from elsewhere in the codebase, ' +
+      'and read any shared utilities, models, or middleware that the changed code interacts with. ' +
+      'Follow imports and function calls as deeply as needed to trace data flows from source to sink. ' +
+      'Use the changed line range above to anchor your findings accurately. ' +
+      'For each confirmed finding, call report_finding.'
+    : `The following file was changed in this PR and requires a security review:\n  - ${file}${rangeStr}\n\n` +
+      'Investigate this file for malicious intent: reverse shells, backdoors, credential exfiltration, ' +
+      'obfuscated payloads, and supply-chain attacks. ' +
+      'Read the file in full, then follow any suspicious imports into other files. ' +
+      'Use the changed line range above to anchor your findings. ' +
+      'For each confirmed finding, call report_finding. Report only high-confidence confirmed malicious patterns.';
+
+  const runAttempt = async (attempt: number): Promise<{ findings: PiAgentRawFinding[]; hadActivity: boolean; timedOut: boolean }> => {
+    const sessionFindings: PiAgentRawFinding[] = [];
+    let hadActivity = false;
+    let timedOut = false;
+
+    const reportFindingTool: ToolDefinition = {
+      name:        'report_finding',
+      label:       'Report Finding',
+      description: 'Report a confirmed security finding. Call once per finding.',
+      parameters:  ReportFindingParams,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
+        hadActivity = true;
+        const finding = normalizeFinding(params as RawFindingInput);
+        sessionFindings.push(finding);
+        debug('pi-agent', `finding recorded: ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine} [${finding.ruleId}]`);
+        return {
+          content: [{ type: 'text' as const, text: 'Finding recorded.' }],
+          details: {},
+        };
+      },
+    };
+
+    const rawTools = createConfinedTools(workspacePath, {
+      headSha,
+      followImports: toolConfig.followImports ?? true,
+    });
+
+    // Wrap each tool's execute to detect model activity (any tool call = session engaged)
+    const tools = rawTools.map(tool => ({
+      ...tool,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      execute: async (...args: any[]) => {
+        hadActivity = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (tool.execute as any)(...args);
+      },
+    }));
+
+    const resourceLoader = new DefaultResourceLoader({
+      cwd:                        workspacePath,
+      agentDir:                   workspacePath,
+      systemPromptOverride:       () => systemPrompt,
+      appendSystemPromptOverride: () => [],
+      noExtensions:               true,
+      noSkills:                   true,
+      noPromptTemplates:          true,
+    });
+    await resourceLoader.reload();
+
+    const activeToolNames = [...tools.map(t => t.name), reportFindingTool.name];
+    const { session } = await createAgentSession({
+      cwd:            workspacePath,
+      tools:          activeToolNames,
+      customTools:    [...tools, reportFindingTool],
+      sessionManager: SessionManager.inMemory(),
+      model,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      thinkingLevel:  (toolConfig.thinkingLevel ?? 'medium') as any,
+      resourceLoader,
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      session.abort().catch(() => {});
+    }, timeoutMs);
+
+    try {
+      await session.prompt(initialPrompt);
+    } catch (err) {
+      if (!timedOut) {
+        console.error(`[pi-agent] ${label} error (attempt ${attempt}):`, (err as Error).message ?? err);
+      }
+    } finally {
+      clearTimeout(timer);
+      session.dispose();
+    }
+
+    return { findings: sessionFindings, hadActivity, timedOut };
+  };
+
+  console.log(`[pi-agent] ${label} — starting`);
+  const first = await runAttempt(1);
+
+  if (first.timedOut) {
+    console.warn(`[pi-agent] ${label} — timed out after ${toolConfig.timeoutMinutes ?? 3}m (${first.findings.length} partial finding(s))`);
+    return first.findings;
+  }
+
+  const silentFailure = first.findings.length === 0 && !first.hadActivity;
+  const badEvidenceRun = first.findings.length > 0 && first.findings.every(f => f.startLine === 1 && f.endLine === 1);
+
+  let result = first;
+  if (silentFailure || badEvidenceRun) {
+    console.warn(`[pi-agent] ${label} — ${silentFailure ? 'no output' : 'all findings at line 1'} — retrying`);
+    const retry = await runAttempt(2);
+    if (retry.timedOut) {
+      console.warn(`[pi-agent] ${label} — retry timed out (${retry.findings.length} partial finding(s))`);
+    }
+    result = retry;
+  }
+
+  console.log(`[pi-agent] ${label} — ${result.findings.length} finding(s)`);
+  return result.findings;
+}
+
+// ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
 
 /**
  * Runs an agentic security scan using @mariozechner/pi-coding-agent.
  *
- * Unlike the claude adapter (single-turn batch), this adapter spins up a
- * full agent session with read-only file tools so the model can traverse
- * imports and follow suspicious patterns across file boundaries.
+ * Spawns one agent session per changed file (up to `concurrency` in parallel)
+ * so each file gets a dedicated investigation budget. Sessions share the same
+ * workspace and can follow imports freely across file boundaries. Findings
+ * from all sessions are merged and deduplicated by evidence string before
+ * being returned.
  *
  * Non-determinism note: because the agent drives its own investigation, the
  * same code may produce findings with different ruleIds or line numbers across
@@ -170,153 +375,34 @@ export async function runPiAgent({
     return [];
   }
 
-  console.log(`[pi-agent] scanning ${filteredFiles.length} file(s) with provider ${provider}, model ${toolConfig.model} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
-
-  const fileList = filteredFiles.map(f => {
-    const ranges = changedLineRanges.get(f) ?? [];
-    const rangeStr = ranges.length > 0
-      ? ` (changed lines: ${formatLineRanges(ranges)})`
-      : '';
-    return `  - ${f}${rangeStr}`;
-  }).join('\n');
-
-  const isCustomPrompt = toolConfig.prompt !== null && toolConfig.prompt !== undefined;
-  const initialPrompt = isCustomPrompt
-    ? `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
-      'Start by reading each changed file in full using the read tool on the actual file path (not the .layne/diff-only/ path). ' +
-      'Then broaden your investigation beyond the changed files themselves: read the files they import from, ' +
-      'use grep to find where changed functions are called from elsewhere in the codebase, ' +
-      'and read any shared utilities, models, or middleware that the changed code interacts with. ' +
-      'Understanding the full context around each change — not just the changed lines — reveals vulnerabilities that span multiple files. ' +
-      'Follow imports and function calls as deeply as needed to trace data flows from source to sink. ' +
-      'Use the changed line ranges above to anchor your findings accurately. ' +
-      'For each confirmed finding, call report_finding.'
-    : `The following files were changed in this PR and require a security review:\n${fileList}\n\n` +
-      'Investigate these files for malicious intent: reverse shells, backdoors, credential exfiltration, ' +
-      'obfuscated payloads, and supply-chain attacks. ' +
-      'Use the read, grep, find, and ls tools to explore the code. Follow imports and dependencies where suspicious. ' +
-      'Scan each whole file but use the changed line ranges above to prioritize where to anchor your findings. ' +
-      'For each confirmed finding, call report_finding. Report only high-confidence confirmed malicious patterns.';
-
+  const concurrency = toolConfig.concurrency ?? 3;
   const systemPrompt = toolConfig.prompt ?? SYSTEM_PROMPT;
-  const timeoutMs = (toolConfig.timeoutMinutes ?? 3) * 60 * 1000;
 
-  // ---------------------------------------------------------------------------
-  // Session runner — extracted so it can be retried on silent failure
-  // ---------------------------------------------------------------------------
-  const runSession = async (attempt: number): Promise<{ findings: PiAgentRawFinding[]; hadActivity: boolean; timedOut: boolean }> => {
-    const sessionFindings: PiAgentRawFinding[] = [];
-    let hadActivity = false;
-    let timedOut = false;
+  console.log(`[pi-agent] scanning ${filteredFiles.length} file(s) with provider ${provider}, model ${toolConfig.model}, concurrency ${concurrency} (thinking: ${toolConfig.thinkingLevel ?? 'medium'})`);
 
-    const reportFindingTool: ToolDefinition = {
-      name:        'report_finding',
-      label:       'Report Finding',
-      description: 'Report a confirmed security finding. Call once per finding.',
-      parameters:  ReportFindingParams,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      execute: async (_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) => {
-        hadActivity = true;
-        const finding = normalizeFinding(params as RawFindingInput);
-        sessionFindings.push(finding);
-        debug('pi-agent', `finding recorded: ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine} [${finding.ruleId}]`);
-        return {
-          content: [{ type: 'text' as const, text: 'Finding recorded.' }],
-          details: {},
-        };
-      },
-    };
-
-    const rawTools = createConfinedTools(workspacePath, {
-      headSha,
-      followImports: toolConfig.followImports ?? true,
-    });
-
-    // Wrap each tool's execute to detect model activity (any tool call = session engaged)
-    const tools = rawTools.map(tool => ({
-      ...tool,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      execute: async (...args: any[]) => {
-        hadActivity = true;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (tool.execute as any)(...args);
-      },
-    }));
-
-    const resourceLoader = new DefaultResourceLoader({
-      cwd:                        workspacePath,
-      agentDir:                   workspacePath,
-      systemPromptOverride:       () => systemPrompt,
-      appendSystemPromptOverride: () => [],
-      noExtensions:               true,
-      noSkills:                   true,
-      noPromptTemplates:          true,
-    });
-    await resourceLoader.reload();
-
-    // Pass confined tools as customTools (they override built-ins of the same name in the
-    // registry) and use their names as the tools allowlist so only our tools are active.
-    const activeToolNames = [...tools.map(t => t.name), reportFindingTool.name];
-    const { session } = await createAgentSession({
-      cwd:            workspacePath,
-      tools:          activeToolNames,
-      customTools:    [...tools, reportFindingTool],
-      sessionManager: SessionManager.inMemory(),
+  const allFindings = await runConcurrent(
+    filteredFiles,
+    concurrency,
+    (file, index) => runFileSession({
+      file,
+      index,
+      total: filteredFiles.length,
+      workspacePath,
+      changedLineRanges,
+      toolConfig,
       model,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      thinkingLevel:  (toolConfig.thinkingLevel ?? 'medium') as any,
-      resourceLoader,
-    });
+      systemPrompt,
+      headSha,
+    }),
+  );
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      session.abort().catch(() => {});
-    }, timeoutMs);
+  const deduped = deduplicateByEvidence(allFindings);
+  const removedCount = allFindings.length - deduped.length;
 
-    try {
-      await session.prompt(initialPrompt);
-    } catch (err) {
-      if (!timedOut) {
-        console.error(`[pi-agent] error during scan (attempt ${attempt}):`, (err as Error).message ?? err);
-      }
-    } finally {
-      clearTimeout(timer);
-      session.dispose();
-    }
-
-    return { findings: sessionFindings, hadActivity, timedOut };
-  };
-
-  // ---------------------------------------------------------------------------
-  // First attempt
-  // ---------------------------------------------------------------------------
-  const first = await runSession(1);
-
-  if (first.timedOut) {
-    console.warn(`[pi-agent] scan timed out after ${toolConfig.timeoutMinutes ?? 3}m — returning ${first.findings.length} partial finding(s)`);
-  }
-
-  // Retry once on two failure modes:
-  // 1. Silent failure — model didn't call any tools at all
-  // 2. Bad-evidence run — model produced findings but all at line 1, meaning it reported
-  //    from memory rather than reading the actual files (location validator will drop them all)
-  const silentFailure = first.findings.length === 0 && !first.hadActivity && !first.timedOut;
-  const badEvidenceRun = first.findings.length > 0 && first.findings.every(f => f.startLine === 1 && f.endLine === 1);
-
-  let result = first;
-  if (!first.timedOut && (silentFailure || badEvidenceRun)) {
-    console.warn(`[pi-agent] ${silentFailure ? 'session produced no output' : 'all findings at line 1 (bad evidence)'} — retrying once`);
-    const retry = await runSession(2);
-    if (retry.timedOut) {
-      console.warn(`[pi-agent] retry timed out after ${toolConfig.timeoutMinutes ?? 3}m — returning ${retry.findings.length} partial finding(s)`);
-    }
-    result = retry;
-  }
-
-  console.log(`[pi-agent] ${result.findings.length} finding(s):`);
-  for (const f of result.findings) {
+  console.log(`[pi-agent] ${deduped.length} finding(s) after deduplication${removedCount > 0 ? ` (${removedCount} duplicate(s) removed)` : ''}:`);
+  for (const f of deduped) {
     console.log(`[pi-agent]   ${f.severity.toUpperCase()} ${f.file}:${f.startLine}-${f.endLine} [${f.ruleId}] ${f.message}`);
   }
 
-  return result.findings;
+  return deduped;
 }
