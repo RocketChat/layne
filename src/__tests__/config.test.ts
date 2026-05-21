@@ -409,6 +409,24 @@ describe('loadScanConfig()', () => {
 
   // --- piAgent defaults ---
 
+  it('inherits $global semgrep config when the repo has no semgrep block', async () => {
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+    '$global':       { semgrep: { extraArgs: ['--config', 'p/owasp-top-ten'] } },
+    'acme/frontend': { mode: 'diff_only' },
+  }));
+  const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+  expect((config.semgrep as { extraArgs: string[] }).extraArgs).toEqual(['--config', 'p/owasp-top-ten']);
+});
+
+it('per-repo semgrep overrides $global semgrep at the key level', async () => {
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+    '$global':       { semgrep: { extraArgs: ['--config', 'p/owasp-top-ten'] } },
+    'acme/payments': { semgrep: { extraArgs: ['--config', 'p/python'] } },
+  }));
+  const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+  expect((config.semgrep as { extraArgs: string[] }).extraArgs).toEqual(['--config', 'p/python']);
+});
+
   it('DEFAULT_CONFIG.piAgent has timeoutMinutes 10', () => {
     expect((DEFAULT_CONFIG.piAgent as Record<string, unknown>).timeoutMinutes).toBe(10);
   });
@@ -437,3 +455,4 @@ describe('loadScanConfig()', () => {
     expect((config.piAgent as Record<string, unknown>).timeoutMinutes).toBe(15);
   });
 });
+
