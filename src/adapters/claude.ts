@@ -218,6 +218,11 @@ async function scanBatchWithPrompt(
       tool_choice: { type: 'any' },
     });
 
+    if (response.stop_reason === 'max_tokens') {
+      console.error('[claude] API error during scan batch (prompt mode): response truncated — max_tokens reached, findings may be incomplete');
+      return { error: true };
+    }
+
     return extractFindings(response.content);
   } catch (err) {
     console.error('[claude] API error during scan batch (prompt mode):', (err as Error).message ?? err);
