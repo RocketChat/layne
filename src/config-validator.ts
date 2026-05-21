@@ -9,7 +9,7 @@
  */
 
 const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'piAgent', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
-const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'piAgent', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
@@ -57,6 +57,10 @@ function validateGlobal(block: Record<string, unknown>, ctx: string, errors: str
     }
   }
   validateScanMode(block, ctx, errors);
+  if (block['semgrep']       !== undefined) validateScanner(block['semgrep'],    `${ctx}.semgrep`,    errors);
+  if (block['trufflehog']    !== undefined) validateScanner(block['trufflehog'], `${ctx}.trufflehog`, errors);
+  if (block['claude']        !== undefined) validateClaude(block['claude'],       `${ctx}.claude`,     errors);
+  if (block['piAgent']       !== undefined) validatePiAgent(block['piAgent'],    `${ctx}.piAgent`,    errors);
   if (block['notifications'] !== undefined) validateNotifications(block['notifications'], `${ctx}.notifications`, errors);
   if (block['labels']        !== undefined) validateLabels(block['labels'], `${ctx}.labels`, errors);
   if (block['trigger']       !== undefined) validateTrigger(block['trigger'], `${ctx}.trigger`, errors);
@@ -251,7 +255,7 @@ function validateComment(block: unknown, ctx: string, errors: string[]): void {
 function validateLabels(block: unknown, ctx: string, errors: string[]): void {
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
   const b = block as Record<string, unknown>;
-  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess', 'onException']) {
+  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess', 'onException', 'removeOnException']) {
     if (b[key] === undefined) continue;
     if (!Array.isArray(b[key]))
       errors.push(`${ctx}.${key}: must be an array`);
