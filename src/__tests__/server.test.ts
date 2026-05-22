@@ -1142,6 +1142,39 @@ describe('issue_comment handler', () => {
     expect(scanQueue.add).not.toHaveBeenCalled();
   });
 
+  it('confirmation comment says "Re-running scan..." when check run is in failure state', async () => {
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'failure' });
+
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    const [call] = (createPrComment as ReturnType<typeof vi.fn>).mock.calls as [{ body: string }][];
+    expect(call[0].body).toContain('Re-running scan');
+  });
+
+  it('confirmation comment does NOT say "Re-running scan..." when check run did not fail', async () => {
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'success' });
+
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    const [call] = (createPrComment as ReturnType<typeof vi.fn>).mock.calls as [{ body: string }][];
+    expect(call[0].body).not.toContain('Re-running scan');
+  });
+
+  it('confirmation comment does NOT say "Re-running scan..." when there is no check run', async () => {
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+    await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    const [call] = (createPrComment as ReturnType<typeof vi.fn>).mock.calls as [{ body: string }][];
+    expect(call[0].body).not.toContain('Re-running scan');
+  });
+
   it('does not store exceptions or enqueue scan when PR is already merged', async () => {
     (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       state:  'closed',
