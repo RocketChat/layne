@@ -50,11 +50,11 @@
     "@types/supertest": "~6.0.0",
     "@typescript-eslint/eslint-plugin": "^8.29.0",
     "@typescript-eslint/parser": "^8.29.0",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^4.1.8",
     "eslint": "^10.0.3",
     "supertest": "^7.0.0",
     "tsx": "~4.19.0",
     "typescript": "~5.8.0",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.8"
   }
 }
