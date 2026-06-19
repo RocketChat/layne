@@ -383,10 +383,10 @@ describe('loadScanConfig()', () => {
 
   // --- timeoutMinutes ---
 
-  it('returns timeoutMinutes 10 by default', async () => {
+  it('returns timeoutMinutes 15 by default', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.timeoutMinutes).toBe(10);
+    expect(config.timeoutMinutes).toBe(15);
   });
 
   it('inherits $global timeoutMinutes when the repo has no timeoutMinutes', async () => {
@@ -407,33 +407,74 @@ describe('loadScanConfig()', () => {
     expect(config.timeoutMinutes).toBe(30);
   });
 
-  // --- piAgent defaults ---
+  // --- depDoctor global inheritance ---
 
-  it('DEFAULT_CONFIG.piAgent has timeoutMinutes 10', () => {
-    expect((DEFAULT_CONFIG.piAgent as Record<string, unknown>).timeoutMinutes).toBe(10);
+  it('inherits $global depDoctor when the repo has no depDoctor block', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { depDoctor: { enabled: true } },
+      'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    expect((config.depDoctor as Record<string, unknown>).enabled).toBe(true);
   });
 
-  it('DEFAULT_CONFIG.piAgent has followImports true', () => {
-    expect((DEFAULT_CONFIG.piAgent as Record<string, unknown>).followImports).toBe(true);
+  it('repo-level depDoctor overrides $global depDoctor', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { depDoctor: { enabled: true } },
+      'acme/payments': { depDoctor: { enabled: false } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'payments' });
+    expect((config.depDoctor as Record<string, unknown>).enabled).toBe(false);
   });
 
-  it('repo can override piAgent.followImports to false', async () => {
+  // --- spectre defaults ---
+
+  it('DEFAULT_CONFIG.spectre has fileCap 20', () => {
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).fileCap).toBe(20);
+  });
+
+  it('DEFAULT_CONFIG.spectre has minSeverity high', () => {
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).minSeverity).toBe('high');
+  });
+
+  it('DEFAULT_CONFIG.spectre has maxDiffLines 400', () => {
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).maxDiffLines).toBe(400);
+  });
+
+  it('repo can override spectre.fileCap', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
       'acme/backend': {
-        piAgent: { enabled: true, provider: 'anthropic', followImports: false },
+        spectre: { enabled: true, provider: 'anthropic', model: 'claude-haiku-4-5-20251001', fileCap: 10 },
       },
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
-    expect((config.piAgent as Record<string, unknown>).followImports).toBe(false);
+    expect((config.spectre as Record<string, unknown>).fileCap).toBe(10);
   });
 
-  it('repo piAgent.timeoutMinutes override propagates correctly', async () => {
+  it('repo can override spectre.minSeverity', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
       'acme/backend': {
-        piAgent: { enabled: true, provider: 'anthropic', timeoutMinutes: 15 },
+        spectre: { enabled: true, provider: 'anthropic', model: 'claude-haiku-4-5-20251001', minSeverity: 'medium' },
       },
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
-    expect((config.piAgent as Record<string, unknown>).timeoutMinutes).toBe(15);
+    expect((config.spectre as Record<string, unknown>).minSeverity).toBe('medium');
+  });
+
+  it('repo can configure spectre skipPaths and skipExtensions', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/backend': {
+        spectre: {
+          enabled: true,
+          provider: 'bedrock',
+          model: 'anthropic.claude-haiku-4-5-20251001',
+          skipPaths: ['vendor/', 'generated/'],
+          skipExtensions: ['.generated.ts'],
+        },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.spectre as Record<string, unknown>).skipPaths).toEqual(['vendor/', 'generated/']);
+    expect((config.spectre as Record<string, unknown>).skipExtensions).toEqual(['.generated.ts']);
   });
 });

@@ -7,6 +7,7 @@ const SECURITY_COMMENT_RE = /(?:\/\/|#)\s*SECURITY:\s+\S/;
 function gitShow(workspacePath: string, baseSha: string, filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', ['-C', workspacePath, 'show', `${baseSha}:${filePath}`],
+      { maxBuffer: 200 * 1024 * 1024 },
       (err, stdout) => { if (err && !stdout) reject(err); else resolve(stdout ?? ''); }
     );
   });

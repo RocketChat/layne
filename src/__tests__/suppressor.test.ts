@@ -8,12 +8,12 @@ const { suppressFindings } = await import('../suppressor.js');
 
 // Helper: make execFile resolve with given stdout
 function resolveWith(stdout: string) {
-  mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, stdout, ''));
+  mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, stdout, ''));
 }
 
 // Helper: make execFile reject (simulates new file / blob unavailable)
 function rejectWith(err: Error = new Error('not found')) {
-  mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(err, '', ''));
+  mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(err, '', ''));
 }
 
 // Sets up both the git diff (identity map: headLine === baseLine) and git show

@@ -1,5 +1,9 @@
 # Trufflehog
 
+<div style={{textAlign: 'center'}}>
+  <img src="/img/trufflehog.png" alt="Trufflehog" width="200" />
+</div>
+
 Trufflehog is an open-source secret scanning tool that detects credentials, API keys, tokens, and other sensitive material committed to source code. It runs **locally inside the Layne worker container** - no code is sent to any external service.
 
 Trufflehog is enabled for all repos by default.

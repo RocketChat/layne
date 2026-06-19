@@ -1,5 +1,9 @@
 # Claude
 
+<div style={{textAlign: 'center'}}>
+  <img src="/img/claude.png" alt="Claude" width="160" />
+</div>
+
 The Claude scanner uses Anthropic's Claude LLM to analyze changed code. By default it looks for **malicious intent** - reverse shells, backdoors, obfuscated payloads, and supply-chain attacks. That is a starting point, not a fixed ruleset. Security engineers implementing Layne should adapt the system prompt (or build a skill) to reflect their threat model and use cases - the scanner is a framework for AI-assisted code review, not a prescribed detector.
 
 Unlike Semgrep and Trufflehog, the Claude scanner **sends code to Anthropic's API**. It is disabled by default and must be opted in per repo. It requires `ANTHROPIC_API_KEY` to be set in the environment.
@@ -239,13 +243,13 @@ Required fields:
 
 Guidance:
 
-- `ruleId` must be one of the following values exactly — no other values are permitted:
-  - `reverse-shell` — reverse shells, bind shells, or interactive stdio forwarding to a remote process
-  - `credential-exfiltration` — secrets, tokens, keys, cookies, or env vars sent to an external destination
-  - `obfuscated-payload` — encoded or constructed strings that decode into code, commands, or malicious URLs fed to an execution sink
-  - `backdoor` — hidden admin paths, secret trigger strings, kill switches, or covert remote command execution
-  - `supply-chain-abuse` — hostile install-time scripts, URL/git dependencies with suspicious execution, or typosquat-style packages with concrete hostile behavior
-  - `covert-execution` — dangerous dynamic execution where the surrounding logic is clearly hostile and does not fit a more specific category above
+- `ruleId` must be one of the following values exactly - no other values are permitted:
+  - `reverse-shell` - reverse shells, bind shells, or interactive stdio forwarding to a remote process
+  - `credential-exfiltration` - secrets, tokens, keys, cookies, or env vars sent to an external destination
+  - `obfuscated-payload` - encoded or constructed strings that decode into code, commands, or malicious URLs fed to an execution sink
+  - `backdoor` - hidden admin paths, secret trigger strings, kill switches, or covert remote command execution
+  - `supply-chain-abuse` - hostile install-time scripts, URL/git dependencies with suspicious execution, or typosquat-style packages with concrete hostile behavior
+  - `covert-execution` - dangerous dynamic execution where the surrounding logic is clearly hostile and does not fit a more specific category above
 - Use `high` for confirmed malicious logic. Use lower severities only if the behavior is still clearly malicious but materially less severe.
 - Keep `message` specific and factual.
 - Prefer `anchorKind: "declaration"` when the finding is about the behavior of an enclosing function, method, or class rather than a single sink line.

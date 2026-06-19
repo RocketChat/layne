@@ -4,7 +4,7 @@ const mockMkdtemp  = vi.fn().mockResolvedValue('/tmp/layne-job-1-xyz');
 const mockRm       = vi.fn().mockResolvedValue(undefined);
 const mockRealpath = vi.fn(async (path: string) => path);
 const mockStat     = vi.fn().mockResolvedValue({ isFile: () => true });
-const mockExecFile = vi.fn((cmd: string, args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+const mockExecFile = vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
 
 vi.mock('fs/promises', () => ({
   mkdtemp:  mockMkdtemp,
@@ -107,7 +107,7 @@ describe('setupRepo()', () => {
   });
 
   it('throws if any git step fails', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(new Error('Repository not found'), '', '')
     );
     await expect(setupRepo(defaultSetupArgs())).rejects.toThrow('Repository not found');
@@ -124,7 +124,7 @@ describe('getChangedFiles()', () => {
   });
 
   it('runs git diff --name-only -z with explicit SHAs inside the workspace', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'base1', headSha: 'head1' });
 
     const [cmd, args] = mockExecFile.mock.calls[0];
@@ -139,7 +139,7 @@ describe('getChangedFiles()', () => {
   });
 
   it('returns an array of changed file paths (NUL-delimited output)', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(null, 'src/app.js\0src/utils.js\0', '')
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
@@ -147,7 +147,7 @@ describe('getChangedFiles()', () => {
   });
 
   it('correctly handles filenames with spaces', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(null, 'src/my file.js\0src/utils.js\0', '')
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
@@ -155,13 +155,13 @@ describe('getChangedFiles()', () => {
   });
 
   it('returns an empty array when no files changed', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
     expect(files).toEqual([]);
   });
 
   it('drops paths with a leading slash', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(null, '/etc/passwd\0src/ok.js\0', '')
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
@@ -169,7 +169,7 @@ describe('getChangedFiles()', () => {
   });
 
   it('drops paths containing .. traversal segments', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(null, '../escape.js\0src/ok.js\0', '')
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
@@ -208,7 +208,7 @@ describe('fetchCommit()', () => {
   });
 
   it('throws when git exits with a non-zero code', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
       cb(new Error('unknown revision'), '', '')
     );
     await expect(fetchCommit({ workspacePath: '/tmp/ws', sha: 'bad' })).rejects.toThrow('unknown revision');
@@ -221,7 +221,7 @@ describe('getChangedLineRanges()', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('parses added and modified line ranges from a zero-context diff', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, [
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, [
       'diff --git a/src/app.js b/src/app.js',
       '--- a/src/app.js',
       '+++ b/src/app.js',
@@ -245,7 +245,7 @@ describe('getChangedLineRanges()', () => {
   });
 
   it('scopes the diff to specific files when files array is provided', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h', files: ['src/a.js', 'src/b.js'] });
 
     const args = mockExecFile.mock.calls[0][1];
@@ -255,7 +255,7 @@ describe('getChangedLineRanges()', () => {
   });
 
   it('does not append -- when files array is empty', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
     await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
 
     const args = mockExecFile.mock.calls[0][1];
@@ -263,7 +263,7 @@ describe('getChangedLineRanges()', () => {
   });
 
   it('ignores deleted hunks that have no lines in the head revision', async () => {
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, [
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, [
       'diff --git a/src/app.js b/src/app.js',
       '--- a/src/app.js',
       '+++ b/src/app.js',

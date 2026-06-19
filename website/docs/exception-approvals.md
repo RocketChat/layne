@@ -2,7 +2,7 @@
 
 Layne can be configured to allow specific users or teams to approve individual findings that would otherwise block a PR. This is useful for accepted risks, false positives, or hotfixes that need to merge quickly.
 
-Exceptions are **deliberate and auditable** — the approver must reference the exact finding ID(s) and provide a written reason. This is intentionally stricter than a generic PR approval.
+Exceptions are **deliberate and auditable** - the approver must reference the exact finding ID(s) and provide a written reason. This is intentionally stricter than a generic PR approval.
 
 ## How It Works
 
@@ -17,7 +17,7 @@ Exceptions are **deliberate and auditable** — the approver must reference the 
 6. Layne stores the exception in Redis (scoped to the PR) and re-runs the scan
 7. The check run passes with `conclusion: success` and a summary listing who excepted each finding and why
 
-Exceptions survive new commits as long as the flagged line has not changed. If the flagged line is modified by a subsequent commit, the exception is invalidated and a new approval is required. Unrelated commits — rebases, merge commits from the base branch, changes to other files — do not affect existing approvals.
+Exceptions survive new commits as long as the flagged line has not changed. If the flagged line is modified by a subsequent commit, the exception is invalidated and a new approval is required. Unrelated commits - rebases, merge commits from the base branch, changes to other files - do not affect existing approvals.
 
 ## The Command
 
@@ -31,14 +31,14 @@ Post a comment on the PR containing the following on a single line:
 |---|---|
 | `/layne exception-approve` | Required trigger prefix |
 | `<ID>` | One or more finding IDs in `LAYNE-xxxxxxxxxxxxxxxx` format (from the check run summary) |
-| `reason: <explanation>` | Required — free-text explanation; recorded in the audit trail |
+| `reason: <explanation>` | Required - free-text explanation; recorded in the audit trail |
 
 **Multiple findings in one command:**
 ```
 /layne exception-approve LAYNE-a3f29c81b7e41d22 LAYNE-b7e41d22a3f29c81 reason: legacy code, tracked in JIRA-1234
 ```
 
-The command can appear anywhere in the comment body — other text before or after it is ignored.
+The command can appear anywhere in the comment body - other text before or after it is ignored.
 
 ## Finding IDs
 
@@ -68,7 +68,7 @@ Blocking findings (1 remaining):
 - LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88
 
 Already excepted (1):
-- LAYNE-a3f29c81b7e41d22 — excepted by @alice: "test credential"
+- LAYNE-a3f29c81b7e41d22 - excepted by @alice: "test credential"
 
 To approve remaining findings, post:
 /layne exception-approve LAYNE-b7e41d22a3f29c81 reason: <explanation>
@@ -81,8 +81,8 @@ To approve remaining findings, post:
 Found 2 issue(s): 0 critical, 2 high, 0 medium, 0 low.
 
 Excepted findings:
-- LAYNE-a3f29c81b7e41d22 [trufflehog/aws-key] src/config.js:42 — excepted by @alice: "test credential, will be rotated"
-- LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88 — excepted by @bob: "legacy code, tracked in JIRA-1234"
+- LAYNE-a3f29c81b7e41d22 [trufflehog/aws-key] src/config.js:42 - excepted by @alice: "test credential, will be rotated"
+- LAYNE-b7e41d22a3f29c81 [semgrep/eval] src/api.js:88 - excepted by @bob: "legacy code, tracked in JIRA-1234"
 
 All findings are still annotated below for reference.
 ```
@@ -109,7 +109,7 @@ Configure exception approvers in `config/layne.json`:
 
 ### Per-Repo Override
 
-Per-repo `exceptionApprovers` **replaces** the global configuration — it does not merge:
+Per-repo `exceptionApprovers` **replaces** the global configuration - it does not merge:
 
 ```json title="config/layne.json"
 {
@@ -170,7 +170,7 @@ When an exception is used, Layne can automatically add or remove labels on the P
 
 ## Notifications
 
-Notifications are **always sent** when an exception is used — even if the finding count didn't increase. This ensures visibility for the security team regardless of prior notification state.
+Notifications are **always sent** when an exception is used - even if the finding count didn't increase. This ensures visibility for the security team regardless of prior notification state.
 
 ## Security Considerations
 
@@ -179,18 +179,18 @@ Notifications are **always sent** when an exception is used — even if the find
 | Compromised approver account | Require 2FA on GitHub; follow org security policies |
 | Team membership escalation | Audit team membership regularly; use CODEOWNERS |
 | Config tampering | Protect `config/layne.json` with CODEOWNERS and branch protection |
-| Approval for changed code | Exceptions are invalidated when the flagged line changes — only unrelated commits (rebases, merges from the base branch) preserve approvals |
+| Approval for changed code | Exceptions are invalidated when the flagged line changes - only unrelated commits (rebases, merges from the base branch) preserve approvals |
 | Silent approvals | Notifications always fire for exceptions; reason is required and recorded |
-| Unauthorized command | Commands from non-approvers are silently ignored — no reply, no re-scan |
+| Unauthorized command | Commands from non-approvers are silently ignored - no reply, no re-scan |
 
 ## Audit Trail
 
 Every exception is recorded in:
 
-1. **GitHub Check Run summary** — lists each excepted finding ID, who approved it, and the stated reason
-2. **PR comment thread** — the approver's command and Layne's confirmation reply are visible to all reviewers
-3. **PR label** — `security-exception-used` label (if configured)
-4. **Chat notification** — sent to configured notifiers
+1. **GitHub Check Run summary** - lists each excepted finding ID, who approved it, and the stated reason
+2. **PR comment thread** - the approver's command and Layne's confirmation reply are visible to all reviewers
+3. **PR label** - `security-exception-used` label (if configured)
+4. **Chat notification** - sent to configured notifiers
 
 ## GitHub App Permissions
 
@@ -254,4 +254,4 @@ Check run: SUCCESS ⚠️
 5. Layne re-runs the scan; check run shows success with the exception audit trail
 6. Label `security-exception-used` is added to the PR
 7. Notification sent to Rocket.Chat/Slack
-8. Developer pushes a new commit — if the commit does not touch the flagged line, the exception survives and no re-approval is needed; if the flagged line is modified, the exception is invalidated and Bob must re-approve
+8. Developer pushes a new commit - if the commit does not touch the flagged line, the exception survives and no re-approval is needed; if the flagged line is modified, the exception is invalidated and Bob must re-approve

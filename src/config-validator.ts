@@ -8,13 +8,13 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'semgrep', 'trufflehog', 'claude', 'piAgent', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
-const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'semgrep', 'trufflehog', 'claude', 'spectre', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
-const CLAUDE_MODELS        = /^claude-/;
-const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const CLAUDE_MODELS  = /^claude-/;
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
 const REPO_KEY_RE        = /^[^/]+\/[^/]+$/;
 
 export type ValidateConfigResult =
@@ -61,6 +61,7 @@ function validateGlobal(block: Record<string, unknown>, ctx: string, errors: str
   if (block['labels']        !== undefined) validateLabels(block['labels'], `${ctx}.labels`, errors);
   if (block['trigger']       !== undefined) validateTrigger(block['trigger'], `${ctx}.trigger`, errors);
   if (block['comment']       !== undefined) validateComment(block['comment'], `${ctx}.comment`, errors);
+  if (block['depDoctor']          !== undefined) validateDepDoctor(block['depDoctor'], `${ctx}.depDoctor`, errors);
   if (block['exceptionApprovers'] !== undefined) validateExceptionApprovers(block['exceptionApprovers'], `${ctx}.exceptionApprovers`, errors);
 }
 
@@ -74,7 +75,8 @@ function validateRepo(block: Record<string, unknown>, ctx: string, errors: strin
   if (block['semgrep']       !== undefined) validateScanner(block['semgrep'],    `${ctx}.semgrep`,    errors);
   if (block['trufflehog']    !== undefined) validateScanner(block['trufflehog'], `${ctx}.trufflehog`, errors);
   if (block['claude']        !== undefined) validateClaude(block['claude'],       `${ctx}.claude`,     errors);
-  if (block['piAgent']       !== undefined) validatePiAgent(block['piAgent'],    `${ctx}.piAgent`,    errors);
+  if (block['spectre']       !== undefined) validateSpectre(block['spectre'],    `${ctx}.spectre`,    errors);
+  if (block['depDoctor']     !== undefined) validateDepDoctor(block['depDoctor'], `${ctx}.depDoctor`,  errors);
   if (block['notifications'] !== undefined) validateNotifications(block['notifications'], `${ctx}.notifications`, errors);
   if (block['labels']        !== undefined) validateLabels(block['labels'], `${ctx}.labels`, errors);
   if (block['trigger']       !== undefined) validateTrigger(block['trigger'], `${ctx}.trigger`, errors);
@@ -92,6 +94,10 @@ function validateScanMode(block: Record<string, unknown>, ctx: string, errors: s
   if (block['timeoutMinutes'] !== undefined) {
     if (!Number.isInteger(block['timeoutMinutes']) || (block['timeoutMinutes'] as number) < 1)
       errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
+  }
+  if (block['maxFileSizeKb'] !== undefined) {
+    if (!Number.isInteger(block['maxFileSizeKb']) || (block['maxFileSizeKb'] as number) < 1)
+      errors.push(`${ctx}.maxFileSizeKb: must be a positive integer (kilobytes)`);
   }
 }
 
@@ -142,7 +148,7 @@ function validateClaude(block: unknown, ctx: string, errors: string[]): void {
   }
 }
 
-function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
+function validateSpectre(block: unknown, ctx: string, errors: string[]): void {
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
   const b = block as Record<string, unknown>;
 
@@ -159,24 +165,70 @@ function validatePiAgent(block: unknown, ctx: string, errors: string[]): void {
       (b['provider'] === undefined || b['provider'] === 'anthropic') &&
       !CLAUDE_MODELS.test(b['model'])
     )
-      errors.push(`${ctx}.model: expected a Claude model ID (e.g. "claude-opus-4-6"), got "${b['model']}"`);
+      errors.push(`${ctx}.model: expected a Claude model ID (e.g. "claude-haiku-4-5-20251001"), got "${b['model']}"`);
   }
 
-  if (b['thinkingLevel'] !== undefined) {
-    if (typeof b['thinkingLevel'] !== 'string' || !VALID_THINKING_LEVELS.has(b['thinkingLevel']))
-      errors.push(`${ctx}.thinkingLevel: must be one of ${[...VALID_THINKING_LEVELS].join(', ')}`);
+  if (b['fileCap'] !== undefined) {
+    if (!Number.isInteger(b['fileCap']) || (b['fileCap'] as number) < 1)
+      errors.push(`${ctx}.fileCap: must be a positive integer`);
   }
 
-  if (b['timeoutMinutes'] !== undefined) {
-    if (!Number.isInteger(b['timeoutMinutes']) || (b['timeoutMinutes'] as number) < 1)
-      errors.push(`${ctx}.timeoutMinutes: must be a positive integer`);
+  if (b['secondaryFileCap'] !== undefined) {
+    if (!Number.isInteger(b['secondaryFileCap']) || (b['secondaryFileCap'] as number) < 0)
+      errors.push(`${ctx}.secondaryFileCap: must be a non-negative integer (use 0 to disable)`);
   }
 
-  if (b['followImports'] !== undefined && typeof b['followImports'] !== 'boolean')
-    errors.push(`${ctx}.followImports: must be a boolean`);
+  if (b['maxDiffLines'] !== undefined) {
+    if (!Number.isInteger(b['maxDiffLines']) || (b['maxDiffLines'] as number) < 1)
+      errors.push(`${ctx}.maxDiffLines: must be a positive integer`);
+  }
 
-  if (b['prompt'] !== undefined && b['prompt'] !== null && typeof b['prompt'] !== 'string')
-    errors.push(`${ctx}.prompt: must be a string or null`);
+  if (b['minSeverity'] !== undefined) {
+    if (!VALID_SEVERITIES.has(b['minSeverity'] as string))
+      errors.push(`${ctx}.minSeverity: must be one of ${[...VALID_SEVERITIES].join(', ')}`);
+  }
+
+  if (b['skipPaths'] !== undefined) {
+    if (!Array.isArray(b['skipPaths']))
+      errors.push(`${ctx}.skipPaths: must be an array`);
+    else if ((b['skipPaths'] as unknown[]).some(p => typeof p !== 'string'))
+      errors.push(`${ctx}.skipPaths: all items must be strings`);
+  }
+
+  if (b['skipExtensions'] !== undefined) {
+    if (!Array.isArray(b['skipExtensions']))
+      errors.push(`${ctx}.skipExtensions: must be an array`);
+    else if ((b['skipExtensions'] as unknown[]).some(e => typeof e !== 'string'))
+      errors.push(`${ctx}.skipExtensions: all items must be strings`);
+    else if ((b['skipExtensions'] as string[]).some(e => !e.startsWith('.')))
+      errors.push(`${ctx}.skipExtensions: all items must start with "." (e.g. ".min.js")`);
+  }
+
+  if (b['concurrency'] !== undefined) {
+    if (!Number.isInteger(b['concurrency']) || (b['concurrency'] as number) < 1)
+      errors.push(`${ctx}.concurrency: must be a positive integer`);
+  }
+
+  if (b['prompt'] !== undefined && b['prompt'] !== null) {
+    if (typeof b['prompt'] !== 'string' || (b['prompt'] as string).trim() === '')
+      errors.push(`${ctx}.prompt: must be a non-empty string or null`);
+  }
+
+  if (b['boostPatterns'] !== undefined) {
+    if (!Array.isArray(b['boostPatterns'])) {
+      errors.push(`${ctx}.boostPatterns: must be an array`);
+    } else {
+      for (const p of b['boostPatterns'] as unknown[]) {
+        if (typeof p !== 'string') {
+          errors.push(`${ctx}.boostPatterns: all items must be strings`);
+          break;
+        }
+        try { new RegExp(p); } catch {
+          errors.push(`${ctx}.boostPatterns: "${p}" is not a valid regular expression`);
+        }
+      }
+    }
+  }
 }
 
 function validateTrigger(block: unknown, ctx: string, errors: string[]): void {
@@ -257,6 +309,35 @@ function validateLabels(block: unknown, ctx: string, errors: string[]): void {
       errors.push(`${ctx}.${key}: must be an array`);
     else if ((b[key] as unknown[]).some(l => typeof l !== 'string'))
       errors.push(`${ctx}.${key}: all items must be strings`);
+  }
+}
+
+function validateDepDoctor(block: unknown, ctx: string, errors: string[]): void {
+  if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
+  const b = block as Record<string, unknown>;
+
+  if (b['enabled'] !== undefined && typeof b['enabled'] !== 'boolean')
+    errors.push(`${ctx}.enabled: must be a boolean`);
+
+  if (b['minCveSeverity'] !== undefined && !VALID_SEVERITIES.has(b['minCveSeverity'] as string))
+    errors.push(`${ctx}.minCveSeverity: must be one of ${[...VALID_SEVERITIES].join(', ')}`);
+
+  if (b['checkAbandoned'] !== undefined && typeof b['checkAbandoned'] !== 'boolean')
+    errors.push(`${ctx}.checkAbandoned: must be a boolean`);
+
+  if (b['abandonedDays'] !== undefined) {
+    if (!Number.isInteger(b['abandonedDays']) || (b['abandonedDays'] as number) < 1)
+      errors.push(`${ctx}.abandonedDays: must be a positive integer`);
+  }
+
+  if (b['checkDeprecated'] !== undefined && typeof b['checkDeprecated'] !== 'boolean')
+    errors.push(`${ctx}.checkDeprecated: must be a boolean`);
+
+  if (b['extraArgs'] !== undefined) {
+    if (!Array.isArray(b['extraArgs']))
+      errors.push(`${ctx}.extraArgs: must be an array`);
+    else if ((b['extraArgs'] as unknown[]).some(a => typeof a !== 'string'))
+      errors.push(`${ctx}.extraArgs: all items must be strings`);
   }
 }
 

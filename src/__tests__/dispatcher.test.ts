@@ -13,26 +13,32 @@ vi.mock('../adapters/claude.js', () => ({
   runClaude: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../adapters/pi-agent.js', () => ({
-  runPiAgent: vi.fn().mockResolvedValue([]),
+vi.mock('../adapters/spectre.js', () => ({
+  runSpectre: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('../adapters/dep-doctor.js', () => ({
+  runDepDoctor: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../config.js', () => ({
   DEFAULT_CONFIG: {
-    piAgent: { enabled: false, model: 'claude-opus-4-6', thinkingLevel: 'medium', timeoutMinutes: 3 },
+    spectre: { enabled: false, model: 'claude-haiku-4-5-20251001', fileCap: 20, minSeverity: 'high' },
   },
   loadScanConfig: vi.fn().mockResolvedValue({
     semgrep:    { enabled: true, extraArgs: ['--config', 'auto'] },
     trufflehog: { enabled: true, extraArgs: [] },
     claude:     { enabled: false, model: 'claude-haiku-4-5-20251001' },
-    piAgent:    { enabled: false, model: 'claude-opus-4-6', thinkingLevel: 'medium', timeoutMinutes: 3 },
+    spectre:    { enabled: false, model: 'claude-haiku-4-5-20251001', fileCap: 20, minSeverity: 'high' },
+    depDoctor:  { enabled: false, minCveSeverity: 'high', checkAbandoned: true, abandonedDays: 730, checkDeprecated: true, extraArgs: [] },
   }),
 }));
 
 const { runTrufflehog }  = await import('../adapters/trufflehog.js');
 const { runSemgrep }     = await import('../adapters/semgrep.js');
 const { runClaude }      = await import('../adapters/claude.js');
-const { runPiAgent }     = await import('../adapters/pi-agent.js');
+const { runSpectre }     = await import('../adapters/spectre.js');
+const { runDepDoctor }   = await import('../adapters/dep-doctor.js');
 const { loadScanConfig } = await import('../config.js');
 const { dispatch }       = await import('../dispatcher.js');
 
@@ -40,6 +46,7 @@ const BASE_SCAN_CONTEXT: ScanContext = {
   mode:              'changed_files',
   contextLines:      8,
   headSha:           'abc123',
+  baseSha:           'def456',
   repoWorkspacePath: '/tmp/ws',
   scanWorkspacePath: '/tmp/ws',
   scanFiles:         ['src/app.js', 'src/utils.js'],
@@ -57,12 +64,13 @@ const BASE = {
 describe('dispatch()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('calls all four adapters', async () => {
+  it('calls all five adapters', async () => {
     await dispatch(BASE);
     expect(runTrufflehog).toHaveBeenCalledOnce();
     expect(runSemgrep).toHaveBeenCalledOnce();
     expect(runClaude).toHaveBeenCalledOnce();
-    expect(runPiAgent).toHaveBeenCalledOnce();
+    expect(runSpectre).toHaveBeenCalledOnce();
+    expect(runDepDoctor).toHaveBeenCalledOnce();
   });
 
   it('passes scanFiles and scanWorkspacePath to the trufflehog adapter', async () => {
@@ -81,12 +89,12 @@ describe('dispatch()', () => {
     }));
   });
 
-  it('returns an empty array when both adapters return no findings', async () => {
+  it('returns an empty array when all adapters return no findings', async () => {
     const findings = await dispatch(BASE);
     expect(findings).toEqual([]);
   });
 
-  it('merges findings from both adapters into a single array', async () => {
+  it('merges findings from trufflehog and semgrep into a single array', async () => {
     const th = { file: 'a.js', line: 1, severity: 'high',   message: 'secret', ruleId: 'trufflehog/aws', tool: 'trufflehog' };
     const sg = { file: 'b.py', line: 5, severity: 'medium', message: 'eval',   ruleId: 'python/eval',    tool: 'semgrep' };
     (runTrufflehog as ReturnType<typeof vi.fn>).mockResolvedValueOnce([th]);
@@ -166,34 +174,36 @@ describe('dispatch()', () => {
   });
 
   it('merges findings from all four adapters', async () => {
-    const th = { file: 'a.js', line: 1, severity: 'high',   message: 'secret',   ruleId: 'trufflehog/aws',              tool: 'trufflehog' };
-    const sg = { file: 'b.py', line: 5, severity: 'medium', message: 'eval',     ruleId: 'python/eval',                 tool: 'semgrep' };
-    const cl = { file: 'c.sh', line: 3, severity: 'high',   message: 'backdoor', ruleId: 'claude/reverse-shell',        tool: 'claude' };
-    const pa = { file: 'd.js', line: 9, severity: 'high',   message: 'exfil',    ruleId: 'pi_agent/data-exfiltration',  tool: 'pi_agent' };
+    const th = { file: 'a.js', line: 1, severity: 'high',   message: 'secret',   ruleId: 'trufflehog/aws',                tool: 'trufflehog' };
+    const sg = { file: 'b.py', line: 5, severity: 'medium', message: 'eval',     ruleId: 'python/eval',                   tool: 'semgrep' };
+    const cl = { file: 'c.sh', line: 3, severity: 'high',   message: 'backdoor', ruleId: 'claude/reverse-shell',          tool: 'claude' };
+    const sp = { file: 'd.js', line: 9, severity: 'high',   message: 'exfil',    ruleId: 'credential-exfiltration', tool: 'spectre' };
     (runTrufflehog as ReturnType<typeof vi.fn>).mockResolvedValueOnce([th]);
     (runSemgrep as ReturnType<typeof vi.fn>).mockResolvedValueOnce([sg]);
     (runClaude as ReturnType<typeof vi.fn>).mockResolvedValueOnce([cl]);
-    (runPiAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce([pa]);
+    (runSpectre as ReturnType<typeof vi.fn>).mockResolvedValueOnce([sp]);
 
     const findings = await dispatch(BASE);
     expect(findings).toHaveLength(4);
     expect(findings).toContainEqual(th);
     expect(findings).toContainEqual(sg);
     expect(findings).toContainEqual(cl);
-    expect(findings).toContainEqual(pa);
+    expect(findings).toContainEqual(sp);
   });
 
-  it('passes toolConfig.piAgent to runPiAgent', async () => {
+  it('passes toolConfig.spectre, changedLineRanges, and promptFiles to runSpectre', async () => {
     await dispatch(BASE);
-    expect(runPiAgent).toHaveBeenCalledWith(expect.objectContaining({
-      toolConfig: { enabled: false, model: 'claude-opus-4-6', thinkingLevel: 'medium', timeoutMinutes: 3 },
+    expect(runSpectre).toHaveBeenCalledWith(expect.objectContaining({
+      toolConfig: { enabled: false, model: 'claude-haiku-4-5-20251001', fileCap: 20, minSeverity: 'high' },
+      changedLineRanges: new Map([['src/app.js', [{ start: 2, end: 4 }]]]),
+      promptFiles: [],
     }));
   });
 
-  it('passes headSha from scanContext to runPiAgent', async () => {
-    await dispatch(BASE);
-    expect(runPiAgent).toHaveBeenCalledWith(expect.objectContaining({
-      headSha: 'abc123',
-    }));
+  it('passes promptFiles from scan context to runSpectre in diff_only mode', async () => {
+    const promptFiles = [{ file: 'src/app.js', content: '@@ -1,3 +1,4 @@\n foo\n+bar' }];
+    const diffContext: ScanContext = { ...BASE_SCAN_CONTEXT, mode: 'diff_only', promptFiles };
+    await dispatch({ ...BASE, scanContext: diffContext });
+    expect(runSpectre).toHaveBeenCalledWith(expect.objectContaining({ promptFiles }));
   });
 });

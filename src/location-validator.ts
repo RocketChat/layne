@@ -56,7 +56,7 @@ export async function validateFindingLocations(
   const validated: ProcessedFinding[] = [];
 
   for (const finding of findings) {
-    if (finding.tool !== 'claude' && finding.tool !== 'pi_agent') {
+    if (finding.tool !== 'claude' && finding.tool !== 'spectre') {
       const startLine = finding.startLine ?? finding.line;
       const endLine = finding.endLine ?? finding.line;
       validated.push({
@@ -163,8 +163,8 @@ function resolveAnnotationLocation(
   info: FileInfo,
   evidenceLocation: EvidenceLocation,
 ): AnnotationLocation {
-  // Pi Agent: Always use evidence location only (Option 1 - strict evidence-only positioning)
-  if (finding.tool === 'pi_agent') {
+  // Spectre: Always use evidence location only (strict evidence-only positioning)
+  if (finding.tool === 'spectre') {
     return {
       startLine: evidenceLocation.startLine,
       endLine: evidenceLocation.endLine,

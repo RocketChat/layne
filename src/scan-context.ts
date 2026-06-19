@@ -22,6 +22,7 @@ export async function createScanContext({ workspacePath, changedFiles, baseSha, 
       mode,
       contextLines,
       headSha,
+      baseSha,
       repoWorkspacePath: workspacePath,
       scanWorkspacePath: workspacePath,
       scanFiles:         [],
@@ -35,6 +36,7 @@ export async function createScanContext({ workspacePath, changedFiles, baseSha, 
       mode,
       contextLines,
       headSha,
+      baseSha,
       repoWorkspacePath: workspacePath,
       scanWorkspacePath: workspacePath,
       scanFiles:         changedFiles,
@@ -86,6 +88,7 @@ export async function createScanContext({ workspacePath, changedFiles, baseSha, 
     mode,
     contextLines,
     headSha,
+    baseSha,
     repoWorkspacePath: workspacePath,
     scanWorkspacePath,
     scanFiles,
@@ -112,7 +115,7 @@ export function filterFindingsToChangedLines<T extends { file: string; line?: nu
 function git(args: string[]): Promise<string> {
   debug('git', `running: git ${args.join(' ')}`);
   return new Promise((resolve, reject) => {
-    execFile('git', args, (err, stdout, stderr) => {
+    execFile('git', args, { maxBuffer: 200 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (stderr) console.error(`[git] stderr: ${stderr.trim()}`);
       if (err) reject(err);
       else resolve(stdout ?? '');

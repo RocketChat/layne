@@ -10,8 +10,8 @@
 | `DOMAIN` | No* | (none) | Domain name for TLS and the Rocket.Chat logo URL (e.g. `layne.example.com`). Required by the Docker Compose TLS setup - not validated at runtime by the app. |
 | `LETSENCRYPT_EMAIL` | No* | (none) | Email for Let's Encrypt expiry notifications. Required by the Docker Compose TLS setup - not validated at runtime by the app. |
 | `PORT` | No | `3000` | Port for the webhook server |
-| `ANTHROPIC_API_KEY` | No | (none) | Required when any repo has `claude.enabled: true`, or when Pi Agent is configured with `provider: "anthropic"` |
-| *(provider key)* | No | (none) | Pi Agent provider credentials. The required variable depends on the configured `provider`. See [pi-ai documentation](https://github.com/badlogic/pi-mono/tree/main/packages/ai#environment-variables-nodejs-only) for the full list |
+| `ANTHROPIC_API_KEY` | No | (none) | Required when any repo has `claude.enabled: true`, or when Spectre is configured with `provider: "anthropic"` |
+| *(provider key)* | No | (none) | Spectre provider credentials. The required variable depends on the configured `provider`. See [Spectre - Provider credentials](scanners/spectre.md#provider-credentials) for the full list |
 | `DEBUG_MODE` | No | off | Set to `true` or `1` to enable verbose debug logging |
 | `METRICS_ENABLED` | No | `false` | Set to `true` to enable Prometheus metrics endpoints |
 | `METRICS_PORT` | No | `9091` | Port for the worker Prometheus metrics server |

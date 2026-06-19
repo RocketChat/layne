@@ -18,20 +18,28 @@ RUN npm run build
 FROM node:22-alpine AS runtime
 
 # Pin tool versions for reproducible builds. Update periodically and verify in staging.
-# trufflehog and semgrep are the only external binaries Layne shells out to.
+# trufflehog, semgrep, and osv-scanner are the external binaries Layne shells out to.
 RUN apk add --no-cache \
     git \
     python3 \
     py3-pip \
     wget \
+    ripgrep \
     && python3 -m pip install --break-system-packages semgrep==1.154.0 \
     && ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
     && wget -qO- "https://github.com/trufflesecurity/trufflehog/releases/download/v3.93.7/trufflehog_3.93.7_linux_${ARCH}.tar.gz" \
        | tar -xz -C /usr/local/bin trufflehog \
-    && chmod +x /usr/local/bin/trufflehog
+    && chmod +x /usr/local/bin/trufflehog \
+    && wget -qO /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.3.8/osv-scanner_linux_${ARCH}" \
+    && chmod +x /usr/local/bin/osv-scanner
 
 # Run as a non-root user so a compromised container cannot write to the host.
 RUN addgroup -S layne && adduser -S layne -G layne
+
+# Expose ripgrep at the path pi-coding-agent expects (~/.pi/agent/bin/rg).
+RUN mkdir -p /home/layne/.pi/agent/bin \
+    && ln -s /usr/bin/rg /home/layne/.pi/agent/bin/rg \
+    && chown -R layne:layne /home/layne/.pi
 
 WORKDIR /app
 

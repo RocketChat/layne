@@ -11,7 +11,7 @@ Layne only notifies when the finding count **increases** compared to the previou
 
 ## Exception Approval Notifications
 
-When an exception approval is used, Layne **always sends a notification** — even if the finding count didn't increase. This ensures visibility for the security team.
+When an exception approval is used, Layne **always sends a notification** - even if the finding count didn't increase. This ensures visibility for the security team.
 
 The notification includes the approver's username:
 
@@ -53,6 +53,8 @@ All notifiers support a `template` field with `{{variable}}` placeholders. The a
 | `{{medium}}` | Count of medium findings |
 | `{{low}}` | Count of low findings |
 | `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
+| `{{severitySummary}}` | Severity counts as a comma-separated string, e.g. `1 high, 2 medium` |
+| `{{findings}}` | Pre-rendered findings table (Severity, Scanner, File, Line, Rule, Description) - primarily useful in PR comment templates |
 | `{{approver}}` | GitHub username of the exception approver (only set when an exception is used) |
 
 Omit `template` to use the default message format for that notifier.

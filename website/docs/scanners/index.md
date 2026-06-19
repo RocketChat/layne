@@ -7,7 +7,8 @@ Layne can run several scanners on every pull request. They execute in parallel -
 | [Semgrep](semgrep.md) | Code vulnerabilities (SAST) | Locally - no data leaves your environment | Enabled |
 | [Trufflehog](trufflehog.md) | Secrets and credentials | Locally - no data leaves your environment | Enabled |
 | [Claude](claude.md) | Malicious intent / AI-powered SAST | Anthropic API - code is sent externally | Disabled |
-| [Pi Agent](pi-agent.md) | Malicious intent / AI-powered SAST | Different AI providers are supported | Disabled |
+| [Spectre](spectre.md) | Malicious intent (single LLM call per file) | External AI provider API - code is sent externally | Disabled |
+| [Dep Doctor](dep-doctor.md) | CVEs, abandoned and deprecated dependencies | Locally (OSV-Scanner) + npm/PyPI registry APIs | Disabled |
 
 Each scanner produces findings in the same shape, which Layne converts to GitHub Check Run annotations:
 
@@ -17,7 +18,7 @@ Each scanner produces findings in the same shape, which Layne converts to GitHub
 | `medium` | `warning` | No |
 | `low` / `info` | `notice` | No |
 
-All three scanners only scan the files changed in the PR - not the entire repository.
+All scanners only scan the files changed in the PR - not the entire repository.
 
 ---
 
@@ -26,6 +27,7 @@ Read on for scanner-specific details, configuration options, and examples:
 - [Semgrep](semgrep.md) - rule-based SAST, `extraArgs`, ruleset selection
 - [Trufflehog](trufflehog.md) - secret detection, batching, `--only-verified`
 - [Claude](claude.md) - malicious intent, AI-powered SAST
-- [Pi Agent](pi-agent.md) - malicious intent, AI-powered SAST
+- [Spectre](spectre.md) - malicious intent, single LLM call per file, multi-provider
+- [Dep Doctor](dep-doctor.md) - CVE detection, abandoned and deprecated package checks
 
 For how to suppress false positives, see [Finding Suppression](../finding-suppression.md).
