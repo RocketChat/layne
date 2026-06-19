@@ -25,6 +25,7 @@ const BASE = {
   repo:           'frontend',
   prNumber:       42,
   installationId: 1,
+  headSha:        'abc1234567890',
   commentConfig:  { enabled: true, template: null as string | null },
 };
 
@@ -68,13 +69,14 @@ describe('postComment()', () => {
       expect(body).toContain(COMMENT_MARKER);
     });
 
-    it('includes the finding count in the created body', async () => {
+    it('includes the finding count and caution alert in the created body', async () => {
       const { createComment } = makeOctokit({ existingComments: [] });
 
       await postComment({ ...BASE, findings: [FINDING_HIGH], conclusion: 'failure' });
 
       const { body } = createComment.mock.calls[0][0] as { body: string };
-      expect(body).toContain('1 finding(s)');
+      expect(body).toContain('View 1 finding(s)');
+      expect(body).toContain('[!CAUTION]');
     });
   });
 
@@ -149,14 +151,15 @@ describe('postComment()', () => {
       }));
     });
 
-    it('includes the comment marker and warning count in the body', async () => {
+    it('includes the comment marker and warning alert in the body', async () => {
       const { createComment } = makeOctokit({ existingComments: [] });
 
       await postComment({ ...BASE, findings: [FINDING_MEDIUM], conclusion: 'success' });
 
       const { body } = createComment.mock.calls[0][0] as { body: string };
       expect(body).toContain(COMMENT_MARKER);
-      expect(body).toContain('1 warning(s)');
+      expect(body).toContain('[!WARNING]');
+      expect(body).toContain('View 1 finding(s)');
     });
   });
 

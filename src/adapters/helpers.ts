@@ -1,6 +1,8 @@
 import { execFile } from 'child_process';
 import { debug } from '../debug.js';
 
+const MAX_STDOUT_BUFFER = 200 * 1024 * 1024; // 200 MB — prevents ENOBUF on large scan outputs
+
 /**
  * Resolves with stdout regardless of exit code so callers can parse
  * findings from a non-zero exit (e.g. Semgrep exits 1, Trufflehog exits 183).
@@ -9,7 +11,7 @@ import { debug } from '../debug.js';
 export function exec(cmd: string, args: string[], options: Record<string, unknown> = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     debug(cmd, `running: ${cmd} ${args.join(' ')}`);
-    execFile(cmd, args, { ...options, encoding: 'utf8' } as Parameters<typeof execFile>[2], (err, stdout, stderr) => {
+    execFile(cmd, args, { maxBuffer: MAX_STDOUT_BUFFER, ...options, encoding: 'utf8' } as Parameters<typeof execFile>[2], (err, stdout, stderr) => {
       const stdoutStr = stdout as string;
       const stderrStr = stderr as string;
       if (stderrStr) {

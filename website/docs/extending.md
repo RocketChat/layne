@@ -247,7 +247,7 @@ export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
   const url = resolveUrl(toolConfig.webhookUrl);
   if (!url) return;
 
-  const ctx  = buildContext(findings, owner, repo, prNumber);
+  const ctx  = buildContext(findings, owner, repo, prNumber /* , headSha */);
   const text = renderTemplate(toolConfig.template ?? DEFAULT_TEMPLATE, ctx);
 
   try {
@@ -275,7 +275,7 @@ export async function notify({ findings, owner, repo, prNumber, toolConfig }) {
 | `prNumber` | `number` | Pull request number |
 | `toolConfig` | `object` | The resolved config for this notifier from `config/layne.json` |
 
-Use `buildContext(findings, owner, repo, prNumber)` to build the template context and `renderTemplate(template, ctx)` to render `{{variable}}` placeholders. See [Template variables](notifiers.md#template-variables) for the full list.
+Use `buildContext(findings, owner, repo, prNumber)` to build the template context and `renderTemplate(template, ctx)` to render `{{variable}}` placeholders. An optional fifth argument `headSha` can be passed to generate linked file references in the `{{findings}}` table variable - notifiers that don't use `{{findings}}` can safely omit it. See [Template variables](notifiers.md#template-variables) for the full list.
 
 The `$ENV_VAR` resolution pattern keeps secrets out of `config/layne.json`. Any `webhookUrl` value starting with `$` is resolved from `process.env` at runtime. If the variable is not set, skip the notification and log a warning.
 

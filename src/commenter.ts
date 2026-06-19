@@ -1,22 +1,19 @@
 import { getInstallationOctokit } from './auth.js';
 import { buildContext, renderTemplate } from './notifiers/template.js';
-import type { ProcessedFinding, CommentConfig } from './types.js';
+import type { ProcessedFinding, CommentConfig, TemplateContext } from './types.js';
 
 const COMMENT_MARKER = '<!-- layne-security-scan -->';
 
-const DEFAULT_FAILURE_TEMPLATE = [
-  COMMENT_MARKER,
-  '## 🔴 Layne — {{total}} finding(s)',
-  '',
-  '{{summary}}',
-].join('\n');
+const CAUTION_ALERT =
+  '> [!CAUTION]\n' +
+  '> These are security findings reported by the security scanners configured in Layne. ' +
+  'Findings may contain false positives - review them and fix what makes sense. ' +
+  'If you believe a finding is not valid, contact the security team.';
 
-const DEFAULT_WARNING_TEMPLATE = [
-  COMMENT_MARKER,
-  '## ⚠️ Layne — {{total}} warning(s)',
-  '',
-  '{{summary}}',
-].join('\n');
+const WARNING_ALERT =
+  '> [!WARNING]\n' +
+  '> These are security findings reported by the security scanners configured in Layne. ' +
+  'Findings may contain false positives - review them and fix what makes sense.';
 
 const SUCCESS_BODY = [
   COMMENT_MARKER,
@@ -24,6 +21,23 @@ const SUCCESS_BODY = [
   '',
   'No security issues found on latest push.',
 ].join('\n');
+
+function buildDefaultComment(ctx: TemplateContext, alertBlock: string): string {
+  return [
+    COMMENT_MARKER,
+    '',
+    alertBlock,
+    '',
+    `**Layne found ${ctx.severitySummary} issue${ctx.total !== 1 ? 's' : ''} in this PR.**`,
+    '',
+    '<details>',
+    `<summary>View ${ctx.total} finding(s)</summary>`,
+    '',
+    String(ctx.findings),
+    '',
+    '</details>',
+  ].join('\n');
+}
 
 async function findExistingComment(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -42,12 +56,13 @@ async function findExistingComment(
  * Creates or updates a Layne security comment on a PR.
  * Never throws.
  */
-export async function postComment({ findings, owner, repo, prNumber, installationId, conclusion, commentConfig }: {
+export async function postComment({ findings, owner, repo, prNumber, installationId, headSha, conclusion, commentConfig }: {
   findings: ProcessedFinding[];
   owner: string;
   repo: string;
   prNumber: number;
   installationId: number;
+  headSha: string;
   conclusion: string;
   commentConfig: CommentConfig & { warningTemplate?: string | null };
 }): Promise<void> {
@@ -57,13 +72,17 @@ export async function postComment({ findings, owner, repo, prNumber, installatio
 
     let body: string;
     if (conclusion === 'failure') {
-      const ctx = buildContext(findings, owner, repo, prNumber);
-      body = renderTemplate(commentConfig.template ?? DEFAULT_FAILURE_TEMPLATE, ctx);
+      const ctx = buildContext(findings, owner, repo, prNumber, headSha);
+      body = commentConfig.template
+        ? renderTemplate(commentConfig.template, ctx)
+        : buildDefaultComment(ctx, CAUTION_ALERT);
     } else if (findings.length > 0) {
-      const ctx = buildContext(findings, owner, repo, prNumber);
-      body = renderTemplate(commentConfig.warningTemplate ?? DEFAULT_WARNING_TEMPLATE, ctx);
+      const ctx = buildContext(findings, owner, repo, prNumber, headSha);
+      body = commentConfig.warningTemplate
+        ? renderTemplate(commentConfig.warningTemplate, ctx)
+        : buildDefaultComment(ctx, WARNING_ALERT);
     } else {
-      if (!existingId) return; // no prior comment — nothing to resolve
+      if (!existingId) return;
       body = SUCCESS_BODY;
     }
 

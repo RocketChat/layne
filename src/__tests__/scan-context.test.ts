@@ -36,6 +36,7 @@ describe('createScanContext()', () => {
       mode: 'changed_files',
       contextLines: 3,
       headSha: 'head',
+      baseSha: 'base',
       repoWorkspacePath: workspacePath,
       scanWorkspacePath: workspacePath,
       scanFiles: ['src/app.js'],
@@ -53,7 +54,7 @@ describe('createScanContext()', () => {
       'utf8'
     );
 
-    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
       cb(null, '@@ -3,1 +3,1 @@\n', '');
     });
 
@@ -94,6 +95,7 @@ describe('createScanContext()', () => {
       mode: 'diff_only',
       contextLines: 8,
       headSha: 'head',
+      baseSha: 'base',
       repoWorkspacePath: '/tmp/ws',
       scanWorkspacePath: '/tmp/ws',
       scanFiles: [],

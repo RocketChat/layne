@@ -257,7 +257,7 @@ async function runScan(job: Job<JobData>, scanConfig: Awaited<ReturnType<typeof 
 
     const { comment: commentConfig } = scanConfig;
     if (commentConfig.enabled) {
-      await postComment({ findings: actionableFindings, owner, repo, prNumber, installationId, conclusion, commentConfig })
+      await postComment({ findings: actionableFindings, owner, repo, prNumber, installationId, headSha, conclusion, commentConfig })
         .catch(err => console.error('[worker] PR comment error:', (err as Error).message));
     }
 

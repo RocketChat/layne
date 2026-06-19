@@ -32,7 +32,8 @@ This means the comment only appears when there is something worth flagging, and 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `false` | Must be `true` to post PR comments for this repo |
-| `template` | string \| null | `null` | Custom Markdown template for the failure comment. Omit for the default format |
+| `template` | string \| null | `null` | Custom Markdown template for failure comments (blocking findings). Omit for the default format |
+| `warningTemplate` | string \| null | `null` | Custom Markdown template for warning comments (non-blocking findings). Omit for the default format |
 
 ### Global vs per-repo
 
@@ -53,13 +54,30 @@ To disable comments for a specific repo when they are globally enabled:
 
 ## Default format
 
-**When findings are present:**
+**When blocking findings are present (`template`):**
+
 ```markdown
 <!-- layne-security-scan -->
-## 🔴 Layne - 3 finding(s)
 
-Found 3 issue(s): 1 high, 2 medium.
+> [!CAUTION]
+> These are security findings reported by the security scanners configured in Layne. Findings may contain false positives - review them and fix what makes sense. If you believe a finding is not valid, contact the security team.
+
+**1 high, 2 medium**
+
+<details>
+<summary>View 3 finding(s)</summary>
+
+| Severity | Scanner | File | Line | Rule | Description |
+|---|---|---|---|---|---|
+| 🟠 High | semgrep | [`src/app.js`](https://github.com/acme/payments/blob/abc123/src/app.js#L42) | [42](...) | python.lang.security.eval | Dangerous use of eval |
+| 🟡 Medium | spectre | [`scripts/setup.sh`](https://github.com/acme/payments/blob/abc123/scripts/setup.sh#L7) | [7](...) | reverse-shell | Reverse shell detected |
+
+</details>
 ```
+
+**When non-blocking findings are present (`warningTemplate`):**
+
+Same structure but uses `[!WARNING]` instead of `[!CAUTION]`, and omits the contact-the-security-team sentence.
 
 **After a clean push:**
 ```markdown
@@ -72,7 +90,12 @@ No security issues found on latest push.
 
 ## Custom templates
 
-Set `template` to a Markdown string with `{{variable}}` placeholders. PR comments share the same template variables as notifiers - see [Notifiers - Template variables](notifiers.md#template-variables) for the full list.
+Set `template` (for blocking findings) or `warningTemplate` (for non-blocking findings) to a Markdown string with `{{variable}}` placeholders. The available variables are a superset of the notifier variables - see [Notifiers - Template variables](notifiers.md#template-variables) for the base list, plus these two that are specific to PR comments:
+
+| Placeholder | Value |
+|---|---|
+| `{{severitySummary}}` | Severity counts as a comma-separated string, e.g. `1 high, 2 medium` |
+| `{{findings}}` | Pre-rendered findings table (Severity, Scanner, File, Line, Rule, Description) with links to the exact line in the file |
 
 :::warning
 Any custom template must include `<!-- layne-security-scan -->` as its **first line**. Layne uses this marker to find and update the existing comment on re-pushes. Without it, every scan creates a new comment instead of updating the existing one.
@@ -84,7 +107,7 @@ Example:
   "acme/payments": {
     "comment": {
       "enabled": true,
-      "template": "<!-- layne-security-scan -->\n## Security findings for {{repo}} PR #{{prNumber}}\n\n{{summary}}\n\nSee the [Check Run]({{prUrl}}) for details."
+      "template": "<!-- layne-security-scan -->\n## Security findings for {{repo}} PR #{{prNumber}}\n\n{{severitySummary}}\n\n{{findings}}"
     }
   }
 }

@@ -126,7 +126,7 @@ When the Claude scanner is enabled, **the full content of every changed source f
 GitHub publishes its webhook source ranges at `https://api.github.com/meta` (the `.hooks` key).
 
 ```nginx
-# GitHub webhook source IPs — https://api.github.com/meta (.hooks)
+# GitHub webhook source IPs - https://api.github.com/meta (.hooks)
 # Refresh these if GitHub rotates their ranges.
 geo $is_github {
     default             0;

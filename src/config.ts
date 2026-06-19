@@ -2,7 +2,7 @@ import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { validateConfig } from './config-validator.js';
-import type { ScanConfig, SemgrepConfig, TrufflehogConfig, ClaudeConfig, PiAgentConfig, LabelConfig, TriggerConfig, CommentConfig, ExceptionApproversConfig } from './types.js';
+import type { ScanConfig, SemgrepConfig, TrufflehogConfig, ClaudeConfig, SpectreConfig, DepDoctorConfig, LabelConfig, TriggerConfig, CommentConfig, ExceptionApproversConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPOS_CONFIG_PATH = join(__dirname, '..', 'config', 'layne.json');
@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
   mode:           'changed_files' as const,
   contextLines:   8,
   timeoutMinutes: 15,
+  maxFileSizeKb:  1024,
   semgrep: Object.freeze({
     enabled:   true,
     extraArgs: ['--config', 'auto'],
@@ -25,14 +26,27 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     prompt:  null,   // custom system prompt (string); mutually exclusive with skill
     skill:   null,   // API Skill config: { id: "skill_01...", version: "latest" }
   } as ClaudeConfig),
-  piAgent: Object.freeze({
+  spectre: Object.freeze({
     enabled:        false,
-    model:          'claude-opus-4-6',
-    thinkingLevel:  'medium',
-    timeoutMinutes: 10,
-    followImports:  true,
+    model:          'claude-haiku-4-5-20251001',
+    fileCap:        20,
+    secondaryFileCap: 20,
+    maxDiffLines:   400,
+    minSeverity:    'high',
+    concurrency:    5,
+    skipPaths:      [],
+    skipExtensions: [],
     prompt:         null,
-  } as PiAgentConfig),  // note: no default provider — omitting provider disables Pi Agent even when enabled: true
+    boostPatterns:  [],
+  } as SpectreConfig),  // note: no default provider — omitting provider disables Spectre even when enabled: true
+  depDoctor: Object.freeze({
+    enabled:         false,
+    minCveSeverity:  'high',
+    checkAbandoned:  true,
+    abandonedDays:   730,
+    checkDeprecated: true,
+    extraArgs:       [],
+  } as DepDoctorConfig),
   labels:  Object.freeze({} as LabelConfig),
   trigger: Object.freeze({ on: 'pull_request' } as TriggerConfig),
   comment: Object.freeze({ enabled: false, template: null } as CommentConfig),
@@ -95,10 +109,12 @@ export async function loadScanConfig({ owner, repo }: { owner: string; repo: str
     mode:           repoOverrides.mode           ?? globalConfig.mode           ?? DEFAULT_CONFIG.mode,
     contextLines:   repoOverrides.contextLines   ?? globalConfig.contextLines   ?? DEFAULT_CONFIG.contextLines,
     timeoutMinutes: repoOverrides.timeoutMinutes ?? globalConfig.timeoutMinutes ?? DEFAULT_CONFIG.timeoutMinutes,
+    maxFileSizeKb:  repoOverrides.maxFileSizeKb  ?? globalConfig.maxFileSizeKb  ?? DEFAULT_CONFIG.maxFileSizeKb,
     semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
     trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
     claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
-    piAgent:       { ...DEFAULT_CONFIG.piAgent,    ...(repoOverrides.piAgent    ?? {}) },
+    spectre:       { ...DEFAULT_CONFIG.spectre,    ...(repoOverrides.spectre    ?? {}) },
+    depDoctor:     { ...DEFAULT_CONFIG.depDoctor,  ...(globalConfig.depDoctor  ?? {}), ...(repoOverrides.depDoctor  ?? {}) },
     notifications: { ...globalNotifications, ...repoNotifications },
     labels:        { ...globalLabels, ...repoLabels },
     trigger:       { ...DEFAULT_CONFIG.trigger, ...globalTrigger, ...(repoOverrides.trigger ?? {}) },

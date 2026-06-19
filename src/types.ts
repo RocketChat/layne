@@ -1,7 +1,7 @@
 // src/types.ts
 
 export type Severity        = 'critical' | 'high' | 'medium' | 'low' | 'info';
-export type Tool            = 'semgrep' | 'trufflehog' | 'claude' | 'pi_agent';
+export type Tool            = 'semgrep' | 'trufflehog' | 'claude' | 'spectre' | 'dep-doctor';
 export type AnnotationLevel = 'failure' | 'warning' | 'notice';
 export type ScanMode        = 'changed_files' | 'diff_only';
 export type TriggerOn       = 'pull_request' | 'workflow_run' | 'workflow_job';
@@ -38,8 +38,8 @@ export interface ClaudeRawFinding extends BaseFinding {
   anchorLine?: number;
 }
 
-export interface PiAgentRawFinding extends BaseFinding {
-  tool: 'pi_agent';
+export interface SpectreRawFinding extends BaseFinding {
+  tool: 'spectre';
   startLine?: number;
   endLine?: number;
   evidence?: string;
@@ -47,7 +47,11 @@ export interface PiAgentRawFinding extends BaseFinding {
   anchorLine?: number;
 }
 
-export type RawFinding = SemgrepFinding | TrufflehogFinding | ClaudeRawFinding | PiAgentRawFinding;
+export interface DepDoctorFinding extends BaseFinding {
+  tool: 'dep-doctor';
+}
+
+export type RawFinding = SemgrepFinding | TrufflehogFinding | ClaudeRawFinding | SpectreRawFinding | DepDoctorFinding;
 
 // ---- Post-pipeline finding (after location validation + exception stamping) ----
 
@@ -141,15 +145,28 @@ export interface ClaudeConfig {
   skill?: SkillConfig | null;
 }
 
-export interface PiAgentConfig {
+export interface SpectreConfig {
   enabled: boolean;
   provider?: string;
   model: string;
-  thinkingLevel?: string;
-  timeoutMinutes?: number;
+  fileCap?: number;
+  secondaryFileCap?: number;
+  maxDiffLines?: number;
+  minSeverity?: Severity;
+  skipPaths?: string[];
+  skipExtensions?: string[];
   concurrency?: number;
-  followImports?: boolean;
   prompt?: string | null;
+  boostPatterns?: string[];
+}
+
+export interface DepDoctorConfig {
+  enabled: boolean;
+  minCveSeverity: Severity;
+  checkAbandoned: boolean;
+  abandonedDays: number;
+  checkDeprecated: boolean;
+  extraArgs: string[];
 }
 
 export interface LabelConfig {
@@ -185,10 +202,12 @@ export interface ScanConfig {
   mode: ScanMode;
   contextLines: number;
   timeoutMinutes: number;
+  maxFileSizeKb: number;
   semgrep: SemgrepConfig;
   trufflehog: TrufflehogConfig;
   claude: ClaudeConfig;
-  piAgent: PiAgentConfig;
+  spectre: SpectreConfig;
+  depDoctor: DepDoctorConfig;
   labels: LabelConfig;
   trigger: TriggerConfig;
   comment: CommentConfig;
@@ -213,6 +232,7 @@ export interface ScanContext {
   mode: ScanMode;
   contextLines: number;
   headSha: string;
+  baseSha: string;
   repoWorkspacePath: string;
   scanWorkspacePath: string;
   scanFiles: string[];
@@ -232,6 +252,8 @@ export interface TemplateContext {
   medium: number;
   low: number;
   summary: string;
+  severitySummary: string;
+  findings: string;
   rules: string;
   [key: string]: string | number;
 }

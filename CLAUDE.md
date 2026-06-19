@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Layne is a self-hosted GitHub App that centralises security scanning across repositories. It receives `pull_request` webhooks, enqueues scan jobs via BullMQ/Redis, posts results back as GitHub Check Run annotations, manages PR labels, and sends chat notifications. It runs four scanners: Semgrep (SAST), Trufflehog (secret detection), Claude (malicious intent detection), and Pi Agent (agentic deep code review).
+Layne is a self-hosted GitHub App that centralises security scanning across repositories. It receives `pull_request` webhooks, enqueues scan jobs via BullMQ/Redis, posts results back as GitHub Check Run annotations, manages PR labels, and sends chat notifications. It runs five scanners: Semgrep (SAST), Trufflehog (secret detection), Claude (malicious intent detection), Spectre (multi-provider LLM scanning), and Dep Doctor (dependency health).
 
 ## Commands
 
@@ -52,7 +52,13 @@ Optional:
 ```
 REDIS_URL                # defaults to redis://localhost:6379
 PORT                     # defaults to 3000
-ANTHROPIC_API_KEY        # required when any repo has claude.enabled: true
+ANTHROPIC_API_KEY        # required when any repo has claude.enabled: true or spectre with anthropic provider
+OPENAI_API_KEY           # required when any repo uses spectre with openai provider
+GEMINI_API_KEY           # required when any repo uses spectre with google provider
+MISTRAL_API_KEY          # required when any repo uses spectre with mistral provider
+AWS_ACCESS_KEY_ID        # required when any repo uses spectre with bedrock provider
+AWS_SECRET_ACCESS_KEY    # required when any repo uses spectre with bedrock provider
+AWS_REGION               # required when any repo uses spectre with bedrock provider
 METRICS_ENABLED          # set to "true" to enable Prometheus metrics
 METRICS_PORT             # worker metrics server port, defaults to 9091
 DOMAIN                   # used for Rocket.Chat icon_url and TLS
@@ -108,8 +114,8 @@ Two separate Node.js processes:
 - `claude.ts` - calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `config/layne.json`):
   - **Prompt mode** (default): single `messages.create` call with a system prompt; use `claude.prompt` to override
   - **Skill mode**: uses the Anthropic [API Skills beta](https://platform.claude.com/docs/en/build-with-claude/skills-guide) - adds a `code_execution` tool + an uploaded skill to each batch call, enabling runtime decoding, registry lookups, and richer static analysis; set `claude.skill: { id, version }` to enable; handles `pause_turn` continuations automatically (up to 10 turns per batch)
-- `pi-agent.ts` - agentic scanner using `@mariozechner/pi-coding-agent`; **disabled by default**, opt in per repo; runs a full agent session with confined read-only file tools (read, grep, find, ls) so the model can follow imports across file boundaries; configurable thinking level (off/minimal/low/medium/high/xhigh), timeout (default 3 min), and AI provider; supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock; ruleId prefix `pi_agent/`; **note:** non-deterministic - the same code may produce different ruleIds or line numbers across runs, which can affect exception approval stability
-- `pi-agent-tools.ts` - workspace-confined file exploration tools for Pi Agent; `createConfinedTools()` wraps read/grep/find/ls with path validation to prevent the agent from escaping the workspace via `confinePath()`
+- `spectre.ts` - malicious intent scanner; **disabled by default**, opt in per repo; makes a single direct LLM call per file (no agent session, no tools, no import following); supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock via `@mariozechner/pi-ai`; tier-prioritised file cap (manifest/CI files always scanned first); configurable per-repo skip paths/extensions, file cap, diff line cap, min severity, and concurrency; ruleId prefix `spectre/`
+- `dep-doctor.ts` - dependency health scanner; **disabled by default**, opt in per repo; only fires when a lockfile is changed by the PR; diffs the changed lockfile against the merge-base version (via `git show`) to identify newly-added packages only; runs OSV-Scanner for CVE detection (ruleId `dep-doctor/<CVE-ID>`); checks npm/PyPI registry APIs for abandoned (ruleId `dep-doctor/abandoned`) and deprecated (ruleId `dep-doctor/deprecated`) packages; supported lockfiles: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `go.sum`; registry health checks for npm and PyPI only (Go skipped); errors caught and logged without failing the scan; requires `osv-scanner` in PATH
 - `helpers.ts` - shared adapter utility functions
 
 **Common finding shape:**

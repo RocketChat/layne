@@ -12,7 +12,7 @@ function git(args: string[]): Promise<string> {
   debug('git', `running: git ${redacted.join(' ')}`);
 
   return new Promise((resolve, reject) => {
-    execFile('git', args, (err, stdout, stderr) => {
+    execFile('git', args, { maxBuffer: 200 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (stderr) console.error(`[git] stderr: ${stderr.trim().replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')}`);
       if (err) reject(err);
       else resolve(stdout ?? '');

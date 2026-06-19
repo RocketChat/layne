@@ -78,6 +78,7 @@ vi.mock('../config.js', () => ({
     semgrep:            { enabled: true, extraArgs: ['--config', 'auto'] },
     trufflehog:         { enabled: true, extraArgs: [] },
     claude:             { enabled: false, model: 'claude-haiku-4-5-20251001' },
+    depDoctor:          { enabled: false, minCveSeverity: 'high', checkAbandoned: true, abandonedDays: 730, checkDeprecated: true, extraArgs: [] },
     notifications:      {},
     labels:             {},
     comment:            { enabled: false, template: null },
@@ -90,6 +91,7 @@ vi.mock('../scan-context.js', () => ({
     mode:              'changed_files',
     contextLines:      8,
     headSha:           'test-head-sha',
+    baseSha:           'merge-base-sha',
     repoWorkspacePath: '/tmp/layne-test-workspace',
     scanWorkspacePath: '/tmp/layne-test-workspace',
     scanFiles:         ['src/app.js'],
@@ -739,13 +741,14 @@ describe('processJob()', () => {
       await processJob(baseJob);
 
       expect(postComment).toHaveBeenCalledWith({
-        findings:      [finding],
-        owner:         'org',
-        repo:          'repo',
-        prNumber:      7,
+        findings:       [finding],
+        owner:          'org',
+        repo:           'repo',
+        prNumber:       7,
         installationId: 1,
-        conclusion:    'success',
-        commentConfig: { enabled: true, template: null },
+        headSha:        'abc123',
+        conclusion:     'success',
+        commentConfig:  { enabled: true, template: null },
       });
     });
 
@@ -760,13 +763,14 @@ describe('processJob()', () => {
       await processJob(baseJob);
 
       expect(postComment).toHaveBeenCalledWith({
-        findings:      [finding],
-        owner:         'org',
-        repo:          'repo',
-        prNumber:      7,
+        findings:       [finding],
+        owner:          'org',
+        repo:           'repo',
+        prNumber:       7,
         installationId: 1,
-        conclusion:    'success',
-        commentConfig: { enabled: true, template: null },
+        headSha:        'abc123',
+        conclusion:     'success',
+        commentConfig:  { enabled: true, template: null },
       });
     });
 
@@ -1052,7 +1056,7 @@ describe('processJob()', () => {
       (buildExceptionSummary as ReturnType<typeof vi.fn>).mockReturnValueOnce({ conclusion: 'success', summary: 'Excepted.' });
       (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('1'); // same count as current finding
 
-      const exceptionTriggeredJob = { ...baseJob, data: { ...baseJob.data, triggeredByException: true } };
+      const exceptionTriggeredJob = { ...baseJob, data: { ...baseJob.data, triggeredByException: true } } as unknown as Job<JobData, unknown, string>;
       await processJob(exceptionTriggeredJob);
 
       expect(notify).toHaveBeenCalledOnce();

@@ -282,10 +282,10 @@ describe('validateFindingLocations()', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // pi_agent findings
+  // spectre findings
   // ---------------------------------------------------------------------------
 
-  it('routes pi_agent findings through the evidence pipeline (strict evidence-only)', async () => {
+  it('routes spectre findings through the evidence pipeline (strict evidence-only)', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function createHealthCheck(options = {}) {\n' +
       '  const socket = net.connect(options.port ?? 4444, options.host ?? \'198.51.100.42\');\n' +
@@ -304,8 +304,8 @@ describe('validateFindingLocations()', () => {
       anchorLine: 1,
       severity: 'high',
       message: 'reverse shell',
-      ruleId: 'pi_agent/reverse-shell',
-      tool: 'pi_agent',
+      ruleId: 'reverse-shell',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/health.js'],
@@ -322,7 +322,7 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('always uses evidence location for pi_agent findings regardless of function size', async () => {
+  it('always uses evidence location for spectre findings regardless of function size', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function createHealthCheck(options = {}) {\n' +
       '  const socket = net.connect(options.port ?? 4444, options.host ?? \'198.51.100.42\');\n' +
@@ -342,8 +342,8 @@ describe('validateFindingLocations()', () => {
       evidence: 'return { socket, shell };',
       severity: 'high',
       message: 'reverse shell',
-      ruleId: 'pi_agent/reverse-shell',
-      tool: 'pi_agent',
+      ruleId: 'reverse-shell',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/health.js'],
@@ -358,7 +358,7 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('uses evidence location for pi_agent regardless of distance from declaration', async () => {
+  it('uses evidence location for spectre regardless of distance from declaration', async () => {
     const fillerLines = Array.from({ length: 55 }, (_, i) => `  // filler ${i + 1}\n`).join('');
     mockReadFile.mockResolvedValueOnce(
       'export function earlyDecl() {\n' +
@@ -373,8 +373,8 @@ describe('validateFindingLocations()', () => {
       evidence: 'eval(remoteCode);',
       severity: 'high',
       message: 'covert execution',
-      ruleId: 'pi_agent/covert-execution',
-      tool: 'pi_agent',
+      ruleId: 'covert-execution',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/health.js'],
@@ -388,7 +388,7 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('ignores anchorKind on pi_agent findings — always uses evidence location', async () => {
+  it('ignores anchorKind on spectre findings — always uses evidence location', async () => {
     mockReadFile.mockResolvedValueOnce(
       'export function exfilData() {\n' +
       '  const a = collectSecrets();\n' +
@@ -404,8 +404,8 @@ describe('validateFindingLocations()', () => {
       anchorKind: 'span',
       severity: 'high',
       message: 'credential exfiltration',
-      ruleId: 'pi_agent/credential-exfiltration',
-      tool: 'pi_agent',
+      ruleId: 'credential-exfiltration',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/health.js'],
@@ -419,16 +419,16 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('anchored-by-evidence');
   });
 
-  it('rejects pi_agent findings that omit evidence', async () => {
+  it('rejects spectre findings that omit evidence', async () => {
     mockReadFile.mockResolvedValueOnce('line1\nmalicious();\nline3\n');
 
     const [finding] = await validateFindingLocations([{
       file: 'src/health.js',
       severity: 'high',
       message: 'suspicious',
-      ruleId: 'pi_agent/reverse-shell',
+      ruleId: 'reverse-shell',
       line: 0,
-      tool: 'pi_agent',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/health.js'],
@@ -441,15 +441,15 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('missing-evidence');
   });
 
-  it('rejects pi_agent findings for files outside the changed file set', async () => {
+  it('rejects spectre findings for files outside the changed file set', async () => {
     const [finding] = await validateFindingLocations([{
       file: 'src/health.js',
       evidence: 'malicious();',
       severity: 'high',
       message: 'off diff',
-      ruleId: 'pi_agent/reverse-shell',
+      ruleId: 'reverse-shell',
       line: 0,
-      tool: 'pi_agent',
+      tool: 'spectre',
     }], {
       workspacePath: '/tmp/ws',
       changedFiles: ['src/other.js'],
