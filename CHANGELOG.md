@@ -1,5 +1,26 @@
 # layne
 
+## 2.0.0
+
+### Major Changes
+
+- [#90](https://github.com/RocketChat/layne/pull/90) [`c891508`](https://github.com/RocketChat/layne/commit/c8915081004704bded7d3226a89f8868e3109228) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Replace Pi Agent with Spectre and add Dep Doctor scanner.
+
+  - **Spectre** replaces Pi Agent as the multi-provider LLM malicious-intent scanner. It makes a single direct LLM call per file (no agent session) and supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock via `@mariozechner/pi-ai`. Configurable file cap, diff line cap, min severity, skip paths/extensions, and concurrency.
+  - **Dep Doctor** is a new dependency health scanner that fires when a lockfile changes. It detects newly-added packages with known CVEs (via OSV-Scanner), abandoned packages, and deprecated packages. Supports npm, PyPI, and Go lockfiles.
+  - PR comments now use GitHub alert blocks (`[!CAUTION]` / `[!WARNING]`) with a severity-sorted findings table linking directly to the affected file and line. The `{{findings}}` and `{{severitySummary}}` template variables are now available for custom templates.
+  - `Dockerfile` now installs `osv-scanner` alongside trufflehog and semgrep.
+
+### Minor Changes
+
+- [#59](https://github.com/RocketChat/layne/pull/59) [`53cdffc`](https://github.com/RocketChat/layne/commit/53cdffca67757d3827a5c42fb7d18599df4d819a) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds a new feature that allows Pi Agent to lazy fetch repo files
+
+- [#62](https://github.com/RocketChat/layne/pull/62) [`c3fa184`](https://github.com/RocketChat/layne/commit/c3fa1845e7ec77ca01faef2332212d74ff307fda) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Ensure that Pi Agent retries once if the run returns buggy results
+
+### Patch Changes
+
+- [#61](https://github.com/RocketChat/layne/pull/61) [`f92ecc6`](https://github.com/RocketChat/layne/commit/f92ecc6fa8dc409e943daed3eb254396fd4143f4) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Ensures that custom prompts can be used with Pi Agent
+
 ## 1.3.0
 
 ### Minor Changes
