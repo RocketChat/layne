@@ -221,6 +221,27 @@ describe('runClaude()', () => {
     expect(findings).toEqual([]);
   });
 
+  it('logs an error when stop_reason is max_tokens instead of silently dropping findings', async () => {
+  const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+  mockCreate.mockResolvedValueOnce({
+    stop_reason: 'max_tokens',
+    content: [],
+  });
+
+  await runClaude({
+    workspacePath: WORKSPACE,
+    changedFiles:  CHANGED_FILES,
+    toolConfig:    ENABLED_CONFIG,
+  });
+
+  expect(consoleSpy).toHaveBeenCalledWith(
+    expect.stringContaining('max_tokens'),
+  );
+  consoleSpy.mockRestore();
+});
+
+
   it('passes the configured model to the API', async () => {
     mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(cleanResponse());
