@@ -262,6 +262,7 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
   });
 
   const checkRunData = checkRun as { conclusion?: string } | null;
+  let scanEnqueued = false;
   if (checkRunData?.conclusion === 'failure') {
     const jobId = getJobId(repo.full_name, issueData.number, headSha);
     await enqueueScan({
@@ -276,16 +277,17 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
       jobId,
       action: 'issue_comment',
       triggeredByException: true,
-    }).catch(err => console.error(`[server] Failed to enqueue scan: ${(err as Error).message}`));
+    }).then(() => { scanEnqueued = true; }).catch(err => console.error(`[server] Failed to enqueue scan: ${(err as Error).message}`));
   }
 
   const idList = parsed.ids.join(', ');
+  const confirmationSuffix = scanEnqueued ? ' Re-running scan...' : '';
   await createPrComment({
     installationId: (installation as { id: number }).id,
     owner:          repo.owner.login,
     repo:           repo.name,
     prNumber:       issueData.number,
-    body:           `✅ Exception recorded for ${idList} by @${commenter}: "${parsed.reason}". Re-running scan...`,
+    body:           `✅ Exception recorded for ${idList} by @${commenter}: "${parsed.reason}".${confirmationSuffix}`,
   }).catch(err => console.error(`[server] Failed to post confirmation: ${(err as Error).message}`));
 
   return { status: 200, body: 'Accepted' };
