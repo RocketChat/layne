@@ -238,4 +238,29 @@ describe('runSemgrep()', () => {
     const jsonIdx = args.indexOf('--json');
     expect(jsonIdx).toBe(scanIdx + 1);
   });
+
+  describe('startLine / endLine from Semgrep end.line', () => {
+    it('sets startLine and endLine from start.line and end.line on a single-line finding', async () => {
+      stubStdout(semgrepOutput([SEMGREP_RESULT]));
+      const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
+      expect(f.startLine).toBe(10);
+      expect(f.endLine).toBe(10);
+    });
+
+    it('sets startLine and endLine from start.line and end.line on a multi-line finding', async () => {
+      const multiLine = { ...SEMGREP_RESULT, start: { line: 10, col: 1 }, end: { line: 14, col: 1 } };
+      stubStdout(semgrepOutput([multiLine]));
+      const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
+      expect(f.startLine).toBe(10);
+      expect(f.endLine).toBe(14);
+    });
+
+    it('falls back endLine to startLine when end is missing from Semgrep output', async () => {
+      const noEnd = { check_id: SEMGREP_RESULT.check_id, path: SEMGREP_RESULT.path, start: { line: 7 }, extra: SEMGREP_RESULT.extra };
+      stubStdout(semgrepOutput([noEnd]));
+      const [f] = await runSemgrep({ workspacePath: '/tmp/ws', changedFiles: CHANGED_FILES });
+      expect(f.startLine).toBe(7);
+      expect(f.endLine).toBe(7);
+    });
+  });
 });

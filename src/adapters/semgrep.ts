@@ -59,6 +59,7 @@ interface SemgrepRawResult {
   check_id: string;
   path: string;
   start?: { line: number };
+  end?: { line: number };
   extra?: { severity?: string; message?: string };
 }
 
@@ -69,12 +70,16 @@ const SEVERITY_MAP: Record<string, Severity> = {
 };
 
 function toFinding(result: SemgrepRawResult, workspacePath: string): SemgrepFinding {
+  const startLine = result.start?.line ?? 1;
+  const endLine   = result.end?.line ?? startLine;
   return {
-    file:     stripPrefix(result.path, workspacePath),
-    line:     result.start?.line ?? 1,
-    severity: SEVERITY_MAP[result.extra?.severity ?? ''] ?? 'low',
-    message:  result.extra?.message ?? 'Semgrep finding',
-    ruleId:   result.check_id,
-    tool:     'semgrep',
+    file:      stripPrefix(result.path, workspacePath),
+    line:      startLine,
+    startLine,
+    endLine,
+    severity:  SEVERITY_MAP[result.extra?.severity ?? ''] ?? 'low',
+    message:   result.extra?.message ?? 'Semgrep finding',
+    ruleId:    result.check_id,
+    tool:      'semgrep',
   };
 }
