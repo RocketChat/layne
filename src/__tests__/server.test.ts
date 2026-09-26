@@ -43,10 +43,10 @@ const { isReviewerAuthorized, parseExceptionCommand,
         storeExceptions }                                   = await import('../exception-approvals.js');
 const { app, verifySignature, processWebhookRequest }       = await import('../server.js');
 
-const PR_TRIGGER_CONFIG           = { trigger: { on: 'pull_request' } };
-const WORKFLOW_TRIGGER_CONFIG     = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'] } };
-const WORKFLOW_JOB_TRIGGER_CONFIG = { trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success'] } };
-const EXCEPTION_CONFIG            = { trigger: { on: 'pull_request' }, exceptionApprovers: { users: ['alice'], teams: [] } };
+const PR_TRIGGER_CONFIG           = { trigger: { on: 'pull_request', scanOnDraft: false } };
+const WORKFLOW_TRIGGER_CONFIG     = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'], scanOnDraft: false } };
+const WORKFLOW_JOB_TRIGGER_CONFIG = { trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success'], scanOnDraft: false } };
+const EXCEPTION_CONFIG            = { trigger: { on: 'pull_request', scanOnDraft: false }, exceptionApprovers: { users: ['alice'], teams: [] } };
 
 function sign(body: Buffer | string): string {
   return 'sha256=' + crypto
@@ -55,12 +55,13 @@ function sign(body: Buffer | string): string {
     .digest('hex');
 }
 
-function prPayload(action = 'opened'): string {
+function prPayload(action = 'opened', metadata: { draft?: boolean } = {}): string {
   return JSON.stringify({
     action,
     number: 42,
     pull_request: {
       number: 42,
+      draft: metadata.draft ?? false,
       head: { sha: 'abc123', ref: 'feature/login', repo: {} },
       base: { sha: 'def456', ref: 'main' },
       labels: [{ name: 'bug' }],
@@ -149,6 +150,7 @@ beforeEach(() => {
   (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'failure' });
   (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({
     state:  'open',
+    draft:  false,
     head:   { sha: 'abc123', ref: 'feature/login' },
     base:   { sha: 'def456', ref: 'main' },
     labels: [],
@@ -227,7 +229,7 @@ describe('processWebhookRequest()', () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
-  it.each(['opened', 'synchronize', 'reopened'])(
+  it.each(['opened', 'synchronize', 'reopened', 'ready_for_review'])(
     'accepts action "%s" only after the check run and queue job are created',
     async (action) => {
       const res = await processWebhookRequest(webhookRequest(prPayload(action)));
@@ -237,6 +239,37 @@ describe('processWebhookRequest()', () => {
       expect(scanQueue.add).toHaveBeenCalledOnce();
     }
   );
+
+  it.each(['opened', 'synchronize', 'reopened'])(
+    'ignores draft action "%s" by default',
+    async (action) => {
+      const res = await processWebhookRequest(webhookRequest(prPayload(action, { draft: true })));
+
+      expect(res).toEqual({ status: 200, body: 'Draft ignored' });
+      expect(createCheckRun).not.toHaveBeenCalled();
+      expect(scanQueue.add).not.toHaveBeenCalled();
+    }
+  );
+
+  it('scans drafts and ready_for_review events when scanOnDraft is enabled', async () => {
+    (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      trigger: { on: 'pull_request', scanOnDraft: true },
+    });
+
+    const draftRes = await processWebhookRequest(webhookRequest(prPayload('opened', { draft: true })));
+    expect(draftRes).toEqual({ status: 200, body: 'Accepted' });
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+
+    vi.clearAllMocks();
+    (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      trigger: { on: 'pull_request', scanOnDraft: true },
+    });
+
+    const readyRes = await processWebhookRequest(webhookRequest(prPayload('ready_for_review')));
+    expect(readyRes).toEqual({ status: 200, body: 'Accepted' });
+    expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
 
   it('does not resolve before both persistence steps succeed', async () => {
     const checkRun = deferred();
@@ -403,6 +436,20 @@ describe('workflow_run trigger — pull_request event', () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
+  it('ignores draft PRs and starts deferral when they become ready', async () => {
+    const draftRes = await processWebhookRequest(webhookRequest(prPayload('opened', { draft: true })));
+
+    expect(draftRes).toEqual({ status: 200, body: 'Draft ignored' });
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(skipCheckRun).not.toHaveBeenCalled();
+
+    const readyRes = await processWebhookRequest(webhookRequest(prPayload('ready_for_review')));
+
+    expect(readyRes).toEqual({ status: 200, body: 'Deferred' });
+    expect(redis.set).toHaveBeenCalledOnce();
+    expect(skipCheckRun).toHaveBeenCalledOnce();
+  });
+
   it('caches PR metadata in Redis with a 7-day TTL', async () => {
     await processWebhookRequest(webhookRequest(prPayload('opened')));
 
@@ -473,6 +520,28 @@ describe('workflow_run trigger — workflow_run event', () => {
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('does not enqueue when the live PR is a draft by default', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'open', draft: true });
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('enqueues a draft when scanOnDraft is enabled', async () => {
+    (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      trigger: { ...WORKFLOW_TRIGGER_CONFIG.trigger, scanOnDraft: true },
+    });
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'open', draft: true });
+
+    const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(scanQueue.add).toHaveBeenCalledOnce();
   });
 
@@ -665,6 +734,20 @@ describe('workflow_job trigger — pull_request event', () => {
     expect(createCheckRun).not.toHaveBeenCalled();
   });
 
+  it('ignores draft PRs and starts deferral when they become ready', async () => {
+    const draftRes = await processWebhookRequest(webhookRequest(prPayload('opened', { draft: true })));
+
+    expect(draftRes).toEqual({ status: 200, body: 'Draft ignored' });
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(skipCheckRun).not.toHaveBeenCalled();
+
+    const readyRes = await processWebhookRequest(webhookRequest(prPayload('ready_for_review')));
+
+    expect(readyRes).toEqual({ status: 200, body: 'Deferred' });
+    expect(redis.set).toHaveBeenCalledOnce();
+    expect(skipCheckRun).toHaveBeenCalledOnce();
+  });
+
   it('caches PR metadata in Redis with a 7-day TTL', async () => {
     await processWebhookRequest(webhookRequest(prPayload('opened')));
 
@@ -735,6 +818,28 @@ describe('workflow_job trigger — workflow_job event', () => {
 
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).toHaveBeenCalledOnce();
+    expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('does not enqueue when the live PR is a draft by default', async () => {
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'open', draft: true });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'PR not found' });
+    expect(createCheckRun).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('enqueues a draft when scanOnDraft is enabled', async () => {
+    (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue({
+      trigger: { ...WORKFLOW_JOB_TRIGGER_CONFIG.trigger, scanOnDraft: true },
+    });
+    (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'open', draft: true });
+
+    const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
+
+    expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(scanQueue.add).toHaveBeenCalledOnce();
   });
 

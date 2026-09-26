@@ -223,7 +223,7 @@ describe('loadScanConfig()', () => {
   it('returns the default pull_request trigger when no trigger is configured', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
     const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.trigger).toEqual({ on: 'pull_request' });
+    expect(config.trigger).toEqual({ on: 'pull_request', scanOnDraft: false });
   });
 
   it('returns a workflow_run trigger configured at the repo level', async () => {
@@ -233,7 +233,7 @@ describe('loadScanConfig()', () => {
       },
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
-    expect(config.trigger).toEqual({ on: 'workflow_run', workflow: 'Tests Done' });
+    expect(config.trigger).toEqual({ on: 'workflow_run', scanOnDraft: false, workflow: 'Tests Done' });
   });
 
   it('inherits $global trigger when the repo has no trigger block', async () => {
@@ -242,7 +242,7 @@ describe('loadScanConfig()', () => {
       'acme/frontend': { semgrep: { extraArgs: ['--config', 'auto'] } },
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
-    expect(config.trigger).toEqual({ on: 'workflow_run', workflow: 'CI' });
+    expect(config.trigger).toEqual({ on: 'workflow_run', scanOnDraft: false, workflow: 'CI' });
   });
 
   it('repo-level trigger overrides $global trigger', async () => {
@@ -262,6 +262,20 @@ describe('loadScanConfig()', () => {
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
     expect((config.trigger as { conclusions: string[] }).conclusions).toEqual(['success', 'failure']);
+  });
+
+  it('supports global scanOnDraft with a repository override', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global':       { trigger: { scanOnDraft: true } },
+      'acme/frontend': { trigger: { scanOnDraft: false } },
+      'acme/backend':  {},
+    }));
+
+    const frontend = await loadScanConfig({ owner: 'acme', repo: 'frontend' });
+    const backend = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+
+    expect(frontend.trigger).toEqual({ on: 'pull_request', scanOnDraft: false });
+    expect(backend.trigger).toEqual({ on: 'pull_request', scanOnDraft: true });
   });
 
   // --- comment ---

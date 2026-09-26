@@ -21,7 +21,7 @@ const app = express();
 const PORT = process.env.PORT ?? 3000;
 
 const ACCEPTED_RESPONSE          = { status: 200, body: 'Accepted' };
-const HANDLED_PR_ACTIONS         = new Set(['opened', 'synchronize', 'reopened']);
+const HANDLED_PR_ACTIONS         = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
 const WEBHOOK_LOCK_TTL_SECONDS   = 30;
 const PR_CACHE_TTL_SECONDS       = 7 * 24 * 60 * 60; // 7 days
 
@@ -131,7 +131,7 @@ async function handlePullRequest(payload: Record<string, unknown>): Promise<{ st
     repository: Record<string, unknown>;
     installation: Record<string, unknown>;
   };
-  const pr = pull_request as { number: number; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+  const pr = pull_request as { number: number; draft?: boolean; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
   const prNumber = pr.number;
   const headSha  = pr.head.sha;
   const repo = repository as { full_name: string; owner: { login: string }; name: string };
@@ -145,6 +145,11 @@ async function handlePullRequest(payload: Record<string, unknown>): Promise<{ st
   }
 
   const config = await loadScanConfig({ owner: repo.owner.login, repo: repo.name });
+
+  if (pr.draft === true && !config.trigger.scanOnDraft) {
+    debug('server', `ignoring draft PR: ${repo.full_name} PR #${prNumber}`);
+    return { status: 200, body: 'Draft ignored' };
+  }
 
   if (config.trigger.on === 'workflow_run' || config.trigger.on === 'workflow_job') {
     return deferPullRequest({ pull_request: pr, repository: repo, installation, config });
@@ -375,7 +380,12 @@ async function handleWorkflowRun(payload: Record<string, unknown>): Promise<{ st
   }
 
   const headSha  = run.head_sha;
-  const prData   = await resolvePrData({ installation, repository: repo, headSha });
+  const prData   = await resolvePrData({
+    installation,
+    repository: repo,
+    headSha,
+    scanOnDraft: config.trigger.scanOnDraft,
+  });
 
   if (!prData) {
     console.warn(`[server] workflow_run: could not find PR for ${repo.full_name}@${headSha} — scan skipped`);
@@ -438,7 +448,12 @@ async function handleWorkflowJob(payload: Record<string, unknown>): Promise<{ st
   }
 
   const headSha = job.head_sha;
-  const prData  = await resolvePrData({ installation, repository: repo, headSha });
+  const prData  = await resolvePrData({
+    installation,
+    repository: repo,
+    headSha,
+    scanOnDraft: config.trigger.scanOnDraft,
+  });
 
   if (!prData) {
     console.warn(`[server] workflow_job: could not find PR for ${repo.full_name}@${headSha} — scan skipped`);
@@ -461,10 +476,11 @@ async function handleWorkflowJob(payload: Record<string, unknown>): Promise<{ st
   });
 }
 
-async function resolvePrData({ installation, repository, headSha }: {
+async function resolvePrData({ installation, repository, headSha, scanOnDraft }: {
   installation: Record<string, unknown>;
   repository: { full_name: string; owner: { login: string }; name: string; clone_url?: string };
   headSha: string;
+  scanOnDraft: boolean;
 }): Promise<PRCacheData | null> {
   const cacheKey = prCacheKey(repository.full_name, headSha);
   const cached   = await redis.get(cacheKey);
@@ -516,8 +532,13 @@ async function resolvePrData({ installation, repository, headSha }: {
       repo:           repository.name,
       prNumber:       prData.prNumber,
     });
-    if ((livePr as { state?: string }).state !== 'open') {
+    const liveState = livePr as { state?: string; draft?: boolean };
+    if (liveState.state !== 'open') {
       debug('server', `PR #${prData.prNumber} is no longer open, skipping scan`);
+      return null;
+    }
+    if (liveState.draft === true && !scanOnDraft) {
+      debug('server', `PR #${prData.prNumber} is a draft, skipping scan`);
       return null;
     }
   } catch (err) {
