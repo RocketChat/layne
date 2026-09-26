@@ -48,7 +48,7 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     extraArgs:       [],
   } as DepDoctorConfig),
   labels:  Object.freeze({} as LabelConfig),
-  trigger: Object.freeze({ on: 'pull_request' } as TriggerConfig),
+  trigger: Object.freeze({ on: 'pull_request', scanOnDraft: false } as TriggerConfig),
   comment: Object.freeze({ enabled: false, template: null } as CommentConfig),
   exceptionApprovers: Object.freeze({ users: [], teams: [] } as ExceptionApproversConfig),
   notifications: Object.freeze({} as Record<string, never>),

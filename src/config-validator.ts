@@ -242,6 +242,9 @@ function validateTrigger(block: unknown, ctx: string, errors: string[]): void {
 
   const on = (b['on'] as string | undefined) ?? 'pull_request';
 
+  if (b['scanOnDraft'] !== undefined && typeof b['scanOnDraft'] !== 'boolean')
+    errors.push(`${ctx}.scanOnDraft: must be a boolean`);
+
   if (on === 'workflow_run') {
     if (b['workflow'] === undefined || b['workflow'] === null)
       errors.push(`${ctx}.workflow: required when "on" is "workflow_run"`);
