@@ -81,11 +81,24 @@ describe('dispatch()', () => {
     }));
   });
 
-  it('passes scanFiles and scanWorkspacePath to the semgrep adapter', async () => {
+  it('passes scanFiles and repoWorkspacePath to the semgrep adapter', async () => {
     await dispatch(BASE);
     expect(runSemgrep).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/tmp/ws',
       changedFiles:  ['src/app.js', 'src/utils.js'],
+    }));
+  });
+
+  it('preserves full-file Semgrep context while Trufflehog scans projected hunks', async () => {
+    await dispatch({
+      ...BASE,
+      scanContext: { ...BASE_SCAN_CONTEXT, mode: 'diff_only', scanWorkspacePath: '/tmp/ws/.layne/diff-only' },
+    });
+    expect(runSemgrep).toHaveBeenCalledWith(expect.objectContaining({
+      workspacePath: '/tmp/ws', changedFiles: BASE_SCAN_CONTEXT.scanFiles,
+    }));
+    expect(runTrufflehog).toHaveBeenCalledWith(expect.objectContaining({
+      workspacePath: '/tmp/ws/.layne/diff-only', changedFiles: BASE_SCAN_CONTEXT.scanFiles,
     }));
   });
 
