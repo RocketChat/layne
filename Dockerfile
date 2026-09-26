@@ -13,6 +13,7 @@ COPY package*.json ./
 RUN npm ci
 COPY tsconfig*.json ./
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 RUN npm run build
 
 FROM node:22-alpine AS runtime
@@ -25,7 +26,9 @@ RUN apk add --no-cache \
     py3-pip \
     wget \
     ripgrep \
+    && apk add --no-cache --virtual .build-deps gcc musl-dev python3-dev \
     && python3 -m pip install --break-system-packages semgrep==1.154.0 \
+    && apk del .build-deps \
     && ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
     && wget -qO- "https://github.com/trufflesecurity/trufflehog/releases/download/v3.93.7/trufflehog_3.93.7_linux_${ARCH}.tar.gz" \
        | tar -xz -C /usr/local/bin trufflehog \
