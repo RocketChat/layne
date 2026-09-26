@@ -1,7 +1,7 @@
 # Claude
 
 <div style={{textAlign: 'center'}}>
-  <img src="/img/claude.png" alt="Claude" width="160" />
+  <img src="/img/claude.svg" alt="Claude" width="160" />
 </div>
 
 The Claude scanner uses Anthropic's Claude LLM to analyze changed code. By default it looks for **malicious intent** - reverse shells, backdoors, obfuscated payloads, and supply-chain attacks. That is a starting point, not a fixed ruleset. Security engineers implementing Layne should adapt the system prompt (or build a skill) to reflect their threat model and use cases - the scanner is a framework for AI-assisted code review, not a prescribed detector.
