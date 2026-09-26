@@ -105,6 +105,7 @@ describe('dispatch()', () => {
       ...BASE,
       scanContext: {
         ...BASE_SCAN_CONTEXT,
+        mode: 'diff_only',
         repoWorkspacePath: '/tmp/ws',
         scanWorkspacePath: '/tmp/ws/.layne/diff-only',
       },

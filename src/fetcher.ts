@@ -62,13 +62,10 @@ export async function setupRepo({ token, cloneUrl, headSha, baseSha, workspacePa
     throw new Error('Refusing to authenticate non-GitHub clone URL');
   }
 
+  debug('fetcher', `setting up partial clone of ${parsedCloneUrl.href} at ${headSha}`);
   parsedCloneUrl.username = 'x-access-token';
   parsedCloneUrl.password = token;
   const authenticatedUrl = parsedCloneUrl.href;
-
-  parsedCloneUrl.username = '';
-  parsedCloneUrl.password = '';
-  debug('fetcher', `setting up partial clone of ${parsedCloneUrl.href} at ${headSha}`);
 
   await git(['init', workspacePath], signal);
   await git(['-C', workspacePath, 'remote', 'add', 'origin', authenticatedUrl], signal);

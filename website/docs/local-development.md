@@ -35,7 +35,7 @@ You need a GitHub App to receive webhooks and post Check Runs. Create a **separa
 |---|---|
 | **GitHub App name** | `Layne Dev` (any name - just avoid reusing the production name) |
 | **Homepage URL** | `http://localhost:3000` (required by GitHub, not actually used in dev) |
-| **Webhook URL** | Leave blank for now - you will fill this in during [Step 5](#step-5--receive-live-webhooks-via-smeeio) |
+| **Webhook URL** | Leave blank for now - you will fill this in during [Step 5](#step-5---receive-live-webhooks-via-smeeio-or-ngrok) |
 | **Webhook secret** | Run `openssl rand -hex 32` in your terminal, paste the output here, and **save it** - you will need it in your `.env` |
 
 ### 1.3 Set repository permissions
@@ -278,7 +278,7 @@ Open `fixtures/webhooks/pr_opened.json` and update:
 | `repository.owner.login` | `"your-org"` |
 | `repository.clone_url` | `"https://github.com/your-org/your-repo.git"` |
 | `pull_request.head.repo.clone_url` | same clone URL |
-| `installation.id` | your installation ID from [Step 2](#step-2--install-the-app-on-a-test-repository) |
+| `installation.id` | your installation ID from [Step 2](#step-2---install-the-app-on-a-test-repository) |
 | `pull_request.head.sha` | a real commit SHA from your test repo |
 | `pull_request.base.sha` | a real base commit SHA from your test repo |
 

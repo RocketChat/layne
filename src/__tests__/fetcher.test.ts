@@ -77,18 +77,18 @@ describe('setupRepo()', () => {
     'https://github.com:8443/org/repo.git',
     'https://user@github.com/org/repo.git',
     'https://:password@github.com/org/repo.git',
-    'file:///tmp/repo.git',
-    'ssh://git@github.com/org/repo.git',
     'https://github.com/org/repo.git?redirect=attacker.example',
     'https://github.com/org/repo.git#attacker.example',
-  ])('rejects a non-GitHub clone URL before spawning Git: %s', async cloneUrl => {
+    'file:///tmp/repo.git',
+    'ssh://git@github.com/org/repo.git',
+  ])('rejects unsafe clone destinations before spawning Git: %s', async cloneUrl => {
     await expect(setupRepo(defaultSetupArgs({ cloneUrl }))).rejects.toThrow(
       'Refusing to authenticate non-GitHub clone URL',
     );
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('rejects an invalid clone URL before spawning Git', async () => {
+  it('rejects invalid URLs without reflecting untrusted input', async () => {
     await expect(setupRepo(defaultSetupArgs({ cloneUrl: 'not a URL' }))).rejects.toThrow(
       'Refusing to authenticate invalid GitHub clone URL',
     );
