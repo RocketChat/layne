@@ -1,5 +1,40 @@
 # layne
 
+## 2.0.0
+
+### Major Changes
+
+- [#116](https://github.com/RocketChat/layne/pull/116) [`d09bca0`](https://github.com/RocketChat/layne/commit/d09bca04071c6d918e4035f2ecdee162427f6c23) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Introduce explicit scanner completion statuses, typed Git diffs, cooperative cancellation, startup configuration validation, and global scanner inheritance. Extend Dep Doctor lockfile health checks and baseline handling. Add bounded Spectre analysis with provider governors, validated response repair, opt-in signed caching, and opt-in AST routing. Replace count-based chat notifications with configurable final-state delivery. Add evidence-bound finding IDs and head-scoped bulk exception approvals.
+
+  Incomplete scans now normally finish neutral instead of passing; unscanned high-risk Spectre overflow fails the check. Notifications default to high/critical findings, internal errors, and approvals; coverage notifications require opt-in. Custom adapters must adopt the structured result contract. Node 22.19 or newer is required.
+
+- [#113](https://github.com/RocketChat/layne/pull/113) [`2460a1d`](https://github.com/RocketChat/layne/commit/2460a1d11b261b1231609f51077a4e2c872bb742) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Skip draft pull requests by default across direct and deferred triggers, and handle ready_for_review events. Set trigger.scanOnDraft to true globally or per repository to preserve scanning drafts. Deferred CI workflows should subscribe to ready_for_review.
+
+- [#90](https://github.com/RocketChat/layne/pull/90) [`c891508`](https://github.com/RocketChat/layne/commit/c8915081004704bded7d3226a89f8868e3109228) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Replace Pi Agent with Spectre and add Dep Doctor scanner.
+
+  - **Spectre** replaces Pi Agent as the multi-provider LLM malicious-intent scanner. It makes a single direct LLM call per file (no agent session) and supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock via `@mariozechner/pi-ai`. Configurable file cap, diff line cap, min severity, skip paths/extensions, and concurrency.
+  - **Dep Doctor** is a new dependency health scanner that fires when a lockfile changes. It detects newly-added packages with known CVEs (via OSV-Scanner), abandoned packages, and deprecated packages. Supports npm, PyPI, and Go lockfiles.
+  - PR comments now use GitHub alert blocks (`[!CAUTION]` / `[!WARNING]`) with a severity-sorted findings table linking directly to the affected file and line. The `{{findings}}` and `{{severitySummary}}` template variables are now available for custom templates.
+  - `Dockerfile` now installs `osv-scanner` alongside trufflehog and semgrep.
+
+### Minor Changes
+
+- [#59](https://github.com/RocketChat/layne/pull/59) [`53cdffc`](https://github.com/RocketChat/layne/commit/53cdffca67757d3827a5c42fb7d18599df4d819a) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Adds a new feature that allows Pi Agent to lazy fetch repo files
+
+- [#62](https://github.com/RocketChat/layne/pull/62) [`c3fa184`](https://github.com/RocketChat/layne/commit/c3fa1845e7ec77ca01faef2332212d74ff307fda) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Ensure that Pi Agent retries once if the run returns buggy results
+
+### Patch Changes
+
+- [#115](https://github.com/RocketChat/layne/pull/115) [`f9e5ae8`](https://github.com/RocketChat/layne/commit/f9e5ae8c19f486c0651338cfa870272c146f6252) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Upgrade documentation tooling to Docusaurus 3.10.0, refresh the Claude illustration, and repair local development links.
+
+- [#61](https://github.com/RocketChat/layne/pull/61) [`f92ecc6`](https://github.com/RocketChat/layne/commit/f92ecc6fa8dc409e943daed3eb254396fd4143f4) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Ensures that custom prompts can be used with Pi Agent
+
+- [#114](https://github.com/RocketChat/layne/pull/114) [`c91fa3f`](https://github.com/RocketChat/layne/commit/c91fa3fd6540ba7885b8e81539a3457958a665d9) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Install and remove temporary native build dependencies for Semgrep in Alpine images. Include build-time scripts required by the TypeScript build.
+
+- [#112](https://github.com/RocketChat/layne/pull/112) [`eafd3d3`](https://github.com/RocketChat/layne/commit/eafd3d3cd78ade956da34939d20d91f101f61a48) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Run Semgrep on complete selected HEAD files in diff-only mode, preserving syntax and enclosing context while filtering reported findings to changed lines.
+
+- [#111](https://github.com/RocketChat/layne/pull/111) [`496f508`](https://github.com/RocketChat/layne/commit/496f508e735eb23d07336a2286087aab24800dc9) Thanks [@julio-rocketchat](https://github.com/julio-rocketchat)! - Validate HTTPS github.com clone destinations before attaching installation credentials or invoking Git. Reject existing credentials, non-default ports, query strings, and fragments.
+
 ## 1.3.0
 
 ### Minor Changes
