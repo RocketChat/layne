@@ -42,7 +42,8 @@ export async function dispatch({ scanContext, changedLineRanges, owner, repo }: 
 
   const [trufflehogFindings, semgrepFindings, claudeFindings, spectreFindings, depDoctorFindings] = await Promise.all([
     runTrufflehog({ workspacePath: scanWorkspacePath, changedFiles: eligibleFiles, toolConfig: scanConfig.trufflehog }),
-    runSemgrep({ workspacePath: scanWorkspacePath, changedFiles: eligibleFiles, toolConfig: scanConfig.semgrep }),
+    // Semgrep needs complete syntax; the worker filters findings to changed lines.
+    runSemgrep({ workspacePath: repoWorkspacePath, changedFiles: eligibleFiles, toolConfig: scanConfig.semgrep }),
     runClaude({ workspacePath: repoWorkspacePath, changedFiles: eligibleFiles, changedLineRanges, promptFiles, toolConfig: scanConfig.claude }),
     runSpectre({ workspacePath: repoWorkspacePath, changedFiles: eligibleFiles, changedLineRanges, promptFiles, toolConfig: scanConfig.spectre }),
     runDepDoctor({ workspacePath: repoWorkspacePath, changedFiles: eligibleFiles, baseSha, toolConfig: scanConfig.depDoctor }),

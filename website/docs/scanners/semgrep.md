@@ -1,5 +1,9 @@
 # Semgrep
 
+In both scan modes, Semgrep parses complete selected HEAD files. In `diff_only`
+mode, Layne filters findings to exact changed lines after scanning. This preserves
+the syntax and enclosing context required by structural and dataflow rules.
+
 <div style={{textAlign: 'center'}}>
   <img src="/img/semgrep.png" alt="Semgrep" width="200" />
 </div>
