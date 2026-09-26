@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
+import type { JobData } from './types.js';
 
 // maxRetriesPerRequest: null is required by BullMQ — it disables the default
 // per-request retry limit so long-running jobs don't get killed mid-scan.
@@ -7,7 +8,7 @@ export const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379'
   maxRetriesPerRequest: null,
 });
 
-export const scanQueue = new Queue('scans', {
+export const scanQueue = new Queue<JobData>('scans', {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   connection: redis as any,
   defaultJobOptions: {

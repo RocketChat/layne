@@ -8,14 +8,16 @@
  * failure never affects the scan result or the GitHub Check Run.
  */
 
-import { buildContext, renderTemplate } from './template.js';
-import type { NotifyParams } from './types.js';
+import { buildNotificationContext, renderTemplate } from './template.js';
+import type { NotifierAttemptResult, NotifyParams } from './types.js';
 
-const DEFAULT_TEMPLATE =
-  '🦴 Good boy Layne dug up {{total}} finding(s) in <{{prUrl}}|{{repo}} #{{prNumber}}>';
-
-const EXCEPTION_TEMPLATE =
-  '⚠️ Exception approved by @{{approver}}\n🦴 Found {{total}} issue(s): {{critical}} critical, {{high}} high, {{medium}} medium, {{low}} low\n<{{prUrl}}|{{repo}} #{{prNumber}}>';
+const DEFAULT_TEMPLATES = {
+  findings: '🦴 Good boy Layne dug up {{notificationTotal}} finding(s) in <{{prUrl}}|{{repo}} #{{prNumber}}>',
+  'coverage-failure': '❗ Required scan coverage failed for <{{prUrl}}|{{repo}} #{{prNumber}}>: {{blockingCoverageSummary}}',
+  'incomplete-scan': '❗ Scan coverage was incomplete for <{{prUrl}}|{{repo}} #{{prNumber}}>: {{incompleteCoverageSummary}}',
+  'internal-error': '🚨 Layne encountered internal error {{errorId}} while scanning <{{prUrl}}|{{repo}} #{{prNumber}}>',
+  'exception-approval': 'ℹ️ Exception approved by @{{approver}} for <{{prUrl}}|{{repo}} #{{prNumber}}>',
+} as const;
 
 function resolveUrl(webhookUrl: string | undefined): string | null {
   if (!webhookUrl) return null;
@@ -33,33 +35,38 @@ function resolveUrl(webhookUrl: string | undefined): string | null {
   return webhookUrl;
 }
 
-export async function notify({ findings, owner, repo, prNumber, toolConfig, exceptionApproval }: NotifyParams): Promise<void> {
+export async function notify({ state, projection, owner, repo, prNumber, headSha, toolConfig, signal }: NotifyParams): Promise<NotifierAttemptResult> {
+  signal?.throwIfAborted();
   const url = resolveUrl(toolConfig.webhookUrl);
-  if (!url) return;
+  if (!url) return { delivered: false, retryable: false, reason: 'webhook-unavailable' };
 
-  let text: string;
-
-  if (exceptionApproval?.approved) {
-    const ctx = {
-      ...buildContext(findings, owner, repo, prNumber),
-      approver: exceptionApproval.approver ?? '',
-    };
-    text = renderTemplate(toolConfig.template ?? EXCEPTION_TEMPLATE, ctx);
-  } else {
-    const ctx = buildContext(findings, owner, repo, prNumber);
-    text = renderTemplate(toolConfig.template ?? DEFAULT_TEMPLATE, ctx);
-  }
+  const event = projection.primaryEvent!;
+  const ctx = buildNotificationContext(state, projection, owner, repo, prNumber, headSha);
+  const customTemplate = toolConfig.templates?.[event] ?? toolConfig.template;
+  const text = customTemplate
+    ? renderTemplate(customTemplate, ctx)
+    : projection.events.map(currentEvent => renderTemplate(DEFAULT_TEMPLATES[currentEvent], ctx)).join('\n');
 
   try {
+    signal?.throwIfAborted();
     const res = await fetch(url, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ text }),
+      ...(signal && { signal }),
     });
     if (!res.ok) {
       console.error(`[slack] notification failed: HTTP ${res.status}`);
+      return {
+        delivered: false,
+        retryable: res.status === 408 || res.status === 425 || res.status === 429 || res.status >= 500,
+        reason: `http-${res.status}`,
+      };
     }
+    return { delivered: true };
   } catch (err) {
+    signal?.throwIfAborted();
     console.error(`[slack] notification failed: ${(err as Error).message}`);
+    return { delivered: false, retryable: true, reason: 'network-error' };
   }
 }

@@ -18,9 +18,11 @@ vi.mock('../github.js', () => ({
 }));
 
 vi.mock('../exception-approvals.js', () => ({
-  isReviewerAuthorized:  vi.fn(),
-  parseExceptionCommand: vi.fn(),
-  storeExceptions:       vi.fn(),
+  isReviewerAuthorized:      vi.fn(),
+  loadBulkExceptionRequest:  vi.fn(),
+  parseExceptionCommand:     vi.fn(),
+  storeBulkExceptionRequest: vi.fn(),
+  storeExceptions:           vi.fn(),
 }));
 
 vi.mock('../config.js', () => ({
@@ -40,6 +42,7 @@ const { createCheckRun, completeCheckRun,
 const { loadScanConfig }                                    = await import('../config.js');
 const { webhooksTotal }                                     = await import('../metrics.js');
 const { isReviewerAuthorized, parseExceptionCommand,
+        loadBulkExceptionRequest, storeBulkExceptionRequest,
         storeExceptions }                                   = await import('../exception-approvals.js');
 const { app, verifySignature, processWebhookRequest }       = await import('../server.js');
 
@@ -47,6 +50,11 @@ const PR_TRIGGER_CONFIG           = { trigger: { on: 'pull_request', scanOnDraft
 const WORKFLOW_TRIGGER_CONFIG     = { trigger: { on: 'workflow_run', workflow: 'Tests Done', conclusions: ['success'], scanOnDraft: false } };
 const WORKFLOW_JOB_TRIGGER_CONFIG = { trigger: { on: 'workflow_job', job: 'security-scan', conclusions: ['success'], scanOnDraft: false } };
 const EXCEPTION_CONFIG            = { trigger: { on: 'pull_request', scanOnDraft: false }, exceptionApprovers: { users: ['alice'], teams: [] } };
+const OVERSIZED_PR_METADATA = {
+  title:  `title\u0000\n${'a'.repeat(505)}éignored`,
+  body:   `body\t${'🙂'.repeat(3000)}`,
+  author: `author\u007f\u009f${'é'.repeat(100)}`,
+};
 
 function sign(body: Buffer | string): string {
   return 'sha256=' + crypto
@@ -55,7 +63,12 @@ function sign(body: Buffer | string): string {
     .digest('hex');
 }
 
-function prPayload(action = 'opened', metadata: { draft?: boolean } = {}): string {
+function prPayload(action = 'opened', metadata: {
+  title?: string;
+  body?: string | null;
+  author?: string;
+  draft?: boolean;
+} = {}): string {
   return JSON.stringify({
     action,
     number: 42,
@@ -65,8 +78,12 @@ function prPayload(action = 'opened', metadata: { draft?: boolean } = {}): strin
       head: { sha: 'abc123', ref: 'feature/login', repo: {} },
       base: { sha: 'def456', ref: 'main' },
       labels: [{ name: 'bug' }],
+      title: metadata.title ?? 'Add login validation',
+      body: metadata.body === undefined ? 'Reject malformed login requests.' : metadata.body,
+      user: { login: metadata.author ?? 'octocat' },
     },
     repository: {
+      id:         123456,
       name:       'my-repo',
       full_name:  'org/my-repo',
       clone_url:  'https://github.com/org/my-repo.git',
@@ -90,6 +107,7 @@ function workflowRunPayload({
       head_sha:   headSha,
     },
     repository: {
+      id:         123456,
       name:       'my-repo',
       full_name:  'org/my-repo',
       clone_url:  'https://github.com/org/my-repo.git',
@@ -113,6 +131,7 @@ function workflowJobPayload({
       head_sha:   headSha,
     },
     repository: {
+      id:         123456,
       name:       'my-repo',
       full_name:  'org/my-repo',
       clone_url:  'https://github.com/org/my-repo.git',
@@ -131,6 +150,19 @@ function webhookRequest(body: string, { event = 'pull_request', signature }: { e
   };
 }
 
+function expectBoundedMetadata(metadata: Record<string, unknown>): void {
+  expect(metadata).toEqual({
+    trust:  'untrusted',
+    title:  `title ${'a'.repeat(505)}`,
+    body:   `body ${'🙂'.repeat(2046)}`,
+    author: `author ${'é'.repeat(60)}`,
+  });
+  expect(Buffer.byteLength(metadata['title'] as string, 'utf8')).toBe(511);
+  expect(Buffer.byteLength(metadata['body'] as string, 'utf8')).toBe(8189);
+  expect(Buffer.byteLength(metadata['author'] as string, 'utf8')).toBe(127);
+  expect(JSON.stringify(metadata)).not.toMatch(/[\u0000-\u001f\u007f-\u009f\ufffd]/);
+}
+
 function deferred() {
   let resolve!: (value: unknown) => void;
   let reject!: (reason?: unknown) => void;
@@ -147,23 +179,34 @@ beforeEach(() => {
   (completeCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   (skipCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   (findPullRequestBySha as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-  (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'failure' });
+  (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({
+    conclusion: 'failure', completed_at: '2026-01-01T00:00:00.000Z',
+  });
   (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({
     state:  'open',
     draft:  false,
     head:   { sha: 'abc123', ref: 'feature/login' },
     base:   { sha: 'def456', ref: 'main' },
     labels: [],
+    title:  'Add login validation',
+    body:   'Reject malformed login requests.',
+    user:   { login: 'octocat' },
   });
   (createPrComment as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   (isReviewerAuthorized as ReturnType<typeof vi.fn>).mockResolvedValue(false);
   (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue(null);
   (storeExceptions as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  (loadBulkExceptionRequest as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  (storeBulkExceptionRequest as ReturnType<typeof vi.fn>).mockResolvedValue('stored');
   (redis.set as ReturnType<typeof vi.fn>).mockResolvedValue('OK');
   (redis.eval as ReturnType<typeof vi.fn>).mockResolvedValue(1);
   (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-  (scanQueue.add as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'job-1' });
-  (scanQueue.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  (scanQueue.add as ReturnType<typeof vi.fn>).mockImplementation(async (_name: string, data: unknown) => ({ id: 'job-1', data }));
+  (scanQueue.getJob as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+    const addCalls = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls;
+    if (addCalls.length === 0) return null;
+    return { data: addCalls.at(-1)?.[1] };
+  });
   (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue(PR_TRIGGER_CONFIG);
 });
 
@@ -314,14 +357,31 @@ describe('processWebhookRequest()', () => {
       owner:          'org',
       repo:           'my-repo',
       headSha:        'abc123',
-      headRef:        'feature/login',
       baseSha:        'def456',
       baseRef:        'main',
       prNumber:       42,
-      labels:         ['bug'],
+      pullRequestMetadata: {
+        trust:  'untrusted',
+        title:  'Add login validation',
+        body:   'Reject malformed login requests.',
+        author: 'octocat',
+      },
       installationId: 987,
+      repositoryId:   123456,
       checkRunId:     99,
     });
+    expect(jobData).not.toHaveProperty('repoFullName');
+    expect(jobData).not.toHaveProperty('headRef');
+    expect(jobData).not.toHaveProperty('labels');
+  });
+
+  it('normalizes controls and truncates untrusted PR metadata at UTF-8 character boundaries', async () => {
+    await processWebhookRequest(webhookRequest(prPayload('opened', OVERSIZED_PR_METADATA)));
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, {
+      pullRequestMetadata: Record<string, unknown>;
+    }];
+    expectBoundedMetadata(jobData.pullRequestMetadata);
   });
 
   it('deduplicates jobs by repo + PR number + commit SHA', async () => {
@@ -463,13 +523,30 @@ describe('workflow_run trigger — pull_request event', () => {
     const cached = JSON.parse((redis.set as ReturnType<typeof vi.fn>).mock.calls[0][1] as string) as Record<string, unknown>;
     expect(cached).toMatchObject({
       prNumber:       42,
-      headSha:        'abc123',
-      headRef:        'feature/login',
       baseSha:        'def456',
       baseRef:        'main',
-      labels:         ['bug'],
       installationId: 987,
+      pullRequestMetadata: {
+        trust:  'untrusted',
+        title:  'Add login validation',
+        body:   'Reject malformed login requests.',
+        author: 'octocat',
+      },
     });
+    expect(cached).not.toHaveProperty('headSha');
+    expect(cached).not.toHaveProperty('headRef');
+    expect(cached).not.toHaveProperty('labels');
+    expect(cached).not.toHaveProperty('cloneUrl');
+    expect(cached).not.toHaveProperty('repoFullName');
+  });
+
+  it('bounds untrusted metadata before writing it to the deferred PR cache', async () => {
+    await processWebhookRequest(webhookRequest(prPayload('opened', OVERSIZED_PR_METADATA)));
+
+    const cached = JSON.parse((redis.set as ReturnType<typeof vi.fn>).mock.calls[0][1] as string) as {
+      pullRequestMetadata: Record<string, unknown>;
+    };
+    expectBoundedMetadata(cached.pullRequestMetadata);
   });
 
   it('creates a skipped check run with the configured workflow name in the summary', async () => {
@@ -500,14 +577,15 @@ describe('workflow_run trigger — pull_request event', () => {
 describe('workflow_run trigger — workflow_run event', () => {
   const CACHED_PR = JSON.stringify({
     prNumber:       42,
-    headSha:        'abc123',
-    headRef:        'feature/login',
     baseSha:        'def456',
     baseRef:        'main',
-    labels:         ['bug'],
     installationId: 987,
-    cloneUrl:       'https://github.com/org/my-repo.git',
-    repoFullName:   'org/my-repo',
+    pullRequestMetadata: {
+      trust:  'untrusted',
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      author: 'octocat',
+    },
   });
 
   beforeEach(() => {
@@ -553,11 +631,15 @@ describe('workflow_run trigger — workflow_run event', () => {
       owner:          'org',
       repo:           'my-repo',
       headSha:        'abc123',
-      headRef:        'feature/login',
       baseSha:        'def456',
       baseRef:        'main',
       prNumber:       42,
-      labels:         ['bug'],
+      pullRequestMetadata: {
+        trust:  'untrusted',
+        title:  'Add login validation',
+        body:   'Reject malformed login requests.',
+        author: 'octocat',
+      },
       installationId: 987,
       checkRunId:     99,
     });
@@ -645,6 +727,9 @@ describe('workflow_run trigger — workflow_run event', () => {
       head:   { ref: 'feature/login', sha: 'abc123' },
       base:   { ref: 'main',          sha: 'def456' },
       labels: [{ name: 'bug' }],
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      user:   { login: 'octocat' },
     });
 
     const res = await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
@@ -656,6 +741,60 @@ describe('workflow_run trigger — workflow_run event', () => {
       headSha: 'abc123',
     }));
     expect(scanQueue.add).toHaveBeenCalledOnce();
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, {
+      pullRequestMetadata: Record<string, unknown>;
+    }];
+    expect(jobData.pullRequestMetadata).toEqual({
+      trust:  'untrusted',
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      author: 'octocat',
+    });
+  });
+
+  it.each(['cache', 'api'] as const)('bounds and normalizes %s metadata consistently', async (source) => {
+    if (source === 'cache') {
+      (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(JSON.stringify({
+        prNumber:       42,
+        baseSha:        'def456',
+        baseRef:        'main',
+        installationId: 987,
+        pullRequestMetadata: { trust: 'trusted', ...OVERSIZED_PR_METADATA },
+      }));
+    } else {
+      (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+      (findPullRequestBySha as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        number: 42,
+        base:   { ref: 'main', sha: 'def456' },
+        title:  OVERSIZED_PR_METADATA.title,
+        body:   OVERSIZED_PR_METADATA.body,
+        user:   { login: OVERSIZED_PR_METADATA.author },
+      });
+    }
+
+    await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, {
+      pullRequestMetadata: Record<string, unknown>;
+    }];
+    expectBoundedMetadata(jobData.pullRequestMetadata);
+  });
+
+  it('adds empty untrusted metadata for a legacy cache entry', async () => {
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(JSON.stringify({
+      prNumber:       42,
+      baseSha:        'def456',
+      baseRef:        'main',
+      installationId: 987,
+    }));
+
+    await processWebhookRequest(webhookRequest(workflowRunPayload(), { event: 'workflow_run' }));
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, {
+      pullRequestMetadata: Record<string, unknown>;
+    }];
+    expect(jobData.pullRequestMetadata).toEqual({ trust: 'untrusted', title: '', body: '', author: '' });
   });
 
   it('returns "PR not found" when cache is cold and GitHub API throws', async () => {
@@ -698,6 +837,9 @@ describe('workflow_run trigger — workflow_run event', () => {
       head:   { ref: 'feature/login', sha: 'abc123' },
       base:   { ref: 'main',          sha: 'def456' },
       labels: [],
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      user:   { login: 'octocat' },
     });
     (getPullRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ state: 'closed' });
 
@@ -761,12 +903,15 @@ describe('workflow_job trigger — pull_request event', () => {
     const cached = JSON.parse((redis.set as ReturnType<typeof vi.fn>).mock.calls[0][1] as string) as Record<string, unknown>;
     expect(cached).toMatchObject({
       prNumber:       42,
-      headSha:        'abc123',
-      headRef:        'feature/login',
       baseSha:        'def456',
       baseRef:        'main',
-      labels:         ['bug'],
       installationId: 987,
+      pullRequestMetadata: {
+        trust:  'untrusted',
+        title:  'Add login validation',
+        body:   'Reject malformed login requests.',
+        author: 'octocat',
+      },
     });
   });
 
@@ -798,14 +943,15 @@ describe('workflow_job trigger — pull_request event', () => {
 describe('workflow_job trigger — workflow_job event', () => {
   const CACHED_PR = JSON.stringify({
     prNumber:       42,
-    headSha:        'abc123',
-    headRef:        'feature/login',
     baseSha:        'def456',
     baseRef:        'main',
-    labels:         ['bug'],
     installationId: 987,
-    cloneUrl:       'https://github.com/org/my-repo.git',
-    repoFullName:   'org/my-repo',
+    pullRequestMetadata: {
+      trust:  'untrusted',
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      author: 'octocat',
+    },
   });
 
   beforeEach(() => {
@@ -851,11 +997,15 @@ describe('workflow_job trigger — workflow_job event', () => {
       owner:          'org',
       repo:           'my-repo',
       headSha:        'abc123',
-      headRef:        'feature/login',
       baseSha:        'def456',
       baseRef:        'main',
       prNumber:       42,
-      labels:         ['bug'],
+      pullRequestMetadata: {
+        trust:  'untrusted',
+        title:  'Add login validation',
+        body:   'Reject malformed login requests.',
+        author: 'octocat',
+      },
       installationId: 987,
       checkRunId:     99,
     });
@@ -943,6 +1093,9 @@ describe('workflow_job trigger — workflow_job event', () => {
       head:   { ref: 'feature/login', sha: 'abc123' },
       base:   { ref: 'main',          sha: 'def456' },
       labels: [{ name: 'bug' }],
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      user:   { login: 'octocat' },
     });
 
     const res = await processWebhookRequest(webhookRequest(workflowJobPayload(), { event: 'workflow_job' }));
@@ -1007,10 +1160,13 @@ function commentPayload({
       pull_request: isPR ? { url: 'https://api.github.com/repos/org/my-repo/pulls/42' } : undefined,
     },
     comment: {
+      id: 9001,
+      created_at: '2026-01-01T00:01:00.000Z',
       body,
       user: { login: commenter },
     },
     repository: {
+      id:        123456,
       name:      'my-repo',
       full_name: 'org/my-repo',
       clone_url: 'https://github.com/org/my-repo.git',
@@ -1021,13 +1177,32 @@ function commentPayload({
 }
 
 describe('issue_comment handler', () => {
-  const PARSED_OK = { ids: ['LAYNE-a3f29c81'], reason: 'test cred' };
+  const PARSED_OK = { target: 'ids', ids: ['LAYNE-a3f29c81'], reason: 'test cred' };
 
   beforeEach(() => {
     (loadScanConfig as ReturnType<typeof vi.fn>).mockResolvedValue(EXCEPTION_CONFIG);
     (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue(PARSED_OK);
     (isReviewerAuthorized as ReturnType<typeof vi.fn>).mockResolvedValue(true);
-    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({ conclusion: 'failure' });
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValue({
+      conclusion: 'failure', completed_at: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it.each(['success', 'neutral', null])('does not promise a rescan for check conclusion %s', async conclusion => {
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValueOnce(conclusion === null ? null : { conclusion });
+    await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+    expect(scanQueue.add).not.toHaveBeenCalled();
+    expect(createPrComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.not.stringContaining('Re-running scan'),
+    }));
+  });
+
+  it('does not promise a rescan when queue admission fails', async () => {
+    (scanQueue.add as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('queue unavailable'));
+    await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+    expect(createPrComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.not.stringContaining('Re-running scan'),
+    }));
   });
 
   it('ignores non-created actions', async () => {
@@ -1085,7 +1260,7 @@ describe('issue_comment handler', () => {
   });
 
   it('posts an error comment and returns Invalid command when parseExceptionCommand returns an error', async () => {
-    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ ids: [], reason: null, error: 'No valid IDs found.' });
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'ids', ids: [], reason: null, error: 'No valid IDs found.' });
 
     const res = await processWebhookRequest(webhookRequest(
       commentPayload(), { event: 'issue_comment' }
@@ -1145,6 +1320,50 @@ describe('issue_comment handler', () => {
     expect(res).toEqual({ status: 200, body: 'Accepted' });
     expect(createCheckRun).toHaveBeenCalledOnce();
     expect(scanQueue.add).toHaveBeenCalledOnce();
+  });
+
+  it('enqueues PR metadata without including issue comments', async () => {
+    const commentOnlyText = '/layne exception-approve LAYNE-a3f29c81 reason: COMMENT_ONLY_SECRET';
+
+    await processWebhookRequest(webhookRequest(
+      commentPayload({ body: commentOnlyText }), { event: 'issue_comment' }
+    ));
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, Record<string, unknown>];
+    expect(jobData['pullRequestMetadata']).toEqual({
+      trust:  'untrusted',
+      title:  'Add login validation',
+      body:   'Reject malformed login requests.',
+      author: 'octocat',
+    });
+    expect(JSON.stringify(jobData)).not.toContain('COMMENT_ONLY_SECRET');
+  });
+
+  it('enqueues exception request identity without the approval reason', async () => {
+    await processWebhookRequest(webhookRequest(
+      commentPayload({ commenter: 'alice' }), { event: 'issue_comment' }
+    ));
+
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, Record<string, unknown>];
+    expect(jobData['exceptionApprovalRequest']).toEqual({
+      kind: 'ids',
+      findingIds: ['LAYNE-a3f29c81'],
+      approver: 'alice',
+    });
+  });
+
+  it('does not enqueue or claim success when exception storage fails', async () => {
+    (storeExceptions as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    const result = await processWebhookRequest(webhookRequest(
+      commentPayload(), { event: 'issue_comment' }
+    ));
+
+    expect(result).toEqual({ status: 200, body: 'Exception storage failed' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+    expect(createPrComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('could not record the exception'),
+    }));
   });
 
   it('does not enqueue when the latest check run did not fail', async () => {
@@ -1245,6 +1464,147 @@ describe('issue_comment handler', () => {
     expect(storeExceptions).toHaveBeenCalled();
     expect(createPrComment).toHaveBeenCalled();
     expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('stores and enqueues an opaque bulk approval request for a failed current-head scan', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({
+      target: 'all', ids: [], reason: 'accepted risk',
+    });
+
+    const result = await processWebhookRequest(webhookRequest(
+      commentPayload({ body: '/layne exception-approve all reason: accepted risk' }), { event: 'issue_comment' }
+    ));
+
+    expect(result).toEqual({ status: 200, body: 'Accepted' });
+    expect(storeExceptions).not.toHaveBeenCalled();
+    expect(storeBulkExceptionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'org', repo: 'my-repo', prNumber: 42, approvedHeadSha: 'abc123',
+      requestId: '9001', approver: 'alice', reason: 'accepted risk',
+    }));
+    const [, jobData] = (scanQueue.add as ReturnType<typeof vi.fn>).mock.calls[0] as [string, Record<string, unknown>];
+    expect(jobData['exceptionApprovalRequest']).toEqual({ kind: 'all', requestId: '9001' });
+    expect(JSON.stringify(jobData)).not.toContain('accepted risk');
+  });
+
+  it('rejects all when the current head has no failed scan', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ conclusion: 'success' });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 200, body: 'No failed scan' });
+    expect(storeBulkExceptionRequest).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects an all command created before the failed scan completed', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      conclusion: 'failure', completed_at: '2026-01-01T00:02:00.000Z',
+    });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 200, body: 'Command predates failed scan' });
+    expect(storeBulkExceptionRequest).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects an all command with the same timestamp as failed scan completion', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (getLatestCheckRun as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      conclusion: 'failure', completed_at: '2026-01-01T00:01:00.000Z',
+    });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 200, body: 'Command predates failed scan' });
+    expect(storeBulkExceptionRequest).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('rejects redelivery when the comment is already bound to another head', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (storeBulkExceptionRequest as ReturnType<typeof vi.fn>).mockResolvedValueOnce('head-mismatch');
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 200, body: 'Bulk request bound to another head' });
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not strand a second bulk request while another same-head scan is active', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (scanQueue.getJob as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { exceptionApprovalRequest: { kind: 'all', requestId: 'different-comment' } },
+      getState: vi.fn().mockResolvedValue('active'),
+      remove: vi.fn(),
+    });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 200, body: 'Scan already in progress' });
+    expect(storeBulkExceptionRequest).not.toHaveBeenCalled();
+    expect(scanQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not confirm a bulk request when queue admission fails', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (scanQueue.add as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Redis unavailable'));
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 500, body: 'Failed to accept webhook' });
+    expect(storeBulkExceptionRequest).toHaveBeenCalledOnce();
+    expect(createPrComment).not.toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Bulk exception request accepted'),
+    }));
+  });
+
+  it('does not confirm a bulk request that loses a queue job-ID race', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (scanQueue.getJob as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        data: { exceptionApprovalRequest: { kind: 'all', requestId: 'different-comment' } },
+      });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 500, body: 'Failed to accept webhook' });
+    expect(storeBulkExceptionRequest).toHaveBeenCalledOnce();
+    expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+      checkRunId: 99,
+      conclusion: 'failure',
+    }));
+    expect(createPrComment).not.toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Bulk exception request accepted'),
+    }));
+  });
+
+  it('does not orphan a check run when the same bulk request loses a queue job-ID race', async () => {
+    (parseExceptionCommand as ReturnType<typeof vi.fn>).mockReturnValue({ target: 'all', ids: [], reason: 'accepted risk' });
+    (scanQueue.getJob as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        data: {
+          checkRunId: 88,
+          exceptionApprovalRequest: { kind: 'all', requestId: '9001' },
+        },
+      });
+
+    const result = await processWebhookRequest(webhookRequest(commentPayload(), { event: 'issue_comment' }));
+
+    expect(result).toEqual({ status: 500, body: 'Failed to accept webhook' });
+    expect(completeCheckRun).toHaveBeenCalledWith(expect.objectContaining({
+      checkRunId: 99,
+      conclusion: 'failure',
+    }));
+    expect(createPrComment).not.toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Bulk exception request accepted'),
+    }));
   });
 
   it('does not store exceptions or enqueue scan when PR is already merged', async () => {

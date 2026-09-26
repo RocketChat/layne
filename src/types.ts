@@ -7,6 +7,7 @@ export type ScanMode        = 'changed_files' | 'diff_only';
 export type TriggerOn       = 'pull_request' | 'workflow_run' | 'workflow_job';
 export type AnchorKind      = 'line' | 'declaration' | 'span';
 export type EvidenceStatus  = 'unique' | 'ambiguous' | 'not-found' | 'missing';
+export type NotificationEvent = 'findings' | 'coverage-failure' | 'incomplete-scan' | 'internal-error' | 'exception-approval';
 
 // ---- Raw adapter output (discriminated union by tool) ----
 
@@ -42,6 +43,9 @@ export interface SpectreRawFinding extends BaseFinding {
   tool: 'spectre';
   startLine?: number;
   endLine?: number;
+  /** Optional provider hints retained separately from Layne's validated location. */
+  reportedStartLine?: number;
+  reportedEndLine?: number;
   evidence?: string;
   anchorKind?: AnchorKind;
   anchorLine?: number;
@@ -53,12 +57,30 @@ export interface DepDoctorFinding extends BaseFinding {
 
 export type RawFinding = SemgrepFinding | TrufflehogFinding | ClaudeRawFinding | SpectreRawFinding | DepDoctorFinding;
 
+export type AdapterOutcome = 'complete' | 'incomplete' | 'disabled';
+
+export interface AdapterStatus {
+  outcome: AdapterOutcome;
+  /** Stable reason code. Raw scanner and provider errors belong in logs only. */
+  reason?: string;
+}
+
+export interface AdapterResult<
+  Finding extends RawFinding = RawFinding,
+  Status extends AdapterStatus = AdapterStatus,
+> {
+  findings: Finding[];
+  status: Status;
+}
+
 // ---- Post-pipeline finding (after location validation + exception stamping) ----
 
 export interface ProcessedFinding extends BaseFinding {
   tool: Tool;
   startLine?: number;
   endLine?: number;
+  reportedStartLine?: number;
+  reportedEndLine?: number;
   suppressionLine?: number;
   locationValidated?: boolean;
   annotationEligible?: boolean;
@@ -86,32 +108,40 @@ export interface Annotation {
   message: string;
 }
 
+/** User-controlled PR context. Treat every field as untrusted data, never instructions. */
+export interface PullRequestMetadata {
+  trust: 'untrusted';
+  title: string;
+  body: string;
+  author: string;
+}
+
 export interface JobData {
   installationId: number;
+  /** Immutable GitHub repository ID. Older queued jobs may not contain it. */
+  repositoryId?: number;
   owner: string;
   repo: string;
-  repoFullName: string;
   cloneUrl: string;
   headSha: string;
-  headRef: string;
   baseSha: string;
   baseRef: string;
   prNumber: number;
-  labels: string[];
+  pullRequestMetadata: PullRequestMetadata;
   checkRunId: number;
   triggeredByException?: boolean;
+  exceptionApprovalRequest?:
+    | { kind?: 'ids'; findingIds: string[]; approver: string }
+    | { kind: 'all'; requestId: string };
 }
 
 export interface PRCacheData {
+  repositoryId?: number;
   prNumber: number;
-  headSha: string;
-  headRef: string;
   baseSha: string;
   baseRef: string;
-  labels: string[];
   installationId: number;
-  cloneUrl: string;
-  repoFullName: string;
+  pullRequestMetadata: PullRequestMetadata;
 }
 
 export interface ExceptionData {
@@ -119,6 +149,12 @@ export interface ExceptionData {
   reason: string;
   timestamp: string;
   approvedHeadSha: string;
+}
+
+export interface BulkExceptionRequest extends ExceptionData {
+  requestId: string;
+  state: 'pending' | 'materialized';
+  findingIds: string[];
 }
 
 // ---- Scan config types ----
@@ -145,6 +181,13 @@ export interface ClaudeConfig {
   skill?: SkillConfig | null;
 }
 
+export interface SpectreAstSignalsConfig {
+  mode: 'off' | 'shadow' | 'enabled';
+  maxFiles: number;
+  maxTotalBytes: number;
+  timeoutSeconds: number;
+}
+
 export interface SpectreConfig {
   enabled: boolean;
   provider?: string;
@@ -158,6 +201,93 @@ export interface SpectreConfig {
   concurrency?: number;
   prompt?: string | null;
   boostPatterns?: string[];
+  /** Maximum UTF-8 bytes sent for one file/hunk prompt. */
+  maxInputBytes?: number;
+  /** Maximum generated tokens accepted from the provider. */
+  maxOutputTokens?: number;
+  /** Per-provider-call deadline, in seconds. */
+  requestTimeoutSeconds?: number;
+  /** Maximum chunks sent for any one selected file. */
+  maxCallsPerFile?: number;
+  /** Maximum provider calls spent on one pull request. */
+  maxCallsPerPullRequest?: number;
+  /** Additional targeted calls allowed to repair invalid output or ungrounded evidence. */
+  maxRepairCallsPerPullRequest?: number;
+  cache?: SpectreCacheConfig;
+  astSignals: SpectreAstSignalsConfig;
+}
+
+export interface SpectreCacheConfig {
+  enabled: boolean;
+  positiveTtlSeconds: number;
+  negativeTtlSeconds: number;
+}
+
+/** Trusted worker-owned scope for PR-local Spectre cache entries. */
+export interface SpectreCacheContext {
+  installationId: number;
+  repositoryId: number;
+  prNumber: number;
+  /** Actual merge base used to construct the scan diff. */
+  baseSha: string;
+}
+
+export type SpectreOutcome = AdapterOutcome;
+
+export interface SpectreScanStatus extends AdapterStatus {
+  outcome: SpectreOutcome;
+  selected: number;
+  scanned: number;
+  skipped: number;
+  oversized: number;
+  capped: number;
+  truncated: number;
+  failed: number;
+  invalidResponses: number;
+  cancelled: number;
+  rateLimited: number;
+  concurrencyLimited: number;
+  circuitOpen: number;
+  /** Provider findings discarded by evidence, path, or changed-line validation. */
+  rejectedFindings: number;
+  /** Targeted output/evidence repair calls attempted. */
+  repairAttempts?: number;
+  /** Invalid chunk responses recovered by a targeted retry. */
+  repairedResponses?: number;
+  /** Rejected findings recovered with exact changed-line evidence. */
+  repairedFindings?: number;
+  /** Total chunks produced before per-file and pull-request call caps. */
+  plannedChunks?: number;
+  /** Chunks for which provider execution was attempted. */
+  attemptedChunks?: number;
+  /** Chunks that received a completely valid provider response. */
+  completedChunks?: number;
+  /** Planned chunks omitted by a call cap. */
+  cappedChunks?: number;
+  /** Hunks that required explicit continuation chunks. */
+  truncatedHunks?: number;
+  /** Related file groups that could not be analyzed in one bounded request. */
+  contextGaps?: number;
+  /** Risk-scored files omitted after primary and secondary selection filled their caps. */
+  highRiskCapped?: number;
+  /** Bounded details for the highest-scoring omitted files. */
+  highRiskCappedFiles?: Array<{ file: string; score: number; signals: string[] }>;
+  reason?: string;
+}
+
+export type SpectreScanResult = AdapterResult<SpectreRawFinding, SpectreScanStatus>;
+
+export interface AdapterStatuses {
+  semgrep: AdapterStatus;
+  trufflehog: AdapterStatus;
+  claude: AdapterStatus;
+  spectre: SpectreScanStatus;
+  'dep-doctor': AdapterStatus;
+}
+
+export interface DispatchResult {
+  findings: RawFinding[];
+  statuses: AdapterStatuses;
 }
 
 export interface DepDoctorConfig {
@@ -172,6 +302,8 @@ export interface DepDoctorConfig {
 export interface LabelConfig {
   onFailure?: string[];
   onSuccess?: string[];
+  onIncomplete?: string[];
+  removeOnIncomplete?: string[];
 }
 
 export interface TriggerConfig {
@@ -197,6 +329,9 @@ export interface NotifierConfig {
   enabled: boolean;
   webhookUrl?: string;
   template?: string;
+  templates?: Partial<Record<NotificationEvent, string>>;
+  notifyOn?: NotificationEvent[];
+  minFindingSeverity?: Severity;
 }
 
 export interface ScanConfig {
@@ -204,6 +339,7 @@ export interface ScanConfig {
   contextLines: number;
   timeoutMinutes: number;
   maxFileSizeKb: number;
+  maxLockfileSizeKb: number;
   semgrep: SemgrepConfig;
   trufflehog: TrufflehogConfig;
   claude: ClaudeConfig;
@@ -219,6 +355,78 @@ export interface ScanConfig {
 // ---- Runtime types ----
 
 export type LineRange = { start: number; end: number };
+
+export type GitChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'type_changed';
+export type GitObjectKind = 'absent' | 'regular' | 'symlink' | 'submodule' | 'other';
+
+export interface GitChange {
+  status: GitChangeStatus;
+  oldPath: string | null;
+  newPath: string | null;
+  oldMode: string;
+  newMode: string;
+  oldOid: string;
+  newOid: string;
+  oldKind: GitObjectKind;
+  newKind: GitObjectKind;
+  similarity?: number;
+}
+
+export interface UnifiedDiffContextLine {
+  type: 'context';
+  content: string;
+  oldLine: number;
+  newLine: number;
+  noNewlineAtEnd?: true;
+}
+
+export interface UnifiedDiffAdditionLine {
+  type: 'addition';
+  content: string;
+  oldLine: null;
+  newLine: number;
+  noNewlineAtEnd?: true;
+}
+
+export interface UnifiedDiffDeletionLine {
+  type: 'deletion';
+  content: string;
+  oldLine: number;
+  newLine: null;
+  noNewlineAtEnd?: true;
+}
+
+export type UnifiedDiffLine = UnifiedDiffContextLine | UnifiedDiffAdditionLine | UnifiedDiffDeletionLine;
+
+export interface UnifiedDiffHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  section: string;
+  lines: UnifiedDiffLine[];
+}
+
+export interface UnifiedDiffFile {
+  change: GitChange;
+  hunks: UnifiedDiffHunk[];
+}
+
+export interface UnifiedDiff {
+  files: UnifiedDiffFile[];
+}
+
+export interface GitChangePreparationIssue {
+  change: GitChange;
+  disposition: 'not_applicable' | 'unsupported' | 'unavailable';
+  reason: 'deleted' | 'head-symlink' | 'head-submodule' | 'head-other' | 'checkout-unavailable';
+}
+
+export interface PreparedGitChanges {
+  changes: GitChange[];
+  files: string[];
+  issues: GitChangePreparationIssue[];
+}
 
 /**
  * Changed line ranges as returned by fetcher.getChangedLineRanges.
@@ -236,9 +444,17 @@ export interface ScanContext {
   baseSha: string;
   repoWorkspacePath: string;
   scanWorkspacePath: string;
+  /** Prepared regular files from HEAD, independent of scan mode projections. */
+  sourceFiles: string[];
   scanFiles: string[];
   promptFiles: Array<{ file: string; content: string }>;
   changedLineRanges: LineRangesByFile;
+  /** Canonical base-to-head diff used by malicious-intent analysis. */
+  unifiedDiff?: UnifiedDiff;
+  /** Changes represented only by rename/mode metadata, with no textual hunk. */
+  metadataOnlyChanges?: number;
+  /** Content changes Git could not project as textual hunks. */
+  unprojectableChanges?: number;
 }
 
 export interface TemplateContext {
@@ -252,6 +468,7 @@ export interface TemplateContext {
   high: number;
   medium: number;
   low: number;
+  info: number;
   summary: string;
   severitySummary: string;
   findings: string;
@@ -260,6 +477,7 @@ export interface TemplateContext {
 }
 
 export interface ParsedCommand {
+  target: 'ids' | 'all';
   ids: string[];
   reason: string | null;
   error?: string;

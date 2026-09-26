@@ -57,7 +57,7 @@ Layne ships with five built-in scanners. You can enable, disable, or configure e
 | [Semgrep](https://semgrep.dev) | SAST - bugs, vulnerabilities, insecure patterns | Runs `semgrep scan --config auto` by default; fully configurable via `extraArgs` |
 | [Trufflehog](https://github.com/trufflesecurity/trufflehog) | Secrets, API keys and credentials | Runs `trufflehog filesystem`; use `--only-verified` to reduce noise |
 | [Claude](https://www.anthropic.com) | Malicious intent, backdoors, obfuscated payloads, supply-chain attacks | Disabled by default; opt in per repo; requires `ANTHROPIC_API_KEY` |
-| Spectre | Malicious intent via single LLM call per file | Disabled by default; opt in per repo; supports Anthropic, OpenAI, Google, Mistral, Bedrock |
+| Spectre | Malicious intent from bounded typed PR diffs | Disabled by default; whole-PR analysis when small and hunk chunks otherwise; supports Anthropic, OpenAI, Google, Mistral, Bedrock |
 | Dep Doctor | CVEs, abandoned and deprecated dependencies | Disabled by default; opt in per repo; requires `osv-scanner` in PATH |
 
 You can also add your own scanners. See [Extending Layne](website/docs/extending.md).

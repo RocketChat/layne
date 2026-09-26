@@ -7,17 +7,17 @@ const mockStat     = vi.fn().mockResolvedValue({ isFile: () => true });
 const mockExecFile = vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, '', ''));
 
 vi.mock('fs/promises', () => ({
+  lstat:    mockStat,
   mkdtemp:  mockMkdtemp,
   realpath: mockRealpath,
   rm:       mockRm,
-  stat:     mockStat,
 }));
 
 vi.mock('child_process', () => ({
   execFile: mockExecFile,
 }));
 
-const { createWorkspace, setupRepo, getChangedFiles, getChangedLineRanges, checkoutFiles, cleanupWorkspace, fetchCommit } = await import('../fetcher.js');
+const { createWorkspace, setupRepo, getChangedFiles, getGitChanges, getChangedLineRanges, getUnifiedDiff, checkoutFiles, checkoutGitChanges, cleanupWorkspace, fetchCommit } = await import('../fetcher.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,18 +77,18 @@ describe('setupRepo()', () => {
     'https://github.com:8443/org/repo.git',
     'https://user@github.com/org/repo.git',
     'https://:password@github.com/org/repo.git',
-    'https://github.com/org/repo.git?redirect=attacker.example',
-    'https://github.com/org/repo.git#attacker.example',
     'file:///tmp/repo.git',
     'ssh://git@github.com/org/repo.git',
-  ])('rejects unsafe clone destinations before spawning Git: %s', async cloneUrl => {
+    'https://github.com/org/repo.git?redirect=attacker.example',
+    'https://github.com/org/repo.git#attacker.example',
+  ])('rejects a non-GitHub clone URL before spawning Git: %s', async cloneUrl => {
     await expect(setupRepo(defaultSetupArgs({ cloneUrl }))).rejects.toThrow(
       'Refusing to authenticate non-GitHub clone URL',
     );
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('rejects invalid URLs without reflecting untrusted input', async () => {
+  it('rejects an invalid clone URL before spawning Git', async () => {
     await expect(setupRepo(defaultSetupArgs({ cloneUrl: 'not a URL' }))).rejects.toThrow(
       'Refusing to authenticate invalid GitHub clone URL',
     );
@@ -144,6 +144,21 @@ describe('setupRepo()', () => {
       cb(new Error('Repository not found'), '', '')
     );
     await expect(setupRepo(defaultSetupArgs())).rejects.toThrow('Repository not found');
+  });
+
+  it('passes the signal to every Git child process', async () => {
+    const signal = new AbortController().signal;
+    await setupRepo(defaultSetupArgs({ signal }));
+    for (const call of mockExecFile.mock.calls) {
+      expect(call[2]).toEqual(expect.objectContaining({ signal }));
+    }
+  });
+
+  it('does not spawn Git when already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled'));
+    await expect(setupRepo(defaultSetupArgs({ signal: controller.signal }))).rejects.toThrow('cancelled');
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 });
 
@@ -207,6 +222,51 @@ describe('getChangedFiles()', () => {
     );
     const files = await getChangedFiles({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
     expect(files).toEqual(['src/ok.js']);
+  });
+});
+
+describe('getGitChanges()', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('preserves rename paths, similarity, object IDs, and modes', async () => {
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+      cb(null, ':100644 100755 aaaaaaa bbbbbbb R097\0src/old name.js\0src/new name.js\0', '')
+    );
+
+    const changes = await getGitChanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
+
+    expect(changes).toEqual([expect.objectContaining({
+      status: 'renamed', oldPath: 'src/old name.js', newPath: 'src/new name.js',
+      oldKind: 'regular', newKind: 'regular', similarity: 97,
+      oldOid: 'aaaaaaa', newOid: 'bbbbbbb',
+    })]);
+    expect(mockExecFile.mock.calls[0][1]).toEqual(expect.arrayContaining(['--raw', '-z', '--no-abbrev', '--find-renames']));
+  });
+
+  it('classifies deletions, symlinks, submodules, and type changes', async () => {
+    const raw = [
+      ':100644 000000 aaaaaaa 0000000 D\0deleted.js\0',
+      ':000000 120000 0000000 bbbbbbb A\0link\0',
+      ':000000 160000 0000000 ccccccc A\0vendor/lib\0',
+      ':100644 120000 ddddddd eeeeeee T\0changed-type\0',
+    ].join('');
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, raw, ''));
+
+    const changes = await getGitChanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
+
+    expect(changes.map(change => [change.status, change.oldKind, change.newKind])).toEqual([
+      ['deleted', 'regular', 'absent'],
+      ['added', 'absent', 'symlink'],
+      ['added', 'absent', 'submodule'],
+      ['type_changed', 'regular', 'symlink'],
+    ]);
+  });
+
+  it('fails closed on unsafe or malformed raw records', async () => {
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) =>
+      cb(null, ':100644 100644 aaaaaaa bbbbbbb M\0../escape.js\0', '')
+    );
+    await expect(getGitChanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' })).rejects.toThrow('Unsafe path');
   });
 });
 
@@ -308,6 +368,53 @@ describe('getChangedLineRanges()', () => {
     const ranges = await getChangedLineRanges({ workspacePath: '/tmp/ws', baseSha: 'b', headSha: 'h' });
 
     expect(ranges).toEqual(new Map([['src/app.js', []]]));
+  });
+});
+
+describe('getUnifiedDiff()', () => {
+  const changes = [{
+    status: 'modified', oldPath: 'src/app.ts', newPath: 'src/app.ts', oldMode: '100644', newMode: '100644',
+    oldOid: 'a', newOid: 'b', oldKind: 'regular', newKind: 'regular',
+  }] as Parameters<typeof getUnifiedDiff>[0]['changes'];
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('runs a file-scoped git diff with the configured context and parses it', async () => {
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(null, [
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ].join('\n'), ''));
+
+    const result = await getUnifiedDiff({
+      workspacePath: '/tmp/ws', baseSha: 'base', headSha: 'head', contextLines: 7, files: ['src/app.ts'], changes,
+    });
+
+    expect(mockExecFile.mock.calls[0][1]).toEqual([
+      '-C', '/tmp/ws', 'diff', '--patch', '--unified=7', '--no-color', '--no-ext-diff', '--find-renames',
+      'base', 'head', '--', 'src/app.ts',
+    ]);
+    expect(result.files[0]?.hunks[0]?.lines[1]).toEqual({
+      type: 'addition', content: 'new', oldLine: null, newLine: 1,
+    });
+  });
+
+  it('does not run an unscoped diff when no prepared files are known', async () => {
+    const result = await getUnifiedDiff({
+      workspacePath: '/tmp/ws', baseSha: 'base', headSha: 'head', contextLines: 3, files: [], changes,
+    });
+
+    expect(result).toEqual({ files: [] });
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('fails before git when a prepared file has no matching Git change', async () => {
+    await expect(getUnifiedDiff({
+      workspacePath: '/tmp/ws', baseSha: 'base', headSha: 'head', contextLines: 3, files: ['src/other.ts'], changes,
+    })).rejects.toThrow(/exactly one Git change/);
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 });
 
@@ -413,6 +520,40 @@ describe('checkoutFiles()', () => {
       files:         ['link.js'],
     });
     expect(result).toEqual(['link.js']);
+  });
+
+  it('reports deleted and non-regular Git objects instead of silently dropping them', async () => {
+    const changes = [
+      { status: 'deleted', oldPath: 'old.js', newPath: null, oldMode: '100644', newMode: '000000', oldOid: 'a', newOid: '0', oldKind: 'regular', newKind: 'absent' },
+      { status: 'added', oldPath: null, newPath: 'link', oldMode: '000000', newMode: '120000', oldOid: '0', newOid: 'b', oldKind: 'absent', newKind: 'symlink' },
+      { status: 'added', oldPath: null, newPath: 'vendor/lib', oldMode: '000000', newMode: '160000', oldOid: '0', newOid: 'c', oldKind: 'absent', newKind: 'submodule' },
+    ] as Parameters<typeof checkoutGitChanges>[0]['changes'];
+
+    const result = await checkoutGitChanges({ workspacePath: '/tmp/ws', headSha: 'h', changes });
+
+    expect(result.files).toEqual([]);
+    expect(result.issues.map(issue => [issue.disposition, issue.reason])).toEqual([
+      ['not_applicable', 'deleted'],
+      ['unsupported', 'head-symlink'],
+      ['unsupported', 'head-submodule'],
+    ]);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('reports an expected regular file that cannot be prepared as unavailable', async () => {
+    mockRealpath.mockImplementation(async (path: string) => {
+      if (path === '/tmp/ws/src/app.js') throw new Error('ENOENT');
+      return path;
+    });
+    const changes = [{
+      status: 'modified', oldPath: 'src/app.js', newPath: 'src/app.js', oldMode: '100644', newMode: '100644',
+      oldOid: 'a', newOid: 'b', oldKind: 'regular', newKind: 'regular',
+    }] as Parameters<typeof checkoutGitChanges>[0]['changes'];
+
+    const result = await checkoutGitChanges({ workspacePath: '/tmp/ws', headSha: 'h', changes });
+
+    expect(result.files).toEqual([]);
+    expect(result.issues).toEqual([expect.objectContaining({ disposition: 'unavailable', reason: 'checkout-unavailable' })]);
   });
 });
 

@@ -1,29 +1,20 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import type { ProcessedFinding, EvidenceStatus, AnchorKind } from './types.js';
+import { isSpanContainedInRanges, locateExactEvidence, type EvidenceLocation } from './evidence-grounder.js';
+import type { AdapterStatuses, ProcessedFinding, EvidenceStatus, AnchorKind, LineRangesByFile, LineRange, SpectreScanStatus, Tool } from './types.js';
 
 
 
 interface FileInfo {
   content: string;
   lines: string[];
-  lineOffsets: number[];
-}
-
-interface EvidenceLocation {
-  startLine: number;
-  endLine: number;
-}
-
-interface EvidenceMatch {
-  status: EvidenceStatus;
-  location: EvidenceLocation | null;
 }
 
 export async function validateFindingLocations(
   findings: ProcessedFinding[],
-  { workspacePath, changedFiles = [] }: { workspacePath: string; changedFiles?: string[] },
+  { workspacePath, changedFiles = [], changedLineRanges, signal }: { workspacePath: string; changedFiles?: string[]; changedLineRanges?: LineRangesByFile | Record<string, LineRange[]>; signal?: AbortSignal },
 ): Promise<ProcessedFinding[]> {
+  signal?.throwIfAborted();
   if (!findings.length) return [];
 
   const changedFileSet = new Set(changedFiles);
@@ -34,18 +25,12 @@ export async function validateFindingLocations(
 
     let info: FileInfo | null = null;
     try {
-      const content = await readFile(join(workspacePath, file), 'utf8');
+      const content = normalizeLineEndings(await readFile(join(workspacePath, file), 'utf8'));
+      signal?.throwIfAborted();
       const lines = content.split('\n');
-      const lineOffsets: number[] = [];
-      let offset = 0;
-
-      for (const line of lines) {
-        lineOffsets.push(offset);
-        offset += line.length + 1;
-      }
-
-      info = { content, lines, lineOffsets };
+      info = { content, lines };
     } catch {
+      signal?.throwIfAborted();
       // leave as null
     }
 
@@ -56,6 +41,7 @@ export async function validateFindingLocations(
   const validated: ProcessedFinding[] = [];
 
   for (const finding of findings) {
+    signal?.throwIfAborted();
     if (finding.tool !== 'claude' && finding.tool !== 'spectre') {
       const startLine = finding.startLine ?? finding.line;
       const endLine = finding.endLine ?? finding.line;
@@ -74,7 +60,7 @@ export async function validateFindingLocations(
 
     const next: ProcessedFinding = {
       ...finding,
-      evidence: typeof finding.evidence === 'string' ? finding.evidence.trim() : '',
+      evidence: typeof finding.evidence === 'string' ? finding.evidence : '',
       evidenceStatus: 'missing',
       locationValidated: false,
       annotationEligible: false,
@@ -97,7 +83,17 @@ export async function validateFindingLocations(
       continue;
     }
 
-    const evidenceMatch = inspectEvidence(info, next.evidence ?? '');
+    const changedRanges = next.tool === 'spectre' && changedLineRanges
+      ? getChangedRanges(next.file, changedLineRanges)
+      : undefined;
+    const evidenceMatch = locateExactEvidence(
+      info.content,
+      next.evidence ?? '',
+      changedRanges,
+      next.tool === 'spectre'
+        ? { startLine: next.reportedStartLine, endLine: next.reportedEndLine }
+        : undefined,
+    );
     next.evidenceStatus = evidenceMatch.status;
 
     if (!evidenceMatch.location) {
@@ -108,6 +104,12 @@ export async function validateFindingLocations(
     }
 
     applyEvidenceLocation(next, evidenceMatch.location);
+    if (next.tool === 'spectre' && changedLineRanges && !isSpanContainedInRanges(evidenceMatch.location, changedRanges ?? [])) {
+      next.locationReason = 'evidence-outside-changed-range';
+      next.annotationReason = 'evidence-outside-changed-range';
+      validated.push(next);
+      continue;
+    }
     const annotationLocation = resolveAnnotationLocation(next, info, evidenceMatch.location);
     next.locationValidated = true;
     next.locationReason = 'validated-by-evidence';
@@ -128,14 +130,49 @@ export async function validateFindingLocations(
   return validated;
 }
 
+export function applyAdapterValidationCoverage(statuses: AdapterStatuses, findings: ProcessedFinding[]): number {
+  let rejectedTotal = 0;
+  for (const tool of ['claude', 'spectre'] satisfies Tool[]) {
+    const status = statuses[tool];
+    if (status.outcome === 'disabled') continue;
+    const rejected = findings.filter(finding => finding.tool === tool && finding.locationValidated !== true).length;
+    if (rejected === 0) continue;
+    if (tool === 'spectre') {
+      statuses.spectre.rejectedFindings = (statuses.spectre.rejectedFindings ?? 0) + rejected;
+    }
+    status.outcome = 'incomplete';
+    status.reason ??= 'finding-validation-rejected';
+    rejectedTotal += rejected;
+  }
+  return rejectedTotal;
+}
+
+/** Spectre simulations operate outside the dispatcher and only have one status. */
+export function applySpectreValidationCoverage(status: SpectreScanStatus | undefined, findings: ProcessedFinding[]): number {
+  if (!status || status.outcome === 'disabled') return 0;
+  const rejected = findings.filter(finding => finding.tool === 'spectre' && finding.locationValidated !== true).length;
+  if (rejected === 0) return 0;
+  status.rejectedFindings = (status.rejectedFindings ?? 0) + rejected;
+  status.outcome = 'incomplete';
+  status.reason ??= 'finding-validation-rejected';
+  return rejected;
+}
+
+function getChangedRanges(
+  file: string,
+  rangesByFile: LineRangesByFile | Record<string, LineRange[]>,
+): LineRange[] {
+  return (rangesByFile instanceof Map ? rangesByFile.get(file) : rangesByFile[file]) ?? [];
+}
+
 function failureReasonForEvidenceStatus(status: EvidenceStatus): string {
   if (status === 'missing') return 'missing-evidence';
   if (status === 'ambiguous') return 'ambiguous-evidence';
   return 'evidence-not-found';
 }
 
-function normalizeForMatch(value: string): string {
-  return value.replace(/\r\n/g, '\n').trim();
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
 }
 
 // Minimal declaration patterns for Claude anchor validation
@@ -200,60 +237,6 @@ function resolveAnnotationLocation(
     anchorLine: evidenceLocation.startLine,
     reason: 'anchored-by-evidence',
   };
-}
-
-function inspectEvidence(info: FileInfo, evidence: string): EvidenceMatch {
-  const needle = normalizeForMatch(evidence);
-  if (!needle) {
-    return { status: 'missing', location: null };
-  }
-
-  const matches: EvidenceLocation[] = [];
-  let index = 0;
-
-  while (index < info.content.length) {
-    const matchIndex = info.content.indexOf(needle, index);
-    if (matchIndex === -1) break;
-
-    const location = offsetsToSpan(info.lineOffsets, matchIndex, matchIndex + needle.length - 1);
-    matches.push(location);
-    index = matchIndex + needle.length;
-  }
-
-  if (matches.length === 1) {
-    return { status: 'unique', location: matches[0]! };
-  }
-
-  if (matches.length > 1) {
-    return { status: 'ambiguous', location: null };
-  }
-
-  return { status: 'not-found', location: null };
-}
-
-function offsetsToSpan(lineOffsets: number[], startOffset: number, endOffset: number): EvidenceLocation {
-  return {
-    startLine: offsetToLine(lineOffsets, startOffset),
-    endLine: offsetToLine(lineOffsets, endOffset),
-  };
-}
-
-function offsetToLine(lineOffsets: number[], offset: number): number {
-  let low = 0;
-  let high = lineOffsets.length - 1;
-  let answer = 0;
-
-  while (low <= high) {
-    const mid = Math.floor((low + high) / 2);
-    if ((lineOffsets[mid] ?? 0) <= offset) {
-      answer = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-
-  return answer + 1;
 }
 
 function applyEvidenceLocation(finding: ProcessedFinding, relocated: EvidenceLocation): void {

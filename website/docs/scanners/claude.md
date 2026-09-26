@@ -30,24 +30,23 @@ The built-in prompt instructs Claude to omit anything it cannot validate with a 
 
 Source code leaves your environment when Claude is enabled. Consider whether this is appropriate for repositories containing sensitive business logic, PII, or regulated data. If it is, a scoped custom prompt can focus analysis on a narrower threat model.
 
-What is sent depends on the [scan mode](../configuration.md#scan-mode) configured for the repo:
+For ordinary textual changes, Claude receives changed hunks plus [`contextLines`](../configuration.md#contextlines) lines of surrounding HEAD content. Unchanged portions outside those expanded ranges are not sent, and this prepared prompt input is the same in both scan modes.
 
-- **`changed_files` mode (default):** The **full content of every changed source file** is sent - not just the changed lines. Files are capped at 50 KB each. Binary files are skipped.
-- **`diff_only` mode:** Only the changed hunks plus `contextLines` lines of surrounding context are sent per file. Unchanged portions of the file are not transmitted to Anthropic's API.
+There is one privacy-relevant fallback: in `changed_files` mode, if none of the changed files has a textual hunk from which Layne can build a prompt snippet, Claude falls back to reading the changed files directly. Binary extensions are skipped and each fallback file is truncated at 50,000 JavaScript characters (UTF-16 code units), but otherwise its full content is sent. This is a character limit, not a byte limit, so non-ASCII source can encode to more than 50 KB on the wire. In `diff_only` mode, files without projectable textual hunks are omitted instead.
 
 **Skill mode** (described below) is explicitly not eligible for Anthropic's Zero Data Retention (ZDR) programme.
 
 
 ## How Layne runs it
 
-1. Changed files are read from the workspace. Binary files (images, archives, compiled objects, fonts, etc.) are skipped.
-2. Files larger than 50 KB are truncated.
-3. Files are batched at 100 KB of text per API call to stay within token limits.
-4. Claude is called once per batch. What is sent per file depends on scan mode:
-   - **`changed_files` mode:** The full numbered file content is sent with a "Changed lines in this PR: X-Y" header.
-   - **`diff_only` mode:** Only the changed hunks plus context are sent, formatted as `@@ lines X-Y @@` snippets. Line numbers within the snippet match the original file.
+1. Layne derives changed HEAD line ranges from the typed base-to-head diff and expands each range by `contextLines`.
+2. Each range is formatted as an `@@ lines X-Y @@` snippet whose source lines use the original `<line>| <content>` numbering.
+3. The dispatcher applies the global `maxFileSizeKb` selection limit before Claude runs. Files without textual changed ranges are normally omitted; if no prepared snippets exist at all in `changed_files` mode, the 50 KB-per-file direct-read fallback described above applies.
+4. Snippets are batched at 100,000 JavaScript characters per API call to stay within token limits, then Claude is called once per batch. This is also a UTF-16 code-unit limit rather than a byte limit.
 5. Claude calls the `report_findings` tool with its results. Line numbers are hints - Layne re-validates each finding against a verbatim evidence snippet before reporting it.
-6. API errors are caught and logged without failing the scan. If some batches error, findings may be incomplete.
+6. API failures, invalid `report_findings` responses, unreadable selected files, and locally rejected evidence make Claude incomplete. Valid findings from other batches are retained.
+
+An incomplete Claude result does not erase useful findings. Blocking findings still fail the Check Run; otherwise the conclusion is `neutral`, making the coverage gap visible without presenting it as a clean pass. Cancellation still aborts the job rather than being converted into a normal adapter result.
 
 
 ## Modes
@@ -133,11 +132,7 @@ print(skill.id)  # you'll use this to configure Layne
 
 ### Skill Tips
 
-When creating a new skill to be used with Layne, it's important to also add to that skill the format that Layne is expecting the findings to be reported. You can use Claude Code or a different agent and ask it to create the skill in compliance with Layne's "contract". The following is an example of a skill that works with Layne in **`changed_files` mode** (the default).
-
-:::warning Skill mode with `diff_only`
-If you use skill mode together with `diff_only` scan mode, the Operating Mode section of your SKILL.md needs to be updated. In `diff_only` mode the skill receives `@@ lines X-Y @@`-delimited snippets instead of full numbered files, and there is no "Changed lines in this PR" header. The instruction to "scan the whole provided file" is not applicable - the snippet is the complete input. Update your skill instructions to describe the snippet format and to draw findings only from the provided ranges.
-:::
+When creating a new skill to be used with Layne, include the exact finding format Layne expects. You can use Claude Code or a different agent and ask it to create the skill in compliance with Layne's contract. The following example handles both prepared hunk snippets and the `changed_files` full-file fallback.
 
 ```md
 ---
@@ -151,8 +146,10 @@ You are a security reviewer for malicious intent. Find only high-confidence mali
 
 ## Operating Mode
 
-- In Layne, you receive the full contents of changed files as numbered `text` blocks plus `Changed lines in this PR` metadata.
-- Scan the whole provided file, not just the changed line ranges. The changed ranges are context only.
+- Normally, you receive changed hunks plus surrounding context as `@@ lines X-Y @@`-delimited `text` blocks. Each source line is prefixed as `<line>| <content>`.
+- For a metadata-only `changed_files` fallback, you can instead receive a full numbered file with a `Changed lines in this PR` header and `<padded-line> | <content>` prefixes.
+- In both formats, line numbers and separators are metadata, not part of the source.
+- Treat the provided snippets as the complete available input. Do not infer behavior from omitted file content.
 - Do not depend on internet lookups or package registry searches. Base conclusions on the provided code and manifests.
 - Never execute repository code. Use `code_execution` only for deterministic inspection of literals such as base64, hex, unicode escapes, compressed blobs, or hashes.
 
@@ -185,7 +182,7 @@ Every finding must survive Layne's local validator. Follow these rules exactly:
 - `evidence` must be a short exact verbatim contiguous snippet copied from one file.
 - Use the smallest distinctive snippet that uniquely identifies the malicious logic in that file.
 - Do not paraphrase, summarize, insert ellipses, or combine non-adjacent lines.
-- Do not include the prompt's line-number prefix such as `042 |`.
+- Do not include the prompt's line-number prefix, such as `42| ` or `042 | `.
 - If the snippet appears multiple times in the file, treat it as ambiguous. Either choose a longer exact contiguous snippet that is unique, or omit the finding.
 - If you cannot provide unique exact evidence from the file, omit the finding.
 - `startLine`, `endLine`, `anchorKind`, and `anchorLine` are optional hints only. They are revalidated locally and should be omitted if uncertain.
@@ -200,7 +197,7 @@ Good evidence:
 Bad evidence:
 
 - `decodes payload and executes it`
-- `001 | eval(decoded)`
+- `41| eval(decoded)`
 - `exec(...) ... exfiltrate token`
 - two separate snippets glued together
 

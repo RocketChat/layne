@@ -86,6 +86,12 @@ describe('startCheckRun()', () => {
       status:       'in_progress',
     }));
   });
+
+  it('passes the signal through Octokit request options', async () => {
+    const signal = new AbortController().signal;
+    await startCheckRun({ ...BASE, signal });
+    expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ request: { signal } }));
+  });
 });
 
 describe('completeCheckRun()', () => {

@@ -10,13 +10,13 @@ vi.mock('child_process', () => ({ execFile: mockExecFile }));
 
 const mockReadFile  = vi.fn();
 const mockWriteFile = vi.fn();
-const mockUnlink    = vi.fn();
-const mockMkdir     = vi.fn();
+const mockRm        = vi.fn();
+const mockMkdir     = vi.fn().mockResolvedValue('/tmp/ws/.layne-dep-doctor-test');
 vi.mock('fs/promises', () => ({
   readFile:  mockReadFile,
   writeFile: mockWriteFile,
-  unlink:    mockUnlink,
-  mkdir:     mockMkdir,
+  rm:        mockRm,
+  mkdtemp:   mockMkdir,
 }));
 
 vi.mock('../../config.js', () => ({
@@ -36,6 +36,10 @@ const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
 const { runDepDoctor } = await import('../../adapters/dep-doctor.js');
+
+async function runFindings(args: Parameters<typeof runDepDoctor>[0]) {
+  return (await runDepDoctor(args)).findings;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,8 +65,21 @@ const ENABLED: DepDoctorConfig = {
 type ExecCb = (err: Error | null, stdout: string, stderr: string) => void;
 
 function stubGitShow(content: string) {
+  let lockfileContent = content;
+  try {
+    const parsed = JSON.parse(content) as {
+      results?: Array<{ packages?: Array<{ package?: { name?: string; version?: string } }> }>;
+    };
+    if (Array.isArray(parsed.results)) {
+      const packagePairs = parsed.results.flatMap(result => result.packages ?? [])
+        .flatMap(entry => entry.package?.name && entry.package.version
+          ? [{ name: entry.package.name, version: entry.package.version }]
+          : []);
+      lockfileContent = buildPkgLock(packagePairs);
+    }
+  } catch { /* preserve explicit non-JSON lockfile fixtures */ }
   mockExecFile.mockImplementationOnce(
-    (_cmd: string, _args: string[], _opts: unknown, cb: ExecCb) => cb(null, content, '')
+    (_cmd: string, _args: string[], _opts: unknown, cb: ExecCb) => cb(null, lockfileContent, '')
   );
 }
 
@@ -70,6 +87,13 @@ function stubGitShowMissing() {
   mockExecFile.mockImplementationOnce(
     (_cmd: string, _args: string[], _opts: unknown, cb: ExecCb) =>
       cb(new Error('fatal: Path not found in commit'), '', 'fatal: Path not found in commit')
+  );
+}
+
+function stubGitShowFailure() {
+  mockExecFile.mockImplementationOnce(
+    (_cmd: string, _args: string[], _opts: unknown, cb: ExecCb) =>
+      cb(Object.assign(new Error('fatal: bad object base-sha-abc'), { code: 128 }), '', 'fatal: bad object base-sha-abc')
   );
 }
 
@@ -166,12 +190,46 @@ function buildPkgLock(packages: Array<{ name: string; version: string }>) {
   for (const { name, version } of packages) {
     pkgs[`node_modules/${name}`] = { version };
   }
-  return JSON.stringify({ packages: pkgs });
+  return JSON.stringify({ lockfileVersion: 3, packages: pkgs });
 }
 
 function buildRequirementsTxt(packages: Array<{ name: string; version: string }>) {
   return packages.map(({ name, version }) => `${name}==${version}`).join('\n');
 }
+
+const HEALTH_FORMAT_FIXTURES = [
+  {
+    filename: 'pnpm-lock.yaml',
+    packageName: 'old-lib',
+    content: "lockfileVersion: '9.0'\npackages:\n  'old-lib@1.0.0':\n    resolution: {integrity: sha512-test}\n",
+    line: 3,
+    registry: 'npm',
+  },
+  {
+    filename: 'Pipfile.lock',
+    packageName: 'old-pylib',
+    content: JSON.stringify({
+      _meta: { 'pipfile-spec': 6, sources: [{ name: 'pypi', url: 'https://pypi.org/simple' }] },
+      default: { 'old-pylib': { version: '==1.0.0', index: 'pypi' } },
+    }, null, 2),
+    line: 12,
+    registry: 'PyPI',
+  },
+  {
+    filename: 'poetry.lock',
+    packageName: 'old-pylib',
+    content: '[[package]]\nname = "old-pylib"\nversion = "1.0.0"\n\n[metadata]\nlock-version = "2.1"\n',
+    line: 2,
+    registry: 'PyPI',
+  },
+  {
+    filename: 'uv.lock',
+    packageName: 'old-pylib',
+    content: 'version = 1\nrevision = 3\n\n[[package]]\nname = "old-pylib"\nversion = "1.0.0"\nsource = { registry = "https://pypi.org/simple" }\n',
+    line: 5,
+    registry: 'PyPI',
+  },
+] as const;
 
 // ---------------------------------------------------------------------------
 // Guard clause tests
@@ -180,55 +238,71 @@ function buildRequirementsTxt(packages: Array<{ name: string; version: string }>
 // Set default resolved values for fs mocks so tests that trigger temp-file
 // handling don't throw when they don't explicitly configure these mocks.
 function setupFsMocks() {
-  mockMkdir.mockResolvedValue(undefined);
+  mockMkdir.mockResolvedValue('/tmp/ws/.layne-dep-doctor-test');
+  mockReadFile.mockResolvedValue('');
   mockWriteFile.mockResolvedValue(undefined);
-  mockUnlink.mockResolvedValue(undefined);
+  mockRm.mockResolvedValue(undefined);
 }
 
 describe('runDepDoctor() — guard clauses', () => {
   beforeEach(() => { vi.clearAllMocks(); setupFsMocks(); });
 
-  it('returns empty array when disabled', async () => {
-    const findings = await runDepDoctor({
+  it('returns disabled status when disabled', async () => {
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    { ...ENABLED, enabled: false },
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'disabled' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('returns empty array when changedFiles is null', async () => {
-    const findings = await runDepDoctor({
+  it('returns complete empty result when changedFiles is null', async () => {
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  null,
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('returns empty array when changedFiles is empty', async () => {
-    const findings = await runDepDoctor({
+  it('returns complete empty result when changedFiles is empty', async () => {
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [],
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('returns empty array when no lockfile is in changedFiles', async () => {
-    const findings = await runDepDoctor({
+  it('returns complete empty result when no lockfile is in changedFiles', async () => {
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  ['src/app.js', 'src/utils.ts'],
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('propagates a pre-existing parent cancellation without starting work', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    controller.abort(reason);
+
+    await expect(runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 });
@@ -250,13 +324,15 @@ describe('runDepDoctor() — CVE detection', () => {
     stubNpmRegistry('lodash');                  // health check: ok
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'lodash', version: '4.17.11' }]));
 
-    const findings = await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
     });
+    const { findings } = result;
 
+    expect(result.status).toEqual({ outcome: 'complete' });
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       tool:     'dep-doctor',
@@ -276,7 +352,7 @@ describe('runDepDoctor() — CVE detection', () => {
     stubOsv(existing, 1);                        // head scan: same package with same CVE
     stubOsv(existing);                           // base OSV scan: same package
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -284,6 +360,26 @@ describe('runDepDoctor() — CVE detection', () => {
     });
 
     expect(findings).toEqual([]);
+  });
+
+  it('does not report baseline-dependent CVEs when the base OSV scan fails', async () => {
+    stubGitShow(buildOsvOutput([]));
+    stubOsv(buildOsvOutput([{
+      name: 'lodash', version: '4.17.11', ecosystem: 'npm',
+      vulns: [{ id: 'CVE-2020-8203', severity: 'HIGH' }],
+    }]), 1);
+    stubOsvNotFound();
+    mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'lodash', version: '4.17.11' }]));
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkAbandoned: false, checkDeprecated: false },
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'osv-scanner-unavailable' });
   });
 
   it('filters out CVEs below minCveSeverity', async () => {
@@ -296,7 +392,7 @@ describe('runDepDoctor() — CVE detection', () => {
     stubNpmRegistry('lodash');
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'lodash', version: '4.17.11' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -305,6 +401,35 @@ describe('runDepDoctor() — CVE detection', () => {
 
     const cveFinding = findings.find(f => f.ruleId.startsWith('CVE'));
     expect(cveFinding).toBeUndefined();
+  });
+
+  it('derives severity from a standard OSV CVSS vector', async () => {
+    const output = JSON.stringify({
+      results: [{
+        source: { path: WORKSPACE, type: 'lockfile' },
+        packages: [{
+          package: { name: 'lodash', version: '4.17.11', ecosystem: 'npm' },
+          vulnerabilities: [{
+            id: 'CVE-2026-9999',
+            severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }],
+          }],
+        }],
+      }],
+    });
+    stubGitShow(buildOsvOutput([]));
+    stubOsv(output, 1);
+    stubOsv(buildOsvOutput([]));
+    stubNpmRegistry('lodash');
+    mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'lodash', version: '4.17.11' }]));
+
+    const findings = await runFindings({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, minCveSeverity: 'critical' },
+    });
+
+    expect(findings.find(finding => finding.ruleId === 'CVE-2026-9999')).toMatchObject({ severity: 'critical' });
   });
 
   it('treats all packages as new when the base lockfile does not exist', async () => {
@@ -316,14 +441,15 @@ describe('runDepDoctor() — CVE detection', () => {
     stubNpmRegistry('express');
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'express', version: '4.18.0' }]));
 
-    const findings = await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    { ...ENABLED, minCveSeverity: 'critical' },
     });
 
-    expect(findings.some(f => f.ruleId === 'CVE-2024-1')).toBe(true);
+    expect(result.findings.some(f => f.ruleId === 'CVE-2024-1')).toBe(true);
+    expect(result.status).toEqual({ outcome: 'complete' });
   });
 
   it('deduplicates findings when the same CVE appears multiple times for the same package', async () => {
@@ -349,7 +475,7 @@ describe('runDepDoctor() — CVE detection', () => {
     stubNpmRegistry('lodash');
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'lodash', version: '4.17.11' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -368,34 +494,153 @@ describe('runDepDoctor() — CVE detection', () => {
 describe('runDepDoctor() — osv-scanner error handling', () => {
   beforeEach(() => { vi.clearAllMocks(); setupFsMocks(); });
 
-  it('returns empty array (does not throw) when osv-scanner is not installed', async () => {
+  it('returns incomplete when osv-scanner is not installed', async () => {
     stubGitShow(buildOsvOutput([]));
     stubOsvNotFound();                           // ENOENT for head scan
     mockReadFile.mockResolvedValue('');
 
-    const findings = await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    { ...ENABLED, checkAbandoned: false, checkDeprecated: false },
     });
 
-    expect(findings).toEqual([]);
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'osv-scanner-unavailable' },
+    });
   });
 
-  it('still runs health checks even when osv-scanner fails', async () => {
+  it('marks invalid JSON output incomplete', async () => {
     stubGitShow(buildOsvOutput([]));
-    stubOsvNotFound();
-    // Health checks should still run since we passed changedFiles with a lockfile
+    stubOsv('not json');
 
-    const findings = await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    { ...ENABLED, checkDeprecated: false, checkAbandoned: false },
     });
 
-    expect(findings).toEqual([]);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'osv-invalid-output' });
+  });
+
+  it.each([
+    '{}',
+    '{"results":[{}]}',
+    '{"results":[{"packages":[{}]}]}',
+  ])('marks structurally incomplete OSV output incomplete: %s', async (output) => {
+    stubGitShowMissing();
+    stubOsv(output);
+    mockReadFile.mockResolvedValue(buildPkgLock([]));
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkAbandoned: false, checkDeprecated: false },
+    });
+
+    expect(result).toEqual({ findings: [], status: { outcome: 'incomplete', reason: 'osv-invalid-output' } });
+  });
+
+  it('preserves successful health findings when osv-scanner is unavailable', async () => {
+    stubGitShow(buildOsvOutput([]));
+    stubOsvNotFound();
+    stubNpmRegistry('old-lib', { lastPublishDaysAgo: 800 });
+    mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'old-lib', version: '1.0.0' }]));
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result.findings.some(f => f.ruleId === 'abandoned/deprecated')).toBe(true);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'osv-scanner-unavailable' });
+  });
+
+  it('marks an unexpected osv-scanner exit incomplete', async () => {
+    stubGitShow(buildOsvOutput([]));
+    stubOsv(buildOsvOutput([]), 2);
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkDeprecated: false, checkAbandoned: false },
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'osv-unexpected-exit' });
+  });
+
+  it('marks an unreadable selected lockfile incomplete without starting subprocesses', async () => {
+    mockReadFile.mockRejectedValueOnce(new Error('permission denied'));
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'lockfile-unreadable' });
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('marks unexpected base git failures incomplete', async () => {
+    stubGitShowFailure();
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkDeprecated: false, checkAbandoned: false },
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'base-git-failed' });
+    expect(result.findings).toEqual([]);
+    expect(mockExecFile).toHaveBeenCalledOnce();
+  });
+
+  it('does not swallow unexpected programming errors', async () => {
+    stubGitShow(buildOsvOutput([]));
+    mockExecFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: unknown, cb: ExecCb) => cb(new Error('unexpected bug'), '', '')
+    );
+
+    await expect(runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkDeprecated: false, checkAbandoned: false },
+    })).rejects.toThrow('unexpected bug');
+  });
+
+  it('passes the signal to child processes and does not swallow cancellation', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    mockExecFile
+      .mockImplementationOnce((_cmd: string, _args: string[], opts: { signal?: AbortSignal }, cb: ExecCb) => {
+        expect(opts.signal).toBe(controller.signal);
+        cb(null, '', '');
+      })
+      .mockImplementationOnce((_cmd: string, _args: string[], opts: { signal?: AbortSignal }, cb: ExecCb) => {
+        expect(opts.signal).toBe(controller.signal);
+        controller.abort(reason);
+        cb(new Error('process aborted'), '', '');
+      });
+
+    await expect(runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: { ...ENABLED, checkAbandoned: false, checkDeprecated: false },
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -413,7 +658,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubNpmRegistry('old-lib', { lastPublishDaysAgo: 800 });
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'old-lib', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -431,7 +676,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubNpmRegistry('deprecated-pkg', { deprecated: 'Use new-pkg instead' });
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'deprecated-pkg', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -450,7 +695,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubNpmRegistry('old-lib', { lastPublishDaysAgo: 800 });
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'old-lib', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -467,7 +712,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubNpmRegistry('deprecated-pkg', { deprecated: 'Use something else' });
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'deprecated-pkg', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -495,34 +740,64 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('returns empty array (does not throw) when npm registry returns non-200', async () => {
+  it('preserves CVE findings and returns incomplete when npm registry returns non-200', async () => {
     stubGitShow(buildOsvOutput([]));
-    stubOsv(buildOsvOutput([{ name: 'some-pkg', version: '1.0.0', ecosystem: 'npm' }]));
+    stubOsv(buildOsvOutput([{
+      name: 'some-pkg', version: '1.0.0', ecosystem: 'npm',
+      vulns: [{ id: 'CVE-2026-1', severity: 'HIGH' }],
+    }]), 1);
     stubOsv(buildOsvOutput([]));
     stubNpmRegistry('some-pkg', { ok: false });
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'some-pkg', version: '1.0.0' }]));
 
-    await expect(runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
-    })).resolves.not.toThrow();
+    });
+
+    expect(result.findings.some(f => f.ruleId === 'CVE-2026-1')).toBe(true);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'registry-request-failed' });
   });
 
-  it('returns empty array (does not throw) when fetch throws', async () => {
+  it('returns incomplete when an enabled registry request throws', async () => {
     stubGitShow(buildOsvOutput([]));
     stubOsv(buildOsvOutput([{ name: 'some-pkg', version: '1.0.0', ecosystem: 'npm' }]));
     stubOsv(buildOsvOutput([]));
     mockFetch.mockRejectedValueOnce(new Error('network error'));
     mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'some-pkg', version: '1.0.0' }]));
 
-    await expect(runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    ENABLED,
-    })).resolves.not.toThrow();
+    });
+
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'registry-request-failed' });
+  });
+
+  it('combines the parent signal with the registry deadline and propagates cancellation', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    stubGitShowMissing();
+    stubOsv(buildOsvOutput([{ name: 'some-pkg', version: '1.0.0', ecosystem: 'npm' }]));
+    mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'some-pkg', version: '1.0.0' }]));
+    mockFetch.mockImplementationOnce(async (_url: string, init: { signal?: AbortSignal }) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal).not.toBe(controller.signal);
+      controller.abort(reason);
+      throw new Error('request aborted');
+    });
+
+    await expect(runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
   });
 
   it('returns an abandoned finding for a PyPI package with no publish in 2+ years', async () => {
@@ -532,7 +807,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubPypiRegistry('old-pylib', { lastPublishDaysAgo: 800 });
     mockReadFile.mockResolvedValue(buildRequirementsTxt([{ name: 'old-pylib', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  ['requirements.txt'],
       baseSha:       BASE_SHA,
@@ -549,7 +824,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubPypiRegistry('inactive-lib', { inactive: true });
     mockReadFile.mockResolvedValue(buildRequirementsTxt([{ name: 'inactive-lib', version: '1.0.0' }]));
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  ['requirements.txt'],
       baseSha:       BASE_SHA,
@@ -565,7 +840,7 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     stubOsv(buildOsvOutput([]));
     mockReadFile.mockResolvedValue('github.com/foo/bar v1.0.0 h1:abc=\n');
 
-    await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  ['go.sum'],
       baseSha:       BASE_SHA,
@@ -573,6 +848,127 @@ describe('runDepDoctor() — abandoned/deprecated checks', () => {
     });
 
     expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.status).toEqual({ outcome: 'complete' });
+  });
+
+  it.each(HEALTH_FORMAT_FIXTURES)('health-checks a new dependency from $filename', async fixture => {
+    stubGitShowMissing();
+    stubOsv(buildOsvOutput([]));
+    if (fixture.registry === 'npm') stubNpmRegistry(fixture.packageName, { lastPublishDaysAgo: 800 });
+    else stubPypiRegistry(fixture.packageName, { lastPublishDaysAgo: 800 });
+    mockReadFile.mockResolvedValue(fixture.content);
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [fixture.filename],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result.status).toEqual({ outcome: 'complete' });
+    expect(result.findings).toEqual([
+      expect.objectContaining({
+        file: fixture.filename,
+        line: fixture.line,
+        message: expect.stringContaining(`${fixture.packageName}@1.0.0`),
+      }),
+    ]);
+  });
+
+  it('does not recheck a pnpm package/version pair present at merge base', async () => {
+    const content = HEALTH_FORMAT_FIXTURES[0].content;
+    stubGitShow(content);
+    stubOsv(buildOsvOutput([]));
+    stubOsv(buildOsvOutput([]));
+    mockReadFile.mockResolvedValue(content);
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: ['pnpm-lock.yaml'],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('loads a renamed lockfile baseline from its old path', async () => {
+    const content = HEALTH_FORMAT_FIXTURES[0].content;
+    mockExecFile.mockImplementationOnce(
+      (_cmd: string, args: string[], _opts: unknown, cb: ExecCb) => {
+        expect(args.at(-1)).toBe('base-sha-abc:config/old-pnpm-lock.yaml');
+        cb(null, content, '');
+      },
+    );
+    stubOsv(buildOsvOutput([]));
+    stubOsv(buildOsvOutput([]));
+    mockReadFile.mockResolvedValue(content);
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: ['pnpm-lock.yaml'],
+      basePaths: { 'pnpm-lock.yaml': 'config/old-pnpm-lock.yaml' },
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('marks an invalid health baseline incomplete instead of treating every package as new', async () => {
+    stubGitShow("lockfileVersion: '10.0'\npackages: {}\n");
+    stubOsv(buildOsvOutput([]));
+    stubOsv(buildOsvOutput([]));
+    mockReadFile.mockResolvedValue(HEALTH_FORMAT_FIXTURES[0].content);
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: ['pnpm-lock.yaml'],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'lockfile-version-unsupported' },
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('reports both abandoned and deprecated states from one registry response', async () => {
+    stubGitShowMissing();
+    stubOsv(buildOsvOutput([]));
+    stubNpmRegistry('old-lib', { deprecated: 'Use maintained-lib', lastPublishDaysAgo: 800 });
+    mockReadFile.mockResolvedValue(buildPkgLock([{ name: 'old-lib', version: '1.0.0' }]));
+
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [LOCKFILE],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.some(finding => finding.message.includes('appears abandoned'))).toBe(true);
+    expect(result.findings.some(finding => finding.message.includes('is deprecated'))).toBe(true);
+  });
+
+  it('marks an omitted lockfile incomplete without starting subprocesses', async () => {
+    const result = await runDepDoctor({
+      workspacePath: WORKSPACE,
+      changedFiles: [],
+      omittedFiles: ['pnpm-lock.yaml'],
+      baseSha: BASE_SHA,
+      toolConfig: ENABLED,
+    });
+
+    expect(result).toEqual({
+      findings: [],
+      status: { outcome: 'incomplete', reason: 'lockfile-size-limit-exceeded' },
+    });
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 });
 
@@ -600,7 +996,7 @@ describe('runDepDoctor() — line number lookup', () => {
       '  }\n'
     );
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -621,7 +1017,7 @@ describe('runDepDoctor() — line number lookup', () => {
     stubNpmRegistry('unknown-pkg');
     mockReadFile.mockResolvedValue('{}');  // no match for package name
 
-    const findings = await runDepDoctor({
+    const findings = await runFindings({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
@@ -684,7 +1080,7 @@ describe('runDepDoctor() — base temp file lifecycle', () => {
     });
 
     expect(mockWriteFile).toHaveBeenCalledOnce();
-    expect(mockUnlink).toHaveBeenCalledOnce();
+    expect(mockRm).toHaveBeenCalledOnce();
 
     const writePath = (mockWriteFile as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
     expect(writePath).toContain(WORKSPACE);
@@ -697,13 +1093,14 @@ describe('runDepDoctor() — base temp file lifecycle', () => {
     stubOsvNotFound();                           // base scan fails with ENOENT
     mockReadFile.mockResolvedValue('');
 
-    await runDepDoctor({
+    const result = await runDepDoctor({
       workspacePath: WORKSPACE,
       changedFiles:  [LOCKFILE],
       baseSha:       BASE_SHA,
       toolConfig:    { ...ENABLED, checkAbandoned: false, checkDeprecated: false },
     });
 
-    expect(mockUnlink).toHaveBeenCalledOnce();
+    expect(mockRm).toHaveBeenCalledOnce();
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'osv-scanner-unavailable' });
   });
 });

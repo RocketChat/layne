@@ -3,6 +3,7 @@
  */
 
 import type { ProcessedFinding, TemplateContext } from '../types.js';
+import type { FinalSecurityState, NotificationProjection } from './types.js';
 
 const SEVERITY_EMOJI: Record<string, string> = {
   critical: '🔴',
@@ -53,7 +54,7 @@ export function buildContext(
   prNumber: number,
   headSha?: string,
 ): TemplateContext {
-  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
   for (const f of findings) {
     if (f.severity in counts) counts[f.severity] = (counts[f.severity] ?? 0) + 1;
   }
@@ -79,6 +80,63 @@ export function buildContext(
     findings:        buildFindingsTable(findings, owner, repo, headSha),
     rules,
   } as TemplateContext;
+}
+
+export function buildNotificationContext(
+  state: FinalSecurityState,
+  projection: NotificationProjection,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha?: string,
+): TemplateContext {
+  const ctx = buildContext(state.findings, owner, repo, prNumber, headSha);
+  const exceptedIds = new Set(state.exceptionApproval?.findingIds ?? []);
+  const blockingTotal = state.findings.filter(finding =>
+    (finding.severity === 'critical' || finding.severity === 'high')
+    && !exceptedIds.has(finding._findingId ?? '')
+  ).length;
+  const warningTotal = state.findings.filter(finding =>
+    finding.severity === 'medium' || finding.severity === 'low' || finding.severity === 'info'
+  ).length;
+  const formatCoverage = (level: 'blocking' | 'incomplete') => state.coverageIssues
+    .filter(issue => issue.level === level)
+    .map(issue => `${issue.source}: ${issue.reason} (${issue.count})`)
+    .join(', ');
+  const blockingCoverageSummary = projection.events.includes('coverage-failure')
+    ? formatCoverage('blocking')
+    : '';
+  const incompleteCoverageSummary = projection.events.includes('incomplete-scan')
+    ? formatCoverage('incomplete')
+    : '';
+  const coverageSummary = [blockingCoverageSummary, incompleteCoverageSummary].filter(Boolean).join(', ');
+  const stateParts: string[] = [];
+  if (projection.events.includes('findings') && projection.relevantFindings.length > 0) {
+    stateParts.push(`${projection.relevantFindings.length} finding(s) at or above the notification threshold`);
+  }
+  if (coverageSummary) stateParts.push(`coverage: ${coverageSummary}`);
+  if (projection.events.includes('exception-approval') && state.exceptionApproval?.approved) {
+    stateParts.push(`exception by @${state.exceptionApproval.approver ?? 'unknown'} for ${(state.exceptionApproval.findingIds ?? []).join(', ')}`);
+  }
+  if (projection.events.includes('internal-error') && state.internalError) stateParts.push(`internal error ${state.internalError.errorId}`);
+
+  return {
+    ...ctx,
+    event: projection.primaryEvent ?? '',
+    events: projection.events.join(', '),
+    conclusion: state.conclusion,
+    notificationTotal: projection.relevantFindings.length,
+    blockingTotal,
+    warningTotal,
+    coverageSummary,
+    blockingCoverageSummary,
+    incompleteCoverageSummary,
+    stateSummary: stateParts.join('; '),
+    approver: state.exceptionApproval?.approver ?? '',
+    approvedFindingIds: (state.exceptionApproval?.findingIds ?? []).join(', '),
+    approvalReason: state.exceptionApproval?.reason ?? '',
+    errorId: state.internalError?.errorId ?? '',
+  };
 }
 
 export function renderTemplate(template: string, ctx: TemplateContext): string {

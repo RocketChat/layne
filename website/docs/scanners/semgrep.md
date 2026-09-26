@@ -1,9 +1,5 @@
 # Semgrep
 
-In both scan modes, Semgrep parses complete selected HEAD files. In `diff_only`
-mode, Layne filters findings to exact changed lines after scanning. This preserves
-the syntax and enclosing context required by structural and dataflow rules.
-
 <div style={{textAlign: 'center'}}>
   <img src="/img/semgrep.png" alt="Semgrep" width="200" />
 </div>
@@ -20,7 +16,7 @@ Semgrep scans for code-level vulnerabilities using rule-based pattern matching. 
 
 ## How Layne runs it
 
-Layne runs Semgrep against only the files changed in the PR - not the entire repository. In [`diff_only` mode](../configuration.md#scan-mode), Semgrep receives projected copies of those files containing only the changed hunks plus surrounding context lines, with blank lines holding the positions of unchanged content. The command is assembled as:
+Layne runs Semgrep against the complete HEAD versions of only the files selected from the PR change set - not the entire repository. In [`diff_only` mode](../configuration.md#scan-mode), Semgrep still receives complete files so parsers and dataflow rules have valid syntax and enclosing context. Layne then discards Semgrep findings whose start line is not an exact changed line before suppression and reporting. The command is assembled as:
 
 ```
 semgrep scan <extraArgs> --json -- <absolute-file-paths...>
@@ -28,7 +24,9 @@ semgrep scan <extraArgs> --json -- <absolute-file-paths...>
 
 Arguments are passed via `execFile` - not through a shell - so shell injection through file paths or config values is not possible.
 
-**Exit codes:** Semgrep exits `1` when findings are found. Layne treats this as a normal result and parses stdout, not as an error.
+**Exit codes:** Semgrep exits `0` for a valid clean result and `1` when findings are found. Layne treats both as complete and parses stdout. Any other exit code makes Semgrep incomplete, but valid findings already present in its JSON output are retained.
+
+An unavailable binary, command launch failure, malformed JSON, or errors reported in Semgrep's JSON make the adapter incomplete. Genuine parser errors in the complete HEAD file are not ignored. Without a blocking finding, Layne publishes a `neutral` Check Run instead of a clean pass. Raw command errors stay in worker logs; the Check Run receives only a stable reason code.
 
 **Severity mapping:**
 

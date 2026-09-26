@@ -62,6 +62,27 @@ describe('metrics (METRICS_ENABLED not set — default)', () => {
   it('queueFailed.set() is a no-op and does not throw', () => {
     expect(() => metrics.queueFailed.set(0)).not.toThrow();
   });
+
+  it('Redis governor metrics are no-ops when disabled', () => {
+    expect(() => metrics.spectreGovernorLeaseRecoveriesTotal.inc({ provider: 'anthropic', backend: 'redis' })).not.toThrow();
+    expect(() => metrics.spectreGovernorBackendErrorsTotal.inc({ provider: 'anthropic', backend: 'redis', operation: 'acquire' })).not.toThrow();
+  });
+
+  it('Spectre provider metrics are no-ops when disabled', () => {
+    expect(() => metrics.spectreScansTotal.inc({ provider: 'anthropic', outcome: 'incomplete', reason: 'provider-rate-limited' })).not.toThrow();
+    expect(() => (metrics.spectreProviderRequestDuration as { observe(labels: Record<string, string>, value: number): void }).observe({ provider: 'anthropic', outcome: 'complete' }, 1)).not.toThrow();
+    expect(() => (metrics.spectreProviderInputBytes as { observe(labels: Record<string, string>, value: number): void }).observe({ provider: 'anthropic' }, 1_024)).not.toThrow();
+    expect(() => metrics.spectreChunksTotal.inc({ provider: 'anthropic', outcome: 'complete' })).not.toThrow();
+    expect(() => metrics.spectreRepairAttemptsTotal.inc({ provider: 'anthropic', kind: 'evidence', outcome: 'succeeded' })).not.toThrow();
+    expect(() => (metrics.spectreGovernorInFlightRequests as { set(labels: Record<string, string>, value: number): void }).set({ provider: 'anthropic', backend: 'redis' }, 1)).not.toThrow();
+    expect(() => metrics.spectreCacheOperationsTotal.inc({ operation: 'read', outcome: 'hit', result: 'negative' })).not.toThrow();
+    expect(() => (metrics.spectreCacheEntryBytes as { observe(value: number): void }).observe(1_024)).not.toThrow();
+    expect(() => metrics.spectreStructuralFilesTotal.inc({ mode: 'shadow', outcome: 'parsed' })).not.toThrow();
+    expect(() => (metrics.spectreStructuralDuration as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow', outcome: 'complete' }, 0.1)).not.toThrow();
+    expect(() => (metrics.spectreStructuralInputBytes as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow' }, 1_024)).not.toThrow();
+    expect(() => (metrics.spectreStructuralFacts as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow' }, 2)).not.toThrow();
+    expect(() => (metrics.spectreStructuralSelectionDelta as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow', direction: 'added' }, 1)).not.toThrow();
+  });
 });
 
 describe('metrics (METRICS_ENABLED=true)', () => {
@@ -86,6 +107,23 @@ describe('metrics (METRICS_ENABLED=true)', () => {
   });
 
   it('registry.metrics() returns a string with layne_ metrics', async () => {
+    metrics.spectreScansTotal.inc({ provider: 'anthropic', outcome: 'complete', reason: 'none' });
+    (metrics.spectreProviderRequestDuration as { observe(labels: Record<string, string>, value: number): void }).observe({ provider: 'anthropic', outcome: 'complete' }, 1);
+    (metrics.spectreProviderInputBytes as { observe(labels: Record<string, string>, value: number): void }).observe({ provider: 'anthropic' }, 1_024);
+    metrics.spectreChunksTotal.inc({ provider: 'anthropic', outcome: 'complete' });
+    metrics.spectreRepairAttemptsTotal.inc({ provider: 'anthropic', kind: 'evidence', outcome: 'succeeded' });
+    metrics.spectreGovernorDecisionsTotal.inc({ provider: 'anthropic', backend: 'redis', outcome: 'acquired', reason: 'none' });
+    (metrics.spectreGovernorInFlightRequests as { set(labels: Record<string, string>, value: number): void }).set({ provider: 'anthropic', backend: 'redis' }, 1);
+    (metrics.spectreCircuitState as { set(labels: Record<string, string>, value: number): void }).set({ provider: 'anthropic', backend: 'redis' }, 0);
+    metrics.spectreGovernorLeaseRecoveriesTotal.inc({ provider: 'anthropic', backend: 'redis' });
+    metrics.spectreGovernorBackendErrorsTotal.inc({ provider: 'anthropic', backend: 'redis', operation: 'acquire' });
+    metrics.spectreCacheOperationsTotal.inc({ operation: 'read', outcome: 'hit', result: 'negative' });
+    (metrics.spectreCacheEntryBytes as { observe(value: number): void }).observe(1_024);
+    metrics.spectreStructuralFilesTotal.inc({ mode: 'shadow', outcome: 'parsed' });
+    (metrics.spectreStructuralDuration as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow', outcome: 'complete' }, 0.1);
+    (metrics.spectreStructuralInputBytes as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow' }, 1_024);
+    (metrics.spectreStructuralFacts as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow' }, 2);
+    (metrics.spectreStructuralSelectionDelta as { observe(labels: Record<string, string>, value: number): void }).observe({ mode: 'shadow', direction: 'added' }, 1);
     const output = await metrics.registry!.metrics();
     expect(output).toContain('layne_scans_total');
     expect(output).toContain('layne_scan_duration_seconds');
@@ -93,5 +131,22 @@ describe('metrics (METRICS_ENABLED=true)', () => {
     expect(output).toContain('layne_finding_placements_total');
     expect(output).toContain('layne_webhooks_total');
     expect(output).toContain('layne_queue_waiting');
+    expect(output).toContain('layne_spectre_scans_total{provider="anthropic",outcome="complete",reason="none"}');
+    expect(output).toContain('layne_spectre_provider_request_duration_seconds');
+    expect(output).toContain('layne_spectre_provider_input_bytes');
+    expect(output).toContain('layne_spectre_chunks_total');
+    expect(output).toContain('layne_spectre_repair_attempts_total');
+    expect(output).toContain('layne_spectre_governor_decisions_total');
+    expect(output).toContain('layne_spectre_governor_inflight_requests');
+    expect(output).toContain('layne_spectre_circuit_state');
+    expect(output).toContain('layne_spectre_governor_lease_recoveries_total');
+    expect(output).toContain('layne_spectre_governor_backend_errors_total');
+    expect(output).toContain('layne_spectre_cache_operations_total');
+    expect(output).toContain('layne_spectre_cache_entry_bytes');
+    expect(output).toContain('layne_spectre_structural_files_total');
+    expect(output).toContain('layne_spectre_structural_duration_seconds');
+    expect(output).toContain('layne_spectre_structural_input_bytes');
+    expect(output).toContain('layne_spectre_structural_facts');
+    expect(output).toContain('layne_spectre_structural_selection_delta');
   });
 });

@@ -3,13 +3,23 @@ import { debug } from '../debug.js';
 
 const MAX_STDOUT_BUFFER = 200 * 1024 * 1024; // 200 MB — prevents ENOBUF on large scan outputs
 
-/**
- * Resolves with stdout regardless of exit code so callers can parse
- * findings from a non-zero exit (e.g. Semgrep exits 1, Trufflehog exits 183).
- * Rejects only when the process couldn't be spawned or produced no stdout.
- */
-export function exec(cmd: string, args: string[], options: Record<string, unknown> = {}): Promise<string> {
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/** Returns output and the numeric exit code so each scanner can classify it. */
+export function exec(cmd: string, args: string[], options: Record<string, unknown> = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
+    const signal = options.signal as AbortSignal | undefined;
+    try {
+      throwIfAborted(signal);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
     debug(cmd, `running: ${cmd} ${args.join(' ')}`);
     execFile(cmd, args, { maxBuffer: MAX_STDOUT_BUFFER, ...options, encoding: 'utf8' } as Parameters<typeof execFile>[2], (err, stdout, stderr) => {
       const stdoutStr = stdout as string;
@@ -21,13 +31,29 @@ export function exec(cmd: string, args: string[], options: Record<string, unknow
         const code = (err as NodeJS.ErrnoException).code;
         debug(cmd, `exited with code ${code ?? 'unknown'}${stdoutStr ? ' (stdout present, parsing output)' : ''}`);
       }
-      if (err && !stdoutStr) {
+      try {
+        throwIfAborted(signal);
+      } catch (abortErr) {
+        reject(abortErr);
+        return;
+      }
+      const exitCode = err ? (err as NodeJS.ErrnoException).code : 0;
+      if (err && typeof exitCode !== 'number') {
         reject(err);
       } else {
-        resolve(stdoutStr ?? '');
+        resolve({
+          stdout: stdoutStr ?? '',
+          stderr: stderrStr ?? '',
+          exitCode: typeof exitCode === 'number' ? exitCode : 0,
+        });
       }
     });
   });
+}
+
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('Scan cancelled');
 }
 
 /**

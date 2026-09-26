@@ -2,7 +2,7 @@
   "title": "Layne Security Scanner",
   "uid": "layne-security-scanner",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "timezone": "browser",
@@ -139,6 +139,127 @@
           "legendFormat": "{{le}}"
         }
       ]
+    },
+    {
+      "id": 9,
+      "title": "Spectre Complete / Incomplete Rate",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, outcome) (rate(layne_spectre_scans_total{outcome=~\"complete|incomplete\"}[5m]))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0, "custom": { "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Spectre Incomplete Reasons",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, reason) (rate(layne_spectre_scans_total{outcome=\"incomplete\"}[5m]))",
+          "legendFormat": "{{provider}} {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0, "custom": { "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Spectre Provider Request Latency (p95)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (provider, outcome, le) (rate(layne_spectre_provider_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0 }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Spectre Chunk Completion",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, outcome) (rate(layne_spectre_chunks_total[5m]))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0, "custom": { "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Spectre Governor Denials",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, backend, reason) (rate(layne_spectre_governor_decisions_total{outcome=\"denied\"}[5m]))",
+          "legendFormat": "{{provider}} {{backend}} {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Spectre Circuit State",
+      "description": "0 = closed, 1 = open, 2 = half-open",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 48, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "max by (provider, backend) (layne_spectre_circuit_state)",
+          "legendFormat": "{{provider}} {{backend}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "max": 2 }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Spectre Governor Backend Errors",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, backend, operation) (rate(layne_spectre_governor_backend_errors_total[5m]))",
+          "legendFormat": "{{provider}} {{backend}} {{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Spectre Governor Lease Recoveries",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 56, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, backend) (rate(layne_spectre_governor_lease_recoveries_total[5m]))",
+          "legendFormat": "{{provider}} {{backend}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0 }
+      }
     }
   ]
 }

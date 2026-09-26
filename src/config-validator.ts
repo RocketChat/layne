@@ -8,13 +8,27 @@
  * directly via `npm run validate-config`.
  */
 
-const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'semgrep', 'trufflehog', 'claude', 'spectre', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
-const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_REPO_KEYS    = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'maxLockfileSizeKb', 'semgrep', 'trufflehog', 'claude', 'spectre', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
+const KNOWN_GLOBAL_KEYS  = new Set(['mode', 'contextLines', 'timeoutMinutes', 'maxFileSizeKb', 'maxLockfileSizeKb', 'semgrep', 'trufflehog', 'claude', 'spectre', 'depDoctor', 'notifications', 'labels', 'trigger', 'comment', 'exceptionApprovers']);
 const VALID_MODES        = new Set(['changed_files', 'diff_only']);
 const VALID_TRIGGER_ONS  = new Set(['pull_request', 'workflow_run', 'workflow_job']);
 const VALID_CONCLUSIONS  = new Set(['success', 'failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required']);
 const CLAUDE_MODELS  = /^claude-/;
 const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
+const VALID_NOTIFICATION_EVENTS = new Set(['findings', 'coverage-failure', 'incomplete-scan', 'internal-error', 'exception-approval']);
+const KNOWN_NOTIFIER_KEYS = new Set(['enabled', 'webhookUrl', 'template', 'templates', 'notifyOn', 'minFindingSeverity']);
+const VALID_SPECTRE_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'mistral', 'amazon-bedrock']);
+const KNOWN_SPECTRE_KEYS = new Set(['enabled', 'provider', 'model', 'fileCap', 'secondaryFileCap', 'maxDiffLines', 'minSeverity', 'skipPaths', 'skipExtensions', 'concurrency', 'prompt', 'boostPatterns', 'maxInputBytes', 'maxOutputTokens', 'requestTimeoutSeconds', 'maxCallsPerFile', 'maxCallsPerPullRequest', 'maxRepairCallsPerPullRequest', 'cache', 'astSignals']);
+const KNOWN_SPECTRE_CACHE_KEYS = new Set(['enabled', 'positiveTtlSeconds', 'negativeTtlSeconds']);
+const KNOWN_SPECTRE_AST_SIGNAL_KEYS = new Set(['mode', 'maxFiles', 'maxTotalBytes', 'timeoutSeconds']);
+const SPECTRE_LIMITS = {
+  maxInputBytes: 64 * 1024,
+  maxOutputTokens: 2_000,
+  requestTimeoutSeconds: 30,
+  concurrency: 2,
+  maxCallsPerFile: 20,
+  maxCallsPerPullRequest: 100,
+};
 const REPO_KEY_RE        = /^[^/]+\/[^/]+$/;
 
 export type ValidateConfigResult =
@@ -57,6 +71,10 @@ function validateGlobal(block: Record<string, unknown>, ctx: string, errors: str
     }
   }
   validateScanMode(block, ctx, errors);
+  if (block['semgrep']             !== undefined) validateScanner(block['semgrep'], `${ctx}.semgrep`, errors);
+  if (block['trufflehog']          !== undefined) validateScanner(block['trufflehog'], `${ctx}.trufflehog`, errors);
+  if (block['claude']              !== undefined) validateClaude(block['claude'], `${ctx}.claude`, errors);
+  if (block['spectre']             !== undefined) validateSpectre(block['spectre'], `${ctx}.spectre`, errors);
   if (block['notifications'] !== undefined) validateNotifications(block['notifications'], `${ctx}.notifications`, errors);
   if (block['labels']        !== undefined) validateLabels(block['labels'], `${ctx}.labels`, errors);
   if (block['trigger']       !== undefined) validateTrigger(block['trigger'], `${ctx}.trigger`, errors);
@@ -98,6 +116,10 @@ function validateScanMode(block: Record<string, unknown>, ctx: string, errors: s
   if (block['maxFileSizeKb'] !== undefined) {
     if (!Number.isInteger(block['maxFileSizeKb']) || (block['maxFileSizeKb'] as number) < 1)
       errors.push(`${ctx}.maxFileSizeKb: must be a positive integer (kilobytes)`);
+  }
+  if (block['maxLockfileSizeKb'] !== undefined) {
+    if (!Number.isInteger(block['maxLockfileSizeKb']) || (block['maxLockfileSizeKb'] as number) < 1)
+      errors.push(`${ctx}.maxLockfileSizeKb: must be a positive integer (kilobytes)`);
   }
 }
 
@@ -152,15 +174,23 @@ function validateSpectre(block: unknown, ctx: string, errors: string[]): void {
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
   const b = block as Record<string, unknown>;
 
+  for (const key of Object.keys(b)) {
+    if (!KNOWN_SPECTRE_KEYS.has(key)) errors.push(`${ctx}: unknown key "${key}"`);
+  }
+
   if (b['enabled'] !== undefined && typeof b['enabled'] !== 'boolean')
     errors.push(`${ctx}.enabled: must be a boolean`);
 
-  if (b['provider'] !== undefined && typeof b['provider'] !== 'string')
-    errors.push(`${ctx}.provider: must be a string`);
+  if (b['provider'] !== undefined) {
+    if (typeof b['provider'] !== 'string' || (b['provider'] as string).trim() === '')
+      errors.push(`${ctx}.provider: must be a non-empty string`);
+    else if (!VALID_SPECTRE_PROVIDERS.has(b['provider'] as string))
+      errors.push(`${ctx}.provider: must be one of ${[...VALID_SPECTRE_PROVIDERS].join(', ')}`);
+  }
 
   if (b['model'] !== undefined) {
-    if (typeof b['model'] !== 'string')
-      errors.push(`${ctx}.model: must be a string`);
+    if (typeof b['model'] !== 'string' || (b['model'] as string).trim() === '')
+      errors.push(`${ctx}.model: must be a non-empty string`);
     else if (
       (b['provider'] === undefined || b['provider'] === 'anthropic') &&
       !CLAUDE_MODELS.test(b['model'])
@@ -169,18 +199,18 @@ function validateSpectre(block: unknown, ctx: string, errors: string[]): void {
   }
 
   if (b['fileCap'] !== undefined) {
-    if (!Number.isInteger(b['fileCap']) || (b['fileCap'] as number) < 1)
-      errors.push(`${ctx}.fileCap: must be a positive integer`);
+    if (!Number.isInteger(b['fileCap']) || (b['fileCap'] as number) < 1 || (b['fileCap'] as number) > 30)
+      errors.push(`${ctx}.fileCap: must be an integer between 1 and 30`);
   }
 
   if (b['secondaryFileCap'] !== undefined) {
-    if (!Number.isInteger(b['secondaryFileCap']) || (b['secondaryFileCap'] as number) < 0)
-      errors.push(`${ctx}.secondaryFileCap: must be a non-negative integer (use 0 to disable)`);
+    if (!Number.isInteger(b['secondaryFileCap']) || (b['secondaryFileCap'] as number) < 0 || (b['secondaryFileCap'] as number) > 50)
+      errors.push(`${ctx}.secondaryFileCap: must be an integer between 0 and 50 (use 0 to disable)`);
   }
 
   if (b['maxDiffLines'] !== undefined) {
-    if (!Number.isInteger(b['maxDiffLines']) || (b['maxDiffLines'] as number) < 1)
-      errors.push(`${ctx}.maxDiffLines: must be a positive integer`);
+    if (!Number.isInteger(b['maxDiffLines']) || (b['maxDiffLines'] as number) < 1 || (b['maxDiffLines'] as number) > 1000)
+      errors.push(`${ctx}.maxDiffLines: must be an integer between 1 and 1000`);
   }
 
   if (b['minSeverity'] !== undefined) {
@@ -209,6 +239,16 @@ function validateSpectre(block: unknown, ctx: string, errors: string[]): void {
       errors.push(`${ctx}.concurrency: must be a positive integer`);
   }
 
+  for (const [key, maximum] of Object.entries(SPECTRE_LIMITS)) {
+    if (b[key] !== undefined && (!Number.isInteger(b[key]) || (b[key] as number) < 1 || (b[key] as number) > maximum))
+      errors.push(`${ctx}.${key}: must be an integer between 1 and ${maximum}`);
+  }
+
+  if (b['maxRepairCallsPerPullRequest'] !== undefined) {
+    if (!Number.isInteger(b['maxRepairCallsPerPullRequest']) || (b['maxRepairCallsPerPullRequest'] as number) < 0 || (b['maxRepairCallsPerPullRequest'] as number) > 10)
+      errors.push(`${ctx}.maxRepairCallsPerPullRequest: must be an integer between 0 and 10`);
+  }
+
   if (b['prompt'] !== undefined && b['prompt'] !== null) {
     if (typeof b['prompt'] !== 'string' || (b['prompt'] as string).trim() === '')
       errors.push(`${ctx}.prompt: must be a non-empty string or null`);
@@ -227,6 +267,54 @@ function validateSpectre(block: unknown, ctx: string, errors: string[]): void {
           errors.push(`${ctx}.boostPatterns: "${p}" is not a valid regular expression`);
         }
       }
+    }
+  }
+
+  if (b['cache'] !== undefined) validateSpectreCache(b['cache'], `${ctx}.cache`, errors);
+  if (b['astSignals'] !== undefined) validateSpectreAstSignals(b['astSignals'], `${ctx}.astSignals`, errors);
+}
+
+function validateSpectreAstSignals(block: unknown, ctx: string, errors: string[]): void {
+  if (typeof block !== 'object' || block === null || Array.isArray(block)) {
+    errors.push(`${ctx}: must be an object`);
+    return;
+  }
+  const astSignals = block as Record<string, unknown>;
+  for (const key of Object.keys(astSignals)) {
+    if (!KNOWN_SPECTRE_AST_SIGNAL_KEYS.has(key)) errors.push(`${ctx}: unknown key "${key}"`);
+  }
+  if (astSignals['mode'] !== undefined && !['off', 'shadow', 'enabled'].includes(String(astSignals['mode']))) {
+    errors.push(`${ctx}.mode: must be "off", "shadow", or "enabled"`);
+  }
+  const limits: Record<string, [number, number]> = {
+    maxFiles: [1, 500],
+    maxTotalBytes: [1, 64 * 1024 * 1024],
+    timeoutSeconds: [1, 30],
+  };
+  for (const [key, [minimum, maximum]] of Object.entries(limits)) {
+    const value = astSignals[key];
+    if (value !== undefined && (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum)) {
+      errors.push(`${ctx}.${key}: must be an integer between ${minimum} and ${maximum}`);
+    }
+  }
+}
+
+function validateSpectreCache(block: unknown, ctx: string, errors: string[]): void {
+  if (typeof block !== 'object' || block === null || Array.isArray(block)) {
+    errors.push(`${ctx}: must be an object`);
+    return;
+  }
+  const cache = block as Record<string, unknown>;
+  for (const key of Object.keys(cache)) {
+    if (!KNOWN_SPECTRE_CACHE_KEYS.has(key)) errors.push(`${ctx}: unknown key "${key}"`);
+  }
+  if (cache['enabled'] !== undefined && typeof cache['enabled'] !== 'boolean') {
+    errors.push(`${ctx}.enabled: must be a boolean`);
+  }
+  for (const key of ['positiveTtlSeconds', 'negativeTtlSeconds']) {
+    const value = cache[key];
+    if (value !== undefined && (!Number.isInteger(value) || (value as number) < 60 || (value as number) > 7 * 24 * 60 * 60)) {
+      errors.push(`${ctx}.${key}: must be an integer between 60 and 604800`);
     }
   }
 }
@@ -283,14 +371,39 @@ function validateNotifications(block: unknown, ctx: string, errors: string[]): v
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
   for (const [provider, cfg] of Object.entries(block as Record<string, unknown>)) {
     const pctx = `${ctx}.${provider}`;
-    if (typeof cfg !== 'object' || cfg === null) { errors.push(`${pctx}: must be an object`); continue; }
+    if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) { errors.push(`${pctx}: must be an object`); continue; }
     const c = cfg as Record<string, unknown>;
+    for (const key of Object.keys(c)) {
+      if (!KNOWN_NOTIFIER_KEYS.has(key)) errors.push(`${pctx}: unknown key "${key}"`);
+    }
     if (c['enabled'] !== undefined && typeof c['enabled'] !== 'boolean')
       errors.push(`${pctx}.enabled: must be a boolean`);
     if (c['webhookUrl'] !== undefined && typeof c['webhookUrl'] !== 'string')
       errors.push(`${pctx}.webhookUrl: must be a string`);
     if (c['template'] !== undefined && typeof c['template'] !== 'string')
       errors.push(`${pctx}.template: must be a string`);
+    if (c['minFindingSeverity'] !== undefined && !VALID_SEVERITIES.has(c['minFindingSeverity'] as string))
+      errors.push(`${pctx}.minFindingSeverity: must be one of ${[...VALID_SEVERITIES].join(', ')}`);
+    if (c['notifyOn'] !== undefined) {
+      if (!Array.isArray(c['notifyOn']) || (c['notifyOn'] as unknown[]).length === 0) {
+        errors.push(`${pctx}.notifyOn: must be a non-empty array`);
+      } else {
+        for (const event of c['notifyOn'] as unknown[]) {
+          if (typeof event !== 'string' || !VALID_NOTIFICATION_EVENTS.has(event))
+            errors.push(`${pctx}.notifyOn: "${event}" is not a valid notification event`);
+        }
+      }
+    }
+    if (c['templates'] !== undefined) {
+      if (typeof c['templates'] !== 'object' || c['templates'] === null || Array.isArray(c['templates'])) {
+        errors.push(`${pctx}.templates: must be an object`);
+      } else {
+        for (const [event, template] of Object.entries(c['templates'] as Record<string, unknown>)) {
+          if (!VALID_NOTIFICATION_EVENTS.has(event)) errors.push(`${pctx}.templates: unknown event "${event}"`);
+          if (typeof template !== 'string') errors.push(`${pctx}.templates.${event}: must be a string`);
+        }
+      }
+    }
   }
 }
 
@@ -306,7 +419,7 @@ function validateComment(block: unknown, ctx: string, errors: string[]): void {
 function validateLabels(block: unknown, ctx: string, errors: string[]): void {
   if (typeof block !== 'object' || block === null) { errors.push(`${ctx}: must be an object`); return; }
   const b = block as Record<string, unknown>;
-  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess', 'onException']) {
+  for (const key of ['onFailure', 'removeOnFailure', 'onSuccess', 'removeOnSuccess', 'onIncomplete', 'removeOnIncomplete', 'onException', 'removeOnException']) {
     if (b[key] === undefined) continue;
     if (!Array.isArray(b[key]))
       errors.push(`${ctx}.${key}: must be an array`);

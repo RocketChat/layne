@@ -1,0 +1,1 @@
+export const SPECTRE_STRUCTURAL_RULES_VERSION = 3;

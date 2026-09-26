@@ -19,6 +19,7 @@
     "labels": []
   },
   "repository": {
+    "id": 123456789,
     "name": "your-repo",
     "full_name": "your-org/your-repo",
     "clone_url": "https://github.com/your-org/your-repo.git",

@@ -18,8 +18,8 @@ function stubStdout(stdout: string) {
 
 // Helper to make execFile resolve with a non-zero exit but still produce stdout
 // (e.g. Trufflehog exits 183 when secrets are found).
-function stubExitWithStdout(stdout: string) {
-  const err = Object.assign(new Error('exit 183'), { code: 183 });
+function stubExitWithStdout(stdout: string, exitCode = 183) {
+  const err = Object.assign(new Error(`exit ${exitCode}`), { code: exitCode });
   mockExecFile.mockImplementationOnce((cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => cb(err, stdout, ''));
 }
 
@@ -44,15 +44,15 @@ const CHANGED = ['src/config.js', 'src/db.js'];
 describe('runTrufflehog()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns an empty array immediately when changedFiles is empty', async () => {
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: [] });
-    expect(findings).toEqual([]);
+  it('returns complete with no findings when enabled and changedFiles is empty', async () => {
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: [] });
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it('returns an empty array immediately when changedFiles is omitted', async () => {
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws' });
-    expect(findings).toEqual([]);
+  it('returns complete with no findings when enabled and changedFiles is omitted', async () => {
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws' });
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
@@ -77,16 +77,17 @@ describe('runTrufflehog()', () => {
     expect(args).toContain('/tmp/ws/src/db.js');
   });
 
-  it('returns an empty array when stdout is empty', async () => {
+  it('returns complete with no findings when stdout is empty', async () => {
     stubStdout('');
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
-    expect(findings).toEqual([]);
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    expect(result).toEqual({ findings: [], status: { outcome: 'complete' } });
   });
 
   it('parses a single finding from one JSON line', async () => {
     stubStdout(FINDING_LINE);
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    const { findings, status } = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
 
+    expect(status).toEqual({ outcome: 'complete' });
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       file:     'src/config.js',
@@ -100,7 +101,7 @@ describe('runTrufflehog()', () => {
 
   it('strips the workspace path prefix from the file field', async () => {
     stubStdout(FINDING_LINE);
-    const [finding] = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    const { findings: [finding] } = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
     expect(finding.file).toBe('src/config.js');
     expect(finding.file).not.toContain('/tmp/ws');
   });
@@ -114,43 +115,47 @@ describe('runTrufflehog()', () => {
     });
     stubStdout(`${FINDING_LINE}\n${line2}`);
 
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    const { findings } = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
     expect(findings).toHaveLength(2);
     expect(findings[1].ruleId).toBe('trufflehog/github');
   });
 
-  it('silently skips malformed (non-JSON) lines', async () => {
+  it('retains valid findings but returns incomplete for malformed NDJSON lines', async () => {
     stubStdout(`not-json\n${FINDING_LINE}\nalso-not-json`);
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
-    expect(findings).toHaveLength(1);
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    expect(result.findings).toHaveLength(1);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'invalid-output' });
   });
 
-  it('still parses findings when trufflehog exits non-zero but produces stdout', async () => {
-    stubExitWithStdout(FINDING_LINE);
-    const findings = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
-    expect(findings).toHaveLength(1);
+  it('returns complete findings for Trufflehog exit code 183', async () => {
+    stubExitWithStdout(FINDING_LINE, 183);
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    expect(result.findings).toHaveLength(1);
+    expect(result.status).toEqual({ outcome: 'complete' });
   });
 
-  it('throws when execFile errors with no stdout (e.g. command not found)', async () => {
-    stubError('spawn trufflehog ENOENT');
-    await expect(runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED })).rejects.toThrow('spawn trufflehog ENOENT');
+  it('retains findings but returns incomplete for an unexpected exit code', async () => {
+    stubExitWithStdout(FINDING_LINE, 2);
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    expect(result.findings).toHaveLength(1);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'unexpected-exit' });
   });
 
   it('falls back to "unknown" for missing SourceMetadata fields', async () => {
     const bare = JSON.stringify({ DetectorName: 'Slack' });
     stubStdout(bare);
-    const [finding] = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
+    const { findings: [finding] } = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: CHANGED });
     expect(finding.file).toBe('unknown');
     expect(finding.line).toBe(1);
   });
 
-  it('returns empty array immediately when toolConfig.enabled is false', async () => {
-    const findings = await runTrufflehog({
+  it('returns disabled immediately when toolConfig.enabled is false', async () => {
+    const result = await runTrufflehog({
       workspacePath: '/tmp/ws',
       changedFiles:  CHANGED,
       toolConfig:    { enabled: false, extraArgs: [] },
     });
-    expect(findings).toEqual([]);
+    expect(result).toEqual({ findings: [], status: { outcome: 'disabled' } });
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
@@ -211,5 +216,35 @@ describe('runTrufflehog()', () => {
     for (const call of mockExecFile.mock.calls) {
       expect(call[1]).toContain('--only-verified');
     }
+  });
+
+  it('preserves earlier findings and returns incomplete when a later batch fails to spawn', async () => {
+    const manyFiles = Array.from({ length: 201 }, (_, i) => `src/file${i}.js`);
+    stubStdout(FINDING_LINE);
+    stubError('spawn trufflehog EACCES');
+
+    const result = await runTrufflehog({ workspacePath: '/tmp/ws', changedFiles: manyFiles });
+
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+    expect(result.findings).toHaveLength(1);
+    expect(result.status).toEqual({ outcome: 'incomplete', reason: 'command-failed' });
+  });
+
+  it('propagates cancellation and does not start another batch', async () => {
+    const controller = new AbortController();
+    const reason = new Error('scan cancelled');
+    const manyFiles = Array.from({ length: 201 }, (_, i) => `src/file${i}.js`);
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], opts: { signal?: AbortSignal }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      expect(opts.signal).toBe(controller.signal);
+      controller.abort(reason);
+      cb(new Error('process aborted'), '', '');
+    });
+
+    await expect(runTrufflehog({
+      workspacePath: '/tmp/ws',
+      changedFiles: manyFiles,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(mockExecFile).toHaveBeenCalledOnce();
   });
 });

@@ -39,6 +39,12 @@ describe('auth', () => {
 
       expect(mockAuthFn).toHaveBeenCalledWith({ type: 'installation', installationId: 99999 });
     });
+
+    it('does not request a token when already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort(new Error('cancelled'));
+      await expect(getInstallationToken(12345, controller.signal)).rejects.toThrow('cancelled');
+    });
   });
 
   describe('getInstallationOctokit()', () => {

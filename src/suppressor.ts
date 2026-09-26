@@ -4,11 +4,16 @@ import type { ProcessedFinding, LineMap } from './types.js';
 
 const SECURITY_COMMENT_RE = /(?:\/\/|#)\s*SECURITY:\s+\S/;
 
-function gitShow(workspacePath: string, baseSha: string, filePath: string): Promise<string> {
+function gitShow(workspacePath: string, baseSha: string, filePath: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     execFile('git', ['-C', workspacePath, 'show', `${baseSha}:${filePath}`],
-      { maxBuffer: 200 * 1024 * 1024 },
-      (err, stdout) => { if (err && !stdout) reject(err); else resolve(stdout ?? ''); }
+      { maxBuffer: 200 * 1024 * 1024, ...(signal && { signal }) },
+      (err, stdout) => {
+        if (signal?.aborted) reject(signal.reason);
+        else if (err && !stdout) reject(err);
+        else resolve(stdout ?? '');
+      }
     );
   });
 }
@@ -19,8 +24,9 @@ function gitShow(workspacePath: string, baseSha: string, filePath: string): Prom
  */
 export async function suppressFindings(
   findings: ProcessedFinding[],
-  { workspacePath, baseSha, headSha }: { workspacePath: string; baseSha: string; headSha: string },
+  { workspacePath, baseSha, headSha, signal }: { workspacePath: string; baseSha: string; headSha: string; signal?: AbortSignal },
 ): Promise<ProcessedFinding[]> {
+  signal?.throwIfAborted();
   if (findings.length === 0) return [];
 
   const fileCache    = new Map<string, string[] | null>();
@@ -30,9 +36,11 @@ export async function suppressFindings(
     if (fileCache.has(filePath)) return fileCache.get(filePath)!;
     let lines: string[] | null = null;
     try {
-      const content = await gitShow(workspacePath, baseSha, filePath);
+      const content = await gitShow(workspacePath, baseSha, filePath, signal);
+      signal?.throwIfAborted();
       lines = content.split('\n');
     } catch {
+      signal?.throwIfAborted();
       // New file or blob unavailable — no suppression possible
     }
     fileCache.set(filePath, lines);
@@ -43,8 +51,9 @@ export async function suppressFindings(
     if (lineMapCache.has(filePath)) return lineMapCache.get(filePath)!;
     let map: LineMap | null = null;
     try {
-      map = await buildLineMapForFile({ workspacePath, baseSha, headSha, filePath });
+      map = await buildLineMapForFile({ workspacePath, baseSha, headSha, filePath, signal });
     } catch {
+      signal?.throwIfAborted();
       // Diff unavailable — fall back to using head line numbers directly
     }
     lineMapCache.set(filePath, map);
@@ -53,6 +62,7 @@ export async function suppressFindings(
 
   const kept: ProcessedFinding[] = [];
   for (const finding of findings) {
+    signal?.throwIfAborted();
     if (finding.tool === 'claude' && finding.locationValidated !== true) {
       kept.push(finding);
       continue;

@@ -12,6 +12,7 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
   contextLines:   8,
   timeoutMinutes: 15,
   maxFileSizeKb:  1024,
+  maxLockfileSizeKb: 4096,
   semgrep: Object.freeze({
     enabled:   true,
     extraArgs: ['--config', 'auto'],
@@ -32,12 +33,29 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
     fileCap:        20,
     secondaryFileCap: 20,
     maxDiffLines:   400,
+    maxInputBytes:  64 * 1024,
+    maxOutputTokens: 1_200,
+    requestTimeoutSeconds: 30,
+    maxCallsPerFile: 4,
+    maxCallsPerPullRequest: 40,
+    maxRepairCallsPerPullRequest: 3,
     minSeverity:    'high',
-    concurrency:    5,
+    concurrency:    2,
     skipPaths:      [],
     skipExtensions: [],
     prompt:         null,
     boostPatterns:  [],
+    cache: Object.freeze({
+      enabled: false,
+      positiveTtlSeconds: 24 * 60 * 60,
+      negativeTtlSeconds: 60 * 60,
+    }),
+    astSignals: Object.freeze({
+      mode: 'off',
+      maxFiles: 200,
+      maxTotalBytes: 2 * 1024 * 1024,
+      timeoutSeconds: 3,
+    }),
   } as SpectreConfig),  // note: no default provider — omitting provider disables Spectre even when enabled: true
   depDoctor: Object.freeze({
     enabled:         false,
@@ -58,6 +76,13 @@ export const DEFAULT_CONFIG: Readonly<ScanConfig> = Object.freeze({
 // Restart both server and worker to pick up config changes (same lifecycle as code deploys).
 let reposConfigCache: Record<string, unknown> | null = null;
 
+export class ConfigLoadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigLoadError';
+  }
+}
+
 async function loadReposConfig(): Promise<Record<string, unknown>> {
   if (reposConfigCache) return reposConfigCache;
   try {
@@ -65,19 +90,19 @@ async function loadReposConfig(): Promise<Record<string, unknown>> {
     const raw: unknown = JSON.parse(await readFile(REPOS_CONFIG_PATH, 'utf8'));
     const result = validateConfig(raw);
     if (!result.valid) {
-      console.error('[config] layne.json has validation errors — some settings may be ignored:');
-      for (const err of result.errors) console.error(`[config]   • ${err}`);
+      throw new ConfigLoadError(`layne.json has validation errors:\n${result.errors.map(err => `- ${err}`).join('\n')}`);
     }
     reposConfigCache = (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) ? raw as Record<string, unknown> : {};
+    return reposConfigCache;
   } catch (err) {
-    if (err instanceof SyntaxError) {
-      console.error(`[config] layne.json is not valid JSON: ${err.message}`);
-    } else {
-      console.error(`[config] failed to load layne.json: ${(err as Error).message}`);
-    }
-    reposConfigCache = {};
+    if (err instanceof ConfigLoadError) throw err;
+    if (err instanceof SyntaxError) throw new ConfigLoadError(`layne.json is not valid JSON: ${err.message}`);
+    throw new ConfigLoadError(`failed to load layne.json: ${(err as Error).message}`);
   }
-  return reposConfigCache;
+}
+
+export async function validateConfigFile(): Promise<void> {
+  await loadReposConfig();
 }
 
 export async function loadScanConfig({ owner, repo }: { owner: string; repo: string }): Promise<ScanConfig> {
@@ -105,15 +130,33 @@ export async function loadScanConfig({ owner, repo }: { owner: string; repo: str
   const globalExceptionApprovers = globalConfig.exceptionApprovers ?? DEFAULT_CONFIG.exceptionApprovers;
   const repoExceptionApprovers   = repoOverrides.exceptionApprovers ?? null;
 
+  const globalSpectre: Partial<SpectreConfig> = globalConfig.spectre ?? {};
+  const repoSpectre: Partial<SpectreConfig> = repoOverrides.spectre ?? {};
+
   return {
     mode:           repoOverrides.mode           ?? globalConfig.mode           ?? DEFAULT_CONFIG.mode,
     contextLines:   repoOverrides.contextLines   ?? globalConfig.contextLines   ?? DEFAULT_CONFIG.contextLines,
     timeoutMinutes: repoOverrides.timeoutMinutes ?? globalConfig.timeoutMinutes ?? DEFAULT_CONFIG.timeoutMinutes,
     maxFileSizeKb:  repoOverrides.maxFileSizeKb  ?? globalConfig.maxFileSizeKb  ?? DEFAULT_CONFIG.maxFileSizeKb,
-    semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(repoOverrides.semgrep    ?? {}) },
-    trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(repoOverrides.trufflehog ?? {}) },
-    claude:        { ...DEFAULT_CONFIG.claude,     ...(repoOverrides.claude     ?? {}) },
-    spectre:       { ...DEFAULT_CONFIG.spectre,    ...(repoOverrides.spectre    ?? {}) },
+    maxLockfileSizeKb: repoOverrides.maxLockfileSizeKb ?? globalConfig.maxLockfileSizeKb ?? DEFAULT_CONFIG.maxLockfileSizeKb,
+    semgrep:       { ...DEFAULT_CONFIG.semgrep,    ...(globalConfig.semgrep    ?? {}), ...(repoOverrides.semgrep    ?? {}) },
+    trufflehog:    { ...DEFAULT_CONFIG.trufflehog, ...(globalConfig.trufflehog ?? {}), ...(repoOverrides.trufflehog ?? {}) },
+    claude:        { ...DEFAULT_CONFIG.claude,     ...(globalConfig.claude     ?? {}), ...(repoOverrides.claude     ?? {}) },
+    spectre:       {
+      ...DEFAULT_CONFIG.spectre,
+      ...globalSpectre,
+      ...repoSpectre,
+      cache: {
+        ...DEFAULT_CONFIG.spectre.cache!,
+        ...(globalSpectre.cache ?? {}),
+        ...(repoSpectre.cache ?? {}),
+      },
+      astSignals: {
+        ...DEFAULT_CONFIG.spectre.astSignals,
+        ...(globalSpectre.astSignals ?? {}),
+        ...(repoSpectre.astSignals ?? {}),
+      },
+    },
     depDoctor:     { ...DEFAULT_CONFIG.depDoctor,  ...(globalConfig.depDoctor  ?? {}), ...(repoOverrides.depDoctor  ?? {}) },
     notifications: { ...globalNotifications, ...repoNotifications },
     labels:        { ...globalLabels, ...repoLabels },

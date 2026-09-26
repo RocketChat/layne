@@ -1,27 +1,57 @@
 # Notifiers
 
-Layne can send a message to a chat platform when a scan finds new issues. Notifications fire after the GitHub Check Run is posted and are independent of it - a notification failure never affects the scan result.
+Layne can send a message to a chat platform when a scan reaches a security-relevant state. Notifications fire after the GitHub Check Run is posted and are independent of it - a notification failure never affects the scan result.
 
 Notifiers are configured under the `notifications` key in `config/layne.json`.
 
 
-## Deduplication
+## Events and defaults
 
-Layne only notifies when the finding count **increases** compared to the previous scan for the same PR. If a developer pushes a follow-up commit that does not introduce new findings, no notification is sent. The previous count is stored in Redis with a 30-day TTL. A Redis read error is treated as a previous count of zero (fail open - the notification fires).
+By default, Layne notifies for critical/high findings, final internal errors, and exception approvals. Coverage-only updates and medium, low, and info findings remain visible in the Check Run and PR comment but do not notify by default.
+
+| Event | Meaning |
+|---|---|
+| `findings` | Findings at or above `minFindingSeverity` |
+| `coverage-failure` | Required coverage failed and blocked the check, such as Spectre omitting a high-risk file (opt in) |
+| `incomplete-scan` | Scanner, Git, or diff coverage was incomplete (opt in) |
+| `internal-error` | The final BullMQ attempt failed before completing the scan |
+| `exception-approval` | One or more effective blocking-finding exceptions exist |
+
+Configure the policy per notifier:
+
+```json
+{
+  "enabled": true,
+  "webhookUrl": "$ROCKETCHAT_WEBHOOK_URL",
+  "notifyOn": ["findings", "coverage-failure", "incomplete-scan", "internal-error", "exception-approval"],
+  "minFindingSeverity": "high"
+}
+```
+
+Set `minFindingSeverity` to `medium`, `low`, or `info` to opt into non-blocking finding notifications.
+
+Add `coverage-failure` and/or `incomplete-scan` to `notifyOn` when a notifier should receive coverage updates. Once `notifyOn` is set, list every event that notifier should receive because the array replaces the default policy.
+
+## Deduplication and retries
+
+Layne fingerprints the final conclusion, relevant finding IDs and severities, coverage reasons, and effective exceptions. Each notifier and PR has an independent Redis cursor with a 30-day TTL. Reordered or unchanged results do not notify, while a same-count replacement finding or severity escalation does.
+
+A clean state is recorded without sending a recovery message. If a failure later returns, it notifies again. Transient network errors, HTTP 408/425/429, and HTTP 5xx responses are attempted up to three times. A failed delivery is not acknowledged, so a later scan with the same applicable state retries it. Delivery is at-least-once; a process crash after the remote webhook accepts a request but before Redis is updated can produce a duplicate.
+
+The first scan of an existing open PR after upgrading from count-based deduplication uses the new state cursor and may send one fresh notification. The old `layne:scan:count:*` keys are not migrated because they do not contain finding identities or coverage state; they expire under their existing TTL.
 
 ## Exception Approval Notifications
 
-When an exception approval is used, Layne **always sends a notification** - even if the finding count didn't increase. This ensures visibility for the security team.
+Effective partial and full exception approvals notify. When another configured event also applies, its status appears on a separate line so the approval cannot imply that the PR passed.
 
 The notification includes the approver's username:
 
 ```
-⚠️ Exception approved by @security-lead
-🦴 Found 2 issue(s): 1 critical, 1 high
-https://github.com/acme/payments/pull/42
+ℹ️ Exception approved by @security-lead for https://github.com/acme/payments/pull/42
+❗ Required scan coverage failed for https://github.com/acme/payments/pull/42: spectre: omitted-high-risk-file (1)
 ```
 
-You can customise the notification using the `{{approver}}` template variable when an exception is in effect.
+You can customise the notification using the exception template variables below.
 
 
 ## Global vs per-repo
@@ -52,12 +82,26 @@ All notifiers support a `template` field with `{{variable}}` placeholders. The a
 | `{{high}}` | Count of high findings |
 | `{{medium}}` | Count of medium findings |
 | `{{low}}` | Count of low findings |
+| `{{info}}` | Count of info findings |
 | `{{summary}}` | Pre-rendered summary line, e.g. `Found 2 issue(s): 1 high, 1 medium.` |
 | `{{severitySummary}}` | Severity counts as a comma-separated string, e.g. `1 high, 2 medium` |
-| `{{findings}}` | Pre-rendered findings table (Severity, Scanner, File, Line, Rule, Description) - primarily useful in PR comment templates |
+| `{{findings}}` | Pre-rendered findings table (Severity, Scanner, File with line, Rule, Description) - primarily useful in PR comment templates |
 | `{{approver}}` | GitHub username of the exception approver (only set when an exception is used) |
+| `{{approvedFindingIds}}` | Comma-separated effective exception finding IDs |
+| `{{approvalReason}}` | Recorded exception reason or reasons |
+| `{{event}}` | Primary notification event |
+| `{{events}}` | All events represented by this notification |
+| `{{conclusion}}` | Final Check Run conclusion |
+| `{{notificationTotal}}` | Finding count at or above the notifier's `minFindingSeverity`, excluding effective exceptions |
+| `{{blockingTotal}}` | Unexcepted critical/high finding count |
+| `{{warningTotal}}` | Medium/low/info finding count |
+| `{{coverageSummary}}` | Scanner, Git, and diff coverage reasons |
+| `{{blockingCoverageSummary}}` | Required blocking coverage failures |
+| `{{incompleteCoverageSummary}}` | Incomplete scanner, Git, and diff coverage reasons |
+| `{{stateSummary}}` | Combined summary of every event represented by the notification |
+| `{{errorId}}` | Sanitized internal-error correlation ID |
 
-Omit `template` to use the default message format for that notifier.
+Omit `template` and `templates` to use the built-in message format. Every applicable event is rendered as a standalone line in priority order: internal error, exception approval, required coverage failure, findings, then incomplete coverage. A configured global `template`, or a `templates` entry for the primary event, retains the custom single-message behavior.
 
 
 ## Keeping webhook URLs out of config
@@ -82,11 +126,20 @@ Sends a POST to a Rocket.Chat incoming webhook URL.
 | `enabled` | boolean | yes | Must be `true` to activate |
 | `webhookUrl` | string | yes | Webhook URL, or `"$ENV_VAR"` reference |
 | `template` | string | no | Custom message template. Omit for the default format |
+| `templates` | object | no | Event-specific templates keyed by notification event |
+| `notifyOn` | string[] | no | Enabled events; defaults to `findings`, `internal-error`, and `exception-approval` |
+| `minFindingSeverity` | string | no | Minimum severity for `findings`; defaults to `high` |
 
-**Default message:**
+**Built-in event lines:**
 ```
+🚨 Layne encountered internal error 7e6638d43848 while scanning https://github.com/acme/payments/pull/42
+ℹ️ Exception approved by @security-lead for https://github.com/acme/payments/pull/42
+❗ Required scan coverage failed for https://github.com/acme/payments/pull/42: spectre: omitted-high-risk-file (1)
 🦴 Good boy Layne dug up 3 finding(s) in https://github.com/acme/payments/pull/42
+❗ Scan coverage was incomplete for https://github.com/acme/payments/pull/42: semgrep: partial-results (1)
 ```
+
+Only configured events that apply to the scan are included. When several apply, each line repeats the PR URL so it remains meaningful on its own.
 
 **Message icon:** Layne automatically sets its logo as the message icon using the `DOMAIN` environment variable. No configuration needed - if `DOMAIN` is set, the Layne logo appears on every notification.
 
@@ -121,15 +174,22 @@ Sends a POST to a Slack incoming webhook URL.
 | `enabled` | boolean | yes | Must be `true` to activate |
 | `webhookUrl` | string | yes | Webhook URL, or `"$ENV_VAR"` reference |
 | `template` | string | no | Custom message template. Omit for the default format |
+| `templates` | object | no | Event-specific templates keyed by notification event |
+| `notifyOn` | string[] | no | Enabled events; defaults to `findings`, `internal-error`, and `exception-approval` |
+| `minFindingSeverity` | string | no | Minimum severity for `findings`; defaults to `high` |
 
 **Setup:** Create a Slack app, enable Incoming Webhooks, add a webhook for your channel, and copy the resulting `https://hooks.slack.com/services/...` URL.
 
-**Default message:**
+**Built-in event lines:**
 ```
+🚨 Layne encountered internal error 7e6638d43848 while scanning <https://github.com/acme/payments/pull/42|acme/payments #42>
+ℹ️ Exception approved by @security-lead for <https://github.com/acme/payments/pull/42|acme/payments #42>
+❗ Required scan coverage failed for <https://github.com/acme/payments/pull/42|acme/payments #42>: spectre: omitted-high-risk-file (1)
 🦴 Good boy Layne dug up 3 finding(s) in <https://github.com/acme/payments/pull/42|acme/payments #42>
+❗ Scan coverage was incomplete for <https://github.com/acme/payments/pull/42|acme/payments #42>: semgrep: partial-results (1)
 ```
 
-The PR link uses Slack's `<url|label>` syntax so it renders as a clickable hyperlink.
+Only configured events that apply to the scan are included. The PR link uses Slack's `<url|label>` syntax so each standalone event line renders with a clickable hyperlink.
 
 **Custom template example:**
 ```json

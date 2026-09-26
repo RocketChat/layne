@@ -8,12 +8,18 @@ import crypto from 'crypto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import { redis, scanQueue } from './queue.js';
 import { createCheckRun, completeCheckRun, skipCheckRun, findPullRequestBySha, getLatestCheckRun, getPullRequest, createPrComment } from './github.js';
-import { loadScanConfig } from './config.js';
+import { loadScanConfig, validateConfigFile } from './config.js';
 import { validateEnv } from './env.js';
 import { debug } from './debug.js';
 import { registry, webhooksTotal } from './metrics.js';
-import { isReviewerAuthorized, parseExceptionCommand, storeExceptions } from './exception-approvals.js';
-import type { PRCacheData } from './types.js';
+import {
+  isReviewerAuthorized,
+  loadBulkExceptionRequest,
+  parseExceptionCommand,
+  storeBulkExceptionRequest,
+  storeExceptions,
+} from './exception-approvals.js';
+import type { JobData, PRCacheData, PullRequestMetadata } from './types.js';
 
 const METRICS_ENABLED = process.env.METRICS_ENABLED === 'true';
 
@@ -24,6 +30,12 @@ const ACCEPTED_RESPONSE          = { status: 200, body: 'Accepted' };
 const HANDLED_PR_ACTIONS         = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
 const WEBHOOK_LOCK_TTL_SECONDS   = 30;
 const PR_CACHE_TTL_SECONDS       = 7 * 24 * 60 * 60; // 7 days
+const PR_TITLE_MAX_BYTES         = 512;
+const PR_BODY_MAX_BYTES          = 8 * 1024;
+const PR_AUTHOR_MAX_BYTES        = 128;
+const CONTROL_CHARACTERS         = /[\u0000-\u001f\u007f-\u009f]+/g;
+
+class BulkRequestRejectedError extends Error {}
 
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok' }));
 
@@ -67,6 +79,54 @@ function getJobId(repositoryFullName: string, prNumber: number, headSha: string)
 
 function prCacheKey(repoFullName: string, headSha: string): string {
   return `layne:pr:${repoFullName}:${headSha}`;
+}
+
+function trustedRepositoryId(repository: { id?: unknown }): number | undefined {
+  return Number.isSafeInteger(repository.id) && (repository.id as number) > 0
+    ? repository.id as number
+    : undefined;
+}
+
+function normalizeUntrustedText(value: unknown, maxBytes: number): string {
+  if (typeof value !== 'string') return '';
+
+  const normalized = value.replace(CONTROL_CHARACTERS, ' ');
+  let result = '';
+  let bytes = 0;
+
+  for (const character of normalized) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+
+  return result;
+}
+
+function normalizePullRequestMetadata(metadata: unknown): PullRequestMetadata {
+  const source = metadata !== null && typeof metadata === 'object'
+    ? metadata as Record<string, unknown>
+    : {};
+
+  return {
+    trust:  'untrusted',
+    title:  normalizeUntrustedText(source['title'], PR_TITLE_MAX_BYTES),
+    body:   normalizeUntrustedText(source['body'], PR_BODY_MAX_BYTES),
+    author: normalizeUntrustedText(source['author'], PR_AUTHOR_MAX_BYTES),
+  };
+}
+
+function metadataFromPullRequest(pullRequest: {
+  title?: unknown;
+  body?: unknown;
+  user?: { login?: unknown } | null;
+}): PullRequestMetadata {
+  return normalizePullRequestMetadata({
+    title:  pullRequest.title,
+    body:   pullRequest.body,
+    author: pullRequest.user?.login,
+  });
 }
 
 async function acquireWebhookLock(jobId: string): Promise<{ key: string; token: string } | null> {
@@ -131,10 +191,18 @@ async function handlePullRequest(payload: Record<string, unknown>): Promise<{ st
     repository: Record<string, unknown>;
     installation: Record<string, unknown>;
   };
-  const pr = pull_request as { number: number; draft?: boolean; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+  const pr = pull_request as {
+    number: number;
+    draft?: boolean;
+    head: { sha: string };
+    base: { sha: string; ref: string };
+    title?: unknown;
+    body?: unknown;
+    user?: { login?: unknown } | null;
+  };
   const prNumber = pr.number;
   const headSha  = pr.head.sha;
-  const repo = repository as { full_name: string; owner: { login: string }; name: string };
+  const repo = repository as { id?: unknown; full_name: string; owner: { login: string }; name: string };
   const jobId    = getJobId(repo.full_name, prNumber, headSha);
 
   debug('server', `pull_request webhook: action=${action} repo=${repo.full_name} PR #${prNumber} sha=${headSha}`);
@@ -155,7 +223,14 @@ async function handlePullRequest(payload: Record<string, unknown>): Promise<{ st
     return deferPullRequest({ pull_request: pr, repository: repo, installation, config });
   }
 
-  return enqueueScan({ pull_request: pr, repository: repo, installation, jobId, action });
+  return enqueueScan({
+    pull_request: pr,
+    pullRequestMetadata: metadataFromPullRequest(pr),
+    repository: repo,
+    installation,
+    jobId,
+    action,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -171,9 +246,9 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
     installation: Record<string, unknown>;
   };
 
-  const repo = repository as { full_name: string; owner: { login: string }; name: string };
+  const repo = repository as { id?: unknown; full_name: string; owner: { login: string }; name: string };
   const issueData = issue as { number: number; pull_request?: unknown };
-  const commentData = comment as { body: string; user: { login: string } };
+  const commentData = comment as { id?: number | string; created_at?: string; body: string; user: { login: string } };
 
   debug('server', `issue_comment webhook: action=${action} repo=${repo.full_name} issue #${issueData?.number}`);
 
@@ -238,7 +313,14 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
     return { status: 200, body: 'PR not found' };
   }
 
-  const prData = pr as { state?: string; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+  const prData = pr as {
+    state?: string;
+    head: { sha: string };
+    base: { sha: string; ref: string };
+    title?: unknown;
+    body?: unknown;
+    user?: { login?: unknown } | null;
+  };
 
   if (prData.state !== 'open') {
     debug('server', `issue_comment on non-open PR #${issueData.number} (state=${prData.state ?? 'unknown'}), ignoring`);
@@ -246,15 +328,29 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
   }
   const headSha = prData.head.sha;
 
-  await storeExceptions({
-    owner:           repo.owner.login,
-    repo:            repo.name,
-    prNumber:        issueData.number,
-    approvedHeadSha: headSha,
-    findingIds:      parsed.ids,
-    approver:        commenter,
-    reason:          parsed.reason!,
-  }).catch(err => console.error(`[server] Failed to store exceptions: ${(err as Error).message}`));
+  if (parsed.target === 'ids') {
+    try {
+      await storeExceptions({
+        owner:           repo.owner.login,
+        repo:            repo.name,
+        prNumber:        issueData.number,
+        approvedHeadSha: headSha,
+        findingIds:      parsed.ids,
+        approver:        commenter,
+        reason:          parsed.reason!,
+      });
+    } catch (err) {
+      console.error(`[server] Failed to store exceptions: ${(err as Error).message}`);
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner:          repo.owner.login,
+        repo:           repo.name,
+        prNumber:       issueData.number,
+        body:           '❌ Layne could not record the exception. Please retry.',
+      }).catch(commentError => console.error(`[server] Failed to post error reply: ${(commentError as Error).message}`));
+      return { status: 200, body: 'Exception storage failed' };
+    }
+  }
 
   const checkRun = await getLatestCheckRun({
     installationId: (installation as { id: number }).id,
@@ -266,22 +362,135 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
     return null;
   });
 
-  const checkRunData = checkRun as { conclusion?: string } | null;
-  if (checkRunData?.conclusion === 'failure') {
+  const checkRunData = checkRun as { conclusion?: string; completed_at?: string } | null;
+  if (parsed.target === 'all') {
+    const requestId = String(commentData.id ?? '');
+    if (!requestId) {
+      console.error('[server] Bulk exception command is missing its GitHub comment ID');
+      return { status: 200, body: 'Invalid command' };
+    }
+
+    const existingRequest = await loadBulkExceptionRequest({
+      owner: repo.owner.login, repo: repo.name, prNumber: issueData.number, approvedHeadSha: headSha, requestId,
+    }).catch(() => null);
+    if (existingRequest?.state === 'materialized') return ACCEPTED_RESPONSE;
+
+    if (checkRunData?.conclusion !== 'failure') {
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner: repo.owner.login,
+        repo: repo.name,
+        prNumber: issueData.number,
+        body: '❌ Layne can only approve all findings from a failed scan on the current PR head.',
+      }).catch(err => console.error(`[server] Failed to post error reply: ${(err as Error).message}`));
+      return { status: 200, body: 'No failed scan' };
+    }
+
+    const commentCreatedAt = Date.parse(commentData.created_at ?? '');
+    const scanCompletedAt = Date.parse(checkRunData.completed_at ?? '');
+    if (!Number.isFinite(commentCreatedAt) || !Number.isFinite(scanCompletedAt) || commentCreatedAt <= scanCompletedAt) {
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner: repo.owner.login,
+        repo: repo.name,
+        prNumber: issueData.number,
+        body: '❌ This bulk exception command does not apply to the latest failed scan. Post a new command after reviewing the current result.',
+      }).catch(err => console.error(`[server] Failed to post error reply: ${(err as Error).message}`));
+      return { status: 200, body: 'Command predates failed scan' };
+    }
+
     const jobId = getJobId(repo.full_name, issueData.number, headSha);
-    await enqueueScan({
+    const acceptance = await enqueueScanDetailed({
       pull_request: {
         number: issueData.number,
-        head:   { sha: headSha, ref: prData.head.ref },
-        base:   { sha: prData.base.sha, ref: prData.base.ref },
-        labels: (prData.labels ?? []),
+        head: { sha: headSha },
+        base: { sha: prData.base.sha, ref: prData.base.ref },
       },
+      pullRequestMetadata: metadataFromPullRequest(prData),
       repository: repo,
       installation,
       jobId,
       action: 'issue_comment',
       triggeredByException: true,
+      exceptionApprovalRequest: { kind: 'all', requestId },
+    }, {
+      bulkRequestId: requestId,
+      beforeEnqueue: async () => {
+        const stored = await storeBulkExceptionRequest({
+          owner: repo.owner.login,
+          repo: repo.name,
+          prNumber: issueData.number,
+          approvedHeadSha: headSha,
+          requestId,
+          approver: commenter,
+          reason: parsed.reason!,
+        });
+        if (stored === 'head-mismatch') {
+          throw new BulkRequestRejectedError('Bulk exception comment is already bound to another PR head');
+        }
+      },
+    });
+
+    if (acceptance.outcome === 'busy') {
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner: repo.owner.login,
+        repo: repo.name,
+        prNumber: issueData.number,
+        body: '❌ Another scan is already in progress for this commit. Retry the bulk exception command after it completes.',
+      }).catch(err => console.error(`[server] Failed to post error reply: ${(err as Error).message}`));
+      return acceptance.response;
+    }
+    if (acceptance.outcome === 'failed') {
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner: repo.owner.login,
+        repo: repo.name,
+        prNumber: issueData.number,
+        body: '❌ Layne could not enqueue the bulk exception re-scan. Retry the command.',
+      }).catch(err => console.error(`[server] Failed to post error reply: ${(err as Error).message}`));
+      return acceptance.response;
+    }
+    if (acceptance.outcome === 'rejected') {
+      await createPrComment({
+        installationId: (installation as { id: number }).id,
+        owner: repo.owner.login,
+        repo: repo.name,
+        prNumber: issueData.number,
+        body: '❌ This bulk exception comment is already bound to a different PR head. Post a new command for the current scan.',
+      }).catch(err => console.error(`[server] Failed to post error reply: ${(err as Error).message}`));
+      return acceptance.response;
+    }
+    if (acceptance.outcome === 'duplicate') return acceptance.response;
+
+    await createPrComment({
+      installationId: (installation as { id: number }).id,
+      owner: repo.owner.login,
+      repo: repo.name,
+      prNumber: issueData.number,
+      body: `✅ Bulk exception request accepted for all current blocking findings by @${commenter}: "${parsed.reason}". Re-running scan...`,
+    }).catch(err => console.error(`[server] Failed to post confirmation: ${(err as Error).message}`));
+    return acceptance.response;
+  }
+
+  let rescanQueued = false;
+  if (checkRunData?.conclusion === 'failure') {
+    const jobId = getJobId(repo.full_name, issueData.number, headSha);
+    const acceptance = await enqueueScanDetailed({
+      pull_request: {
+        number: issueData.number,
+        head:   { sha: headSha },
+        base:   { sha: prData.base.sha, ref: prData.base.ref },
+      },
+      pullRequestMetadata: metadataFromPullRequest(prData),
+      repository: repo,
+      installation,
+      jobId,
+      action: 'issue_comment',
+      triggeredByException: true,
+      exceptionApprovalRequest: { kind: 'ids', findingIds: parsed.ids, approver: commenter },
     }).catch(err => console.error(`[server] Failed to enqueue scan: ${(err as Error).message}`));
+    rescanQueued = acceptance?.outcome === 'enqueued';
   }
 
   const idList = parsed.ids.join(', ');
@@ -290,15 +499,22 @@ async function handleIssueComment(payload: Record<string, unknown>): Promise<{ s
     owner:          repo.owner.login,
     repo:           repo.name,
     prNumber:       issueData.number,
-    body:           `✅ Exception recorded for ${idList} by @${commenter}: "${parsed.reason}". Re-running scan...`,
+    body:           `✅ Exception recorded for ${idList} by @${commenter}: "${parsed.reason}".${rescanQueued ? ' Re-running scan...' : ''}`,
   }).catch(err => console.error(`[server] Failed to post confirmation: ${(err as Error).message}`));
 
   return { status: 200, body: 'Accepted' };
 }
 
 async function deferPullRequest({ pull_request, repository, installation, config }: {
-  pull_request: { number: number; head: { sha: string; ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
-  repository: { full_name: string; clone_url?: string; owner: { login: string }; name: string };
+  pull_request: {
+    number: number;
+    head: { sha: string };
+    base: { sha: string; ref: string };
+    title?: unknown;
+    body?: unknown;
+    user?: { login?: unknown } | null;
+  };
+  repository: { id?: unknown; full_name: string; clone_url?: string; owner: { login: string }; name: string };
   installation: Record<string, unknown>;
   config: Awaited<ReturnType<typeof loadScanConfig>>;
 }): Promise<{ status: number; body: string }> {
@@ -306,15 +522,12 @@ async function deferPullRequest({ pull_request, repository, installation, config
   const cacheKey = prCacheKey(repository.full_name, headSha);
 
   const cacheData: PRCacheData = {
+    ...(trustedRepositoryId(repository) ? { repositoryId: trustedRepositoryId(repository) } : {}),
     prNumber:       pull_request.number,
-    headSha,
-    headRef:        pull_request.head.ref,
     baseSha:        pull_request.base.sha,
     baseRef:        pull_request.base.ref,
-    labels:         pull_request.labels?.map(l => l.name) ?? [],
     installationId: (installation as { id: number }).id,
-    cloneUrl:       repository.clone_url ?? '',
-    repoFullName:   repository.full_name,
+    pullRequestMetadata: metadataFromPullRequest(pull_request),
   };
 
   await redis.set(cacheKey, JSON.stringify(cacheData), 'EX', PR_CACHE_TTL_SECONDS);
@@ -352,7 +565,7 @@ async function handleWorkflowRun(payload: Record<string, unknown>): Promise<{ st
     installation: Record<string, unknown>;
   };
 
-  const repo = repository as { full_name: string; owner: { login: string }; name: string; clone_url?: string };
+  const repo = repository as { id?: unknown; full_name: string; owner: { login: string }; name: string; clone_url?: string };
   const run = workflow_run as { name?: string; head_sha: string; conclusion?: string };
 
   debug('server', `workflow_run webhook: action=${action} workflow="${run?.name}" repo=${repo.full_name} conclusion=${run?.conclusion}`);
@@ -397,10 +610,10 @@ async function handleWorkflowRun(payload: Record<string, unknown>): Promise<{ st
   return enqueueScan({
     pull_request: {
       number: prData.prNumber,
-      head:   { sha: headSha, ref: prData.headRef },
+      head:   { sha: headSha },
       base:   { sha: prData.baseSha, ref: prData.baseRef },
-      labels: prData.labels.map(name => ({ name })),
     },
+    pullRequestMetadata: prData.pullRequestMetadata,
     repository: repo,
     installation: { id: prData.installationId },
     jobId,
@@ -420,7 +633,7 @@ async function handleWorkflowJob(payload: Record<string, unknown>): Promise<{ st
     installation: Record<string, unknown>;
   };
 
-  const repo = repository as { full_name: string; owner: { login: string }; name: string; clone_url?: string };
+  const repo = repository as { id?: unknown; full_name: string; owner: { login: string }; name: string; clone_url?: string };
   const job = workflow_job as { name?: string; head_sha: string; conclusion?: string };
 
   debug('server', `workflow_job webhook: action=${action} job="${job?.name}" repo=${repo.full_name} conclusion=${job?.conclusion}`);
@@ -465,10 +678,10 @@ async function handleWorkflowJob(payload: Record<string, unknown>): Promise<{ st
   return enqueueScan({
     pull_request: {
       number: prData.prNumber,
-      head:   { sha: headSha, ref: prData.headRef },
+      head:   { sha: headSha },
       base:   { sha: prData.baseSha, ref: prData.baseRef },
-      labels: prData.labels.map(name => ({ name })),
     },
+    pullRequestMetadata: prData.pullRequestMetadata,
     repository: repo,
     installation: { id: prData.installationId },
     jobId,
@@ -478,7 +691,7 @@ async function handleWorkflowJob(payload: Record<string, unknown>): Promise<{ st
 
 async function resolvePrData({ installation, repository, headSha, scanOnDraft }: {
   installation: Record<string, unknown>;
-  repository: { full_name: string; owner: { login: string }; name: string; clone_url?: string };
+  repository: { id?: unknown; full_name: string; owner: { login: string }; name: string; clone_url?: string };
   headSha: string;
   scanOnDraft: boolean;
 }): Promise<PRCacheData | null> {
@@ -489,6 +702,9 @@ async function resolvePrData({ installation, repository, headSha, scanOnDraft }:
 
   if (cached) {
     prData = JSON.parse(cached) as PRCacheData;
+    prData.pullRequestMetadata = normalizePullRequestMetadata(prData.pullRequestMetadata);
+    const currentRepositoryId = trustedRepositoryId(repository);
+    if (prData.repositoryId !== undefined && currentRepositoryId !== prData.repositoryId) return null;
   } else {
     debug('server', `PR cache miss for ${repository.full_name}@${headSha} — querying GitHub API`);
 
@@ -502,18 +718,21 @@ async function resolvePrData({ installation, repository, headSha, scanOnDraft }:
 
       if (!pr) return null;
 
-      const apiPr = pr as { number: number; head: { ref: string }; base: { sha: string; ref: string }; labels?: Array<{ name: string }> };
+      const apiPr = pr as {
+        number: number;
+        base: { sha: string; ref: string };
+        title?: unknown;
+        body?: unknown;
+        user?: { login?: unknown } | null;
+      };
 
       prData = {
+        ...(trustedRepositoryId(repository) ? { repositoryId: trustedRepositoryId(repository) } : {}),
         prNumber:       apiPr.number,
-        headSha,
-        headRef:        apiPr.head.ref,
         baseSha:        apiPr.base.sha,
         baseRef:        apiPr.base.ref,
-        labels:         apiPr.labels?.map(l => l.name) ?? [],
         installationId: (installation as { id: number }).id,
-        cloneUrl:       repository.clone_url ?? '',
-        repoFullName:   repository.full_name,
+        pullRequestMetadata: metadataFromPullRequest(apiPr),
       };
     } catch (err) {
       console.error(`[server] Failed to recover PR from GitHub API: ${(err as Error).message}`);
@@ -553,49 +772,82 @@ async function resolvePrData({ installation, repository, headSha, scanOnDraft }:
 // Shared enqueue path
 // ---------------------------------------------------------------------------
 
-async function isJobActive(jobId: string): Promise<boolean> {
+async function getActiveJob(jobId: string) {
   const job = await scanQueue.getJob(jobId);
-  if (!job) return false;
+  if (!job) return null;
   const state = await job.getState();
-  if (state === 'waiting' || state === 'active' || state === 'delayed') return true;
+  if (state === 'waiting' || state === 'active' || state === 'delayed') return job;
   await job.remove();
   debug('server', `removed ${state} job ${jobId} to allow re-scan`);
-  return false;
+  return null;
 }
 
-async function enqueueScan({ pull_request, repository, installation, jobId, action, triggeredByException }: {
+interface EnqueueScanParams {
   pull_request: {
     number: number;
-    head: { sha: string; ref: string };
+    head: { sha: string };
     base: { sha: string; ref: string };
-    labels?: Array<{ name: string }>;
   };
-  repository: { full_name: string; clone_url?: string; owner: { login: string }; name: string };
+  pullRequestMetadata: PullRequestMetadata;
+  repository: { id?: unknown; full_name: string; clone_url?: string; owner: { login: string }; name: string };
   installation: Record<string, unknown>;
   jobId: string;
   action: string;
   triggeredByException?: boolean;
-}): Promise<{ status: number; body: string }> {
-  if (await isJobActive(jobId)) {
+  exceptionApprovalRequest?: JobData['exceptionApprovalRequest'];
+}
+
+type EnqueueOutcome = 'enqueued' | 'duplicate' | 'busy' | 'rejected' | 'failed';
+
+async function enqueueScan(params: EnqueueScanParams): Promise<{ status: number; body: string }> {
+  return (await enqueueScanDetailed(params)).response;
+}
+
+async function enqueueScanDetailed(
+  { pull_request, pullRequestMetadata, repository, installation, jobId, action, triggeredByException, exceptionApprovalRequest }: EnqueueScanParams,
+  options: { bulkRequestId?: string; beforeEnqueue?: () => Promise<void> } = {},
+): Promise<{ response: { status: number; body: string }; outcome: EnqueueOutcome }> {
+  const activeJob = await getActiveJob(jobId);
+  if (activeJob) {
+    const activeRequest = activeJob.data?.exceptionApprovalRequest as JobData['exceptionApprovalRequest'] | undefined;
+    const sameBulkRequest = options.bulkRequestId
+      && activeRequest?.kind === 'all'
+      && activeRequest.requestId === options.bulkRequestId;
+    if (options.bulkRequestId && !sameBulkRequest) {
+      debug('server', `bulk exception request rejected: job already active for ${jobId}`);
+      return { response: { status: 200, body: 'Scan already in progress' }, outcome: 'busy' };
+    }
     debug('server', `duplicate webhook ignored: job already active for ${jobId}`);
     webhooksTotal.inc({ action, deduplicated: 'true' });
-    return ACCEPTED_RESPONSE;
+    return { response: ACCEPTED_RESPONSE, outcome: 'duplicate' };
   }
 
   const webhookLock = await acquireWebhookLock(jobId);
   if (!webhookLock) {
     debug('server', `duplicate webhook ignored: another request is already accepting ${jobId}`);
-    return ACCEPTED_RESPONSE;
+    return options.bulkRequestId
+      ? { response: { status: 200, body: 'Scan already in progress' }, outcome: 'busy' }
+      : { response: ACCEPTED_RESPONSE, outcome: 'duplicate' };
   }
 
   let checkRunId: number | null = null;
 
   try {
-    if (await isJobActive(jobId)) {
+    const activeJobAfterLock = await getActiveJob(jobId);
+    if (activeJobAfterLock) {
+      const activeRequest = activeJobAfterLock.data?.exceptionApprovalRequest as JobData['exceptionApprovalRequest'] | undefined;
+      const sameBulkRequest = options.bulkRequestId
+        && activeRequest?.kind === 'all'
+        && activeRequest.requestId === options.bulkRequestId;
+      if (options.bulkRequestId && !sameBulkRequest) {
+        return { response: { status: 200, body: 'Scan already in progress' }, outcome: 'busy' };
+      }
       debug('server', `duplicate webhook ignored after lock: job already active for ${jobId}`);
       webhooksTotal.inc({ action, deduplicated: 'true' });
-      return ACCEPTED_RESPONSE;
+      return { response: ACCEPTED_RESPONSE, outcome: 'duplicate' };
     }
+
+    await options.beforeEnqueue?.();
 
     checkRunId = await createCheckRun({
       installationId: (installation as { id: number }).id,
@@ -606,26 +858,43 @@ async function enqueueScan({ pull_request, repository, installation, jobId, acti
 
     await scanQueue.add('scan', {
       installationId: (installation as { id: number }).id,
+      ...(trustedRepositoryId(repository) ? { repositoryId: trustedRepositoryId(repository) } : {}),
       owner:          repository.owner.login,
       repo:           repository.name,
-      repoFullName:   repository.full_name,
       cloneUrl:       repository.clone_url ?? '',
       headSha:        pull_request.head.sha,
-      headRef:        pull_request.head.ref,
       baseSha:        pull_request.base.sha,
       baseRef:        pull_request.base.ref,
       prNumber:       pull_request.number,
-      labels:         pull_request.labels?.map(l => l.name) ?? [],
+      pullRequestMetadata: normalizePullRequestMetadata(pullRequestMetadata),
       checkRunId,
       ...(triggeredByException ? { triggeredByException: true } : {}),
+      ...(exceptionApprovalRequest && { exceptionApprovalRequest }),
     }, {
       jobId,
     });
 
+    if (options.bulkRequestId) {
+      // BullMQ returns the caller's Job data when an existing job wins an ID race.
+      // Reload Redis-backed data before confirming which bulk request was admitted.
+      const persistedJob = await scanQueue.getJob(jobId);
+      const queuedRequest = persistedJob?.data.exceptionApprovalRequest as JobData['exceptionApprovalRequest'] | undefined;
+      if (
+        queuedRequest?.kind !== 'all'
+        || queuedRequest.requestId !== options.bulkRequestId
+        || persistedJob?.data.checkRunId !== checkRunId
+      ) {
+        throw new Error('Bulk exception request lost queue admission race');
+      }
+    }
+
     console.log(`[server] Enqueued scan for ${repository.full_name} PR #${pull_request.number}`);
     webhooksTotal.inc({ action, deduplicated: 'false' });
-    return ACCEPTED_RESPONSE;
+    return { response: ACCEPTED_RESPONSE, outcome: 'enqueued' };
   } catch (err) {
+    if (err instanceof BulkRequestRejectedError) {
+      return { response: { status: 200, body: 'Bulk request bound to another head' }, outcome: 'rejected' };
+    }
     console.error('[server] Failed to enqueue scan job:', err);
 
     if (checkRunId !== null) {
@@ -636,11 +905,11 @@ async function enqueueScan({ pull_request, repository, installation, jobId, acti
         checkRunId,
         conclusion:     'failure',
         annotations:    [],
-        summary:        'Layne failed to accept this scan job. GitHub will retry the webhook delivery.',
+        summary:        'Layne failed to accept this scan job. Retry the triggering event or exception command.',
       }).catch(() => {});
     }
 
-    return { status: 500, body: 'Failed to accept webhook' };
+    return { response: { status: 500, body: 'Failed to accept webhook' }, outcome: 'failed' };
   } finally {
     await releaseWebhookLock(webhookLock).catch(() => {});
   }
@@ -661,6 +930,7 @@ export { app, verifySignature };
 const isMain = process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
   validateEnv();
+  await validateConfigFile();
   app.listen(PORT, () => {
     console.log(`[server] Layne listening on port ${PORT}`);
   });

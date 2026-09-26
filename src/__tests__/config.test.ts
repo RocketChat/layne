@@ -18,32 +18,24 @@ describe('loadScanConfig()', () => {
     DEFAULT_CONFIG = configMod.DEFAULT_CONFIG as unknown as Record<string, unknown>;
   });
 
-  it('returns defaults when layne.json is missing (readFile throws)', async () => {
+  it('rejects when layne.json is missing (readFile throws)', async () => {
     vi.mocked(readFile).mockRejectedValueOnce(new Error('ENOENT'));
-    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.semgrep).toEqual((DEFAULT_CONFIG as Record<string, unknown>).semgrep);
-    expect(config.trufflehog).toEqual((DEFAULT_CONFIG as Record<string, unknown>).trufflehog);
+    await expect(loadScanConfig({ owner: 'org', repo: 'repo' })).rejects.toThrow('failed to load layne.json: ENOENT');
   });
 
-  it('returns defaults when layne.json contains malformed JSON', async () => {
+  it('rejects when layne.json contains malformed JSON', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('not valid json {{{');
-    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.semgrep).toEqual((DEFAULT_CONFIG as Record<string, unknown>).semgrep);
-    expect(config.trufflehog).toEqual((DEFAULT_CONFIG as Record<string, unknown>).trufflehog);
+    await expect(loadScanConfig({ owner: 'org', repo: 'repo' })).rejects.toThrow('layne.json is not valid JSON');
   });
 
-  it('returns defaults when layne.json top-level value is an array', async () => {
+  it('rejects when layne.json top-level value is an array', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify([{ foo: 'bar' }]));
-    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.semgrep).toEqual((DEFAULT_CONFIG as Record<string, unknown>).semgrep);
-    expect(config.trufflehog).toEqual((DEFAULT_CONFIG as Record<string, unknown>).trufflehog);
+    await expect(loadScanConfig({ owner: 'org', repo: 'repo' })).rejects.toThrow('layne.json has validation errors');
   });
 
-  it('returns defaults when layne.json top-level value is a number', async () => {
+  it('rejects when layne.json top-level value is a number', async () => {
     vi.mocked(readFile).mockResolvedValueOnce('42');
-    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
-    expect(config.semgrep).toEqual((DEFAULT_CONFIG as Record<string, unknown>).semgrep);
-    expect(config.trufflehog).toEqual((DEFAULT_CONFIG as Record<string, unknown>).trufflehog);
+    await expect(loadScanConfig({ owner: 'org', repo: 'repo' })).rejects.toThrow('layne.json has validation errors');
   });
 
   it('returns defaults for an unknown repo', async () => {
@@ -421,6 +413,23 @@ describe('loadScanConfig()', () => {
     expect(config.timeoutMinutes).toBe(30);
   });
 
+  // --- maxLockfileSizeKb ---
+
+  it('returns maxLockfileSizeKb 4096 by default', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({}));
+    const config = await loadScanConfig({ owner: 'org', repo: 'repo' });
+    expect(config.maxLockfileSizeKb).toBe(4096);
+  });
+
+  it('supports global and repo lockfile size overrides', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global': { maxLockfileSizeKb: 6144 },
+      'acme/monorepo': { maxLockfileSizeKb: 8192 },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'monorepo' });
+    expect(config.maxLockfileSizeKb).toBe(8192);
+  });
+
   // --- depDoctor global inheritance ---
 
   it('inherits $global depDoctor when the repo has no depDoctor block', async () => {
@@ -455,6 +464,18 @@ describe('loadScanConfig()', () => {
     expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).maxDiffLines).toBe(400);
   });
 
+  it('DEFAULT_CONFIG.spectre has bounded per-file and per-PR call budgets', () => {
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).maxCallsPerFile).toBe(4);
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).maxCallsPerPullRequest).toBe(40);
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).maxRepairCallsPerPullRequest).toBe(3);
+  });
+
+  it('DEFAULT_CONFIG.spectre disables bounded AST signals', () => {
+    expect((DEFAULT_CONFIG.spectre as Record<string, unknown>).astSignals).toEqual({
+      mode: 'off', maxFiles: 200, maxTotalBytes: 2 * 1024 * 1024, timeoutSeconds: 3,
+    });
+  });
+
   it('repo can override spectre.fileCap', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
       'acme/backend': {
@@ -463,6 +484,51 @@ describe('loadScanConfig()', () => {
     }));
     const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
     expect((config.spectre as Record<string, unknown>).fileCap).toBe(10);
+  });
+
+  it('merges Spectre cache defaults, global policy, and repo TTL overrides', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global': { spectre: { cache: { enabled: true } } },
+      'acme/backend': { spectre: { cache: { negativeTtlSeconds: 600 } } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.spectre as { cache: unknown }).cache).toEqual({
+      enabled: true,
+      positiveTtlSeconds: 86_400,
+      negativeTtlSeconds: 600,
+    });
+  });
+
+  it('merges Spectre AST signal defaults, global policy, and repo limits', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      '$global': { spectre: { astSignals: { mode: 'shadow', maxFiles: 200 } } },
+      'acme/backend': { spectre: { astSignals: { mode: 'enabled', timeoutSeconds: 5 } } },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.spectre as { astSignals: unknown }).astSignals).toEqual({
+      mode: 'enabled', maxFiles: 200, maxTotalBytes: 2 * 1024 * 1024, timeoutSeconds: 5,
+    });
+  });
+
+  it('accepts Spectre call budgets at their hard maxima', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/backend': {
+        spectre: { maxCallsPerFile: 20, maxCallsPerPullRequest: 100, maxRepairCallsPerPullRequest: 10 },
+      },
+    }));
+    const config = await loadScanConfig({ owner: 'acme', repo: 'backend' });
+    expect((config.spectre as Record<string, unknown>).maxCallsPerFile).toBe(20);
+    expect((config.spectre as Record<string, unknown>).maxCallsPerPullRequest).toBe(100);
+    expect((config.spectre as Record<string, unknown>).maxRepairCallsPerPullRequest).toBe(10);
+  });
+
+  it('rejects Spectre call budgets above their hard maxima', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({
+      'acme/backend': {
+        spectre: { maxCallsPerFile: 21, maxCallsPerPullRequest: 101, maxRepairCallsPerPullRequest: 11 },
+      },
+    }));
+    await expect(loadScanConfig({ owner: 'acme', repo: 'backend' })).rejects.toThrow('layne.json has validation errors');
   });
 
   it('repo can override spectre.minSeverity', async () => {
@@ -480,7 +546,7 @@ describe('loadScanConfig()', () => {
       'acme/backend': {
         spectre: {
           enabled: true,
-          provider: 'bedrock',
+          provider: 'amazon-bedrock',
           model: 'anthropic.claude-haiku-4-5-20251001',
           skipPaths: ['vendor/', 'generated/'],
           skipExtensions: ['.generated.ts'],
