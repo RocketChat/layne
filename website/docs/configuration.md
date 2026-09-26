@@ -172,7 +172,7 @@ Raise this for large monorepos where scanners may take a long time, or lower it 
 
 ## Trigger
 
-By default Layne scans every pull request immediately when it is opened, synchronised, or reopened (`pull_request` trigger). This may be the right choice for private or internal repositories where all contributors are trusted and every PR is worth scanning.
+By default Layne scans non-draft pull requests when they are opened, synchronised, reopened, or marked ready for review (`pull_request` trigger). Draft pull requests are ignored unless `trigger.scanOnDraft` is enabled.
 
 For public repositories, two problems arise:
 
@@ -186,7 +186,7 @@ Long story short, you can choose between the following:
 
 | `on` | Behavior |
 |---|---|
-| `pull_request` | *(default)* Scan fires immediately on `opened`, `synchronize`, and `reopened` |
+| `pull_request` | *(default)* Scan fires immediately on `opened`, `synchronize`, `reopened`, and `ready_for_review` for eligible PRs |
 | `workflow_run` | Scan fires when the named CI workflow completes with a matching conclusion |
 | `workflow_job` | Scan fires when the named CI job completes with a matching conclusion |
 
@@ -221,6 +221,7 @@ Long story short, you can choose between the following:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `on` | `"pull_request"` \| `"workflow_run"` \| `"workflow_job"` | `"pull_request"` | When to trigger the scan |
+| `scanOnDraft` | boolean | `false` | Allow draft PRs to scan; applies to all trigger modes |
 | `workflow` | string | (none) | Workflow name to watch. Required when `on` is `"workflow_run"` |
 | `job` | string | (none) | Job name to watch. Required when `on` is `"workflow_job"` |
 | `conclusions` | string[] | `["success"]` | Workflow/job conclusions that trigger the scan |
@@ -231,6 +232,16 @@ Both `workflow_run` and `workflow_job` follow the same two-stage pattern:
 
 1. **On `pull_request`** - Layne caches PR metadata in Redis (7-day TTL) and creates a `skipped` Check Run so the deferral is visible in the PR status UI. No scan is enqueued yet.
 2. **On the trigger event completing** - When the named workflow or job finishes with a matching conclusion, Layne looks up the cached PR metadata and enqueues the scan. If the cache is cold (e.g. Layne was offline when the PR was opened), it falls back to the GitHub API.
+
+With the default `scanOnDraft: false`, draft PR events are not cached or deferred. The watched GitHub Actions workflow must include `ready_for_review` in its `pull_request.types` so marking the PR ready starts a new workflow or job:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+```
+
+Setting `scanOnDraft: true` allows matching `pull_request`, `workflow_run`, and `workflow_job` triggers to scan drafts. Deferred triggers still require the configured workflow or job conclusion.
 
 ### Failure mode
 

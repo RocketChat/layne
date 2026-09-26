@@ -176,6 +176,7 @@ export interface LabelConfig {
 
 export interface TriggerConfig {
   on: TriggerOn;
+  scanOnDraft: boolean;
   workflow?: string;
   job?: string;
   conclusions?: string[];

@@ -73,7 +73,7 @@ Two separate Node.js processes:
 - Express app with `POST /webhook`, `GET /health`, `GET /metrics` (when enabled), `GET /assets/layne-logo.png`
 - Verifies GitHub HMAC signature before processing
 - Handles four event types: `pull_request`, `workflow_run`, `workflow_job`, and `issue_comment`
-- **`pull_request` trigger (default):** on opened/synchronize/reopened, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
+- **`pull_request` trigger (default):** ignores drafts by default; on opened/synchronize/reopened/ready_for_review for eligible PRs, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
 - **`workflow_run` trigger:** on `pull_request` events, caches PR metadata in Redis (TTL 7 days) and creates a `skipped` Check Run; on `workflow_run completed` events matching the configured workflow name and conclusion, looks up cached PR metadata (falls back to GitHub API if cache is cold) then enqueues the scan
 - **`workflow_job` trigger:** same two-stage pattern as `workflow_run` but gates on a single named job completing rather than the whole workflow
 - **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores exceptions in Redis scoped to the PR (not the commit SHA); re-enqueues the scan if the current check run is in `failure` state
@@ -158,6 +158,7 @@ Key points for code navigation:
 - Supports `$global` key for defaults inherited by all repos
 - Scanner blocks: per-repo spread over defaults (`{ ...DEFAULT_CONFIG.semgrep, ...repoOverrides.semgrep }`)
 - `trigger`: controls when scanning fires - `pull_request` (default, immediate) or `workflow_run` (deferred until a named CI workflow completes); global default → per-repo override
+- `trigger.scanOnDraft`: defaults to `false` and applies to pull request, workflow run, and workflow job triggers
 - `notifications` and `labels`: per-repo notifier/key wins over global; per-repo absence = inherit global entirely
 - `extraArgs` fully replaces the default (not extended)
 - `config/layne.json` must be present in the Docker image (`COPY config/ ./config/`)
