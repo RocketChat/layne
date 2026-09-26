@@ -34,12 +34,28 @@ export async function setupRepo({ token, cloneUrl, headSha, baseSha, workspacePa
   baseSha: string;
   workspacePath: string;
 }): Promise<void> {
-  const authenticatedUrl = cloneUrl.replace(
-    'https://',
-    `https://x-access-token:${token}@`
-  );
+  let parsedCloneUrl: URL;
+  try {
+    parsedCloneUrl = new URL(cloneUrl);
+  } catch {
+    throw new Error('Refusing to authenticate invalid GitHub clone URL');
+  }
+  if (
+    parsedCloneUrl.protocol !== 'https:'
+    || parsedCloneUrl.hostname !== 'github.com'
+    || parsedCloneUrl.port !== ''
+    || parsedCloneUrl.username !== ''
+    || parsedCloneUrl.password !== ''
+    || parsedCloneUrl.search !== ''
+    || parsedCloneUrl.hash !== ''
+  ) {
+    throw new Error('Refusing to authenticate non-GitHub clone URL');
+  }
 
-  debug('fetcher', `setting up partial clone of ${cloneUrl} at ${headSha}`);
+  debug('fetcher', `setting up partial clone of ${parsedCloneUrl.href} at ${headSha}`);
+  parsedCloneUrl.username = 'x-access-token';
+  parsedCloneUrl.password = token;
+  const authenticatedUrl = parsedCloneUrl.href;
 
   await git(['init', workspacePath]);
   await git(['-C', workspacePath, 'remote', 'add', 'origin', authenticatedUrl]);
