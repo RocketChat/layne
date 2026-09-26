@@ -69,6 +69,39 @@ describe('setupRepo()', () => {
     expect(args).toContain('https://x-access-token:tok999@github.com/org/repo.git');
   });
 
+  it.each([
+    'https://attacker.example/org/repo.git',
+    'https://github.com.attacker.example/org/repo.git',
+    'https://github.com@attacker.example/org/repo.git',
+    'http://github.com/org/repo.git',
+    'https://github.com:8443/org/repo.git',
+    'https://user@github.com/org/repo.git',
+    'https://:password@github.com/org/repo.git',
+    'https://github.com/org/repo.git?redirect=attacker.example',
+    'https://github.com/org/repo.git#attacker.example',
+    'file:///tmp/repo.git',
+    'ssh://git@github.com/org/repo.git',
+  ])('rejects unsafe clone destinations before spawning Git: %s', async cloneUrl => {
+    await expect(setupRepo(defaultSetupArgs({ cloneUrl }))).rejects.toThrow(
+      'Refusing to authenticate non-GitHub clone URL',
+    );
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid URLs without reflecting untrusted input', async () => {
+    await expect(setupRepo(defaultSetupArgs({ cloneUrl: 'not a URL' }))).rejects.toThrow(
+      'Refusing to authenticate invalid GitHub clone URL',
+    );
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('encodes token delimiters without changing the destination', async () => {
+    await setupRepo(defaultSetupArgs({ token: 'synthetic@token:with/slash' }));
+    const url = new URL(mockExecFile.mock.calls[1][1].at(-1)!);
+    expect(url.hostname).toBe('github.com');
+    expect(decodeURIComponent(url.password)).toBe('synthetic@token:with/slash');
+  });
+
   it('fetches the head SHA with --filter=blob:none', async () => {
     await setupRepo(defaultSetupArgs({ headSha: 'deadbeef' }));
     const [cmd, args] = mockExecFile.mock.calls[2]; // third call: fetch head
