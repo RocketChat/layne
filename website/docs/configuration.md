@@ -28,6 +28,8 @@ Everything about how Layne behaves on a given repo lives in `config/layne.json`.
       "removeOnFailure":  ["security-ok"],
       "onSuccess":        ["security-ok"],
       "removeOnSuccess":  ["needs-security-review"],
+      "onIncomplete":     ["security-scan-incomplete"],
+      "removeOnIncomplete": ["security-ok"],
       "onException":      ["security-exception-used"],
       "removeOnException": ["needs-security-review"]
     },
@@ -59,7 +61,7 @@ Overrides are keyed by `"owner/repo"`. A repository with no entry - or whose ent
 | Semgrep | Enabled - `semgrep scan --config auto --json <files>` |
 | Trufflehog | Enabled - `trufflehog filesystem --json --no-update <files>` |
 | Claude | Disabled - must opt in per repo; requires `ANTHROPIC_API_KEY` |
-| Spectre | Disabled - must opt in per repo; requires **both** `enabled: true` and a `provider` value - omitting either keeps it disabled; also requires the corresponding provider credentials in the environment |
+| Spectre | Disabled - must opt in per repo. Setting `enabled: true` without a valid `provider` produces incomplete coverage; an enabled provider also requires the corresponding credentials in the environment |
 | Dep Doctor | Disabled - must opt in per repo; requires `osv-scanner` in PATH for CVE scanning |
 
 See the individual scanner pages for full configuration options:
@@ -76,14 +78,14 @@ And for notifications and comments:
 
 ## Override Behavior by Key
 
-Not all keys merge the same way when a per-repo entry overrides `$global`. The reason is intentional - some blocks like `labels` and `trigger` are semantically atomic (a partial label config makes no sense), while scanner blocks are designed to be tweaked one key at a time without repeating everything.
+Not all keys merge at the same depth when a per-repo entry overrides `$global`. Scanner, trigger, comment, and label blocks merge their individual options; notification blocks merge one notifier at a time; exception approvers are replaced as a unit.
 
 | Key | How per-repo overrides `$global` |
 |---|---|
-| `mode`, `contextLines`, `timeoutMinutes` | Per-repo value replaces global value |
-| `semgrep`, `trufflehog`, `claude`, `spectre` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
-| `trigger` | Full replacement - per-repo `trigger` replaces the global block entirely |
-| `labels` | Full replacement - per-repo `labels` replaces the global block entirely |
+| `mode`, `contextLines`, `timeoutMinutes`, `maxFileSizeKb`, `maxLockfileSizeKb` | Per-repo value replaces global value |
+| `semgrep`, `trufflehog`, `claude`, `spectre`, `depDoctor` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
+| `trigger` | Merged at runtime, but each configured block must be independently valid; repeat `on` and its required `workflow`/`job` when overriding |
+| `labels` | Merged at the key level - per-repo label actions overwrite matching actions |
 | `notifications` | Per-notifier-key - per-repo `rocketchat` replaces global `rocketchat`; a per-repo `slack` entry stacks alongside a global `rocketchat` entry |
 | `comment` | Merged at the key level - per-repo values overwrite matching keys, unset keys inherit from global |
 | `exceptionApprovers` | Full replacement - per-repo `exceptionApprovers` replaces the global block entirely |
@@ -91,7 +93,7 @@ Not all keys merge the same way when a per-repo entry overrides `$global`. The r
 
 ## Scan Mode
 
-Controls how much of each changed file the scanners analyze.
+Controls the workspace presented to file-oriented scanners. Semgrep always parses complete selected HEAD files and is post-filtered to exact changed lines in `diff_only` mode. Claude always receives prepared changed-hunk snippets, and Spectre always receives the canonical typed base-to-head unified diff, in both modes.
 
 ```json title="config/layne.json"
 {
@@ -106,8 +108,8 @@ Controls how much of each changed file the scanners analyze.
 
 | Value | Behavior |
 |---|---|
-| `"changed_files"` | *(default)* Each scanner receives the full content of every file touched by the PR. Findings anywhere in those files are reported. |
-| `"diff_only"` | A projected copy of each file is built containing only the changed hunks plus `contextLines` lines of surrounding context (blank lines preserve line numbers). Scanners receive the projected copy. After scanning, findings are filtered to lines that fall within the actual changed ranges. |
+| `"changed_files"` | *(default)* Semgrep, Trufflehog, and other file-oriented scanners receive complete changed files. Their findings may be anywhere in those files. Claude receives prepared hunk snippets; Spectre receives the typed unified diff. |
+| `"diff_only"` | A projected copy containing changed hunks plus `contextLines` is built for Trufflehog and projection-oriented file scanners. Semgrep parses complete selected HEAD files to preserve valid syntax. Findings from file scanners are filtered to exact changed ranges. Claude receives prepared hunk snippets; Spectre receives the typed unified diff. |
 
 `diff_only` reduces noise and cost for large files where only a few lines changed. The tradeoff is that pre-existing issues in unchanged sections of the file are not reported.
 
@@ -117,16 +119,16 @@ Secrets that exist only in unchanged lines of a file will not appear in scan res
 
 ### `contextLines`
 
-Number of surrounding lines to include around each changed hunk when `mode` is `"diff_only"`. Adjacent expanded hunks are merged into one region.
+Number of surrounding HEAD lines to include around each changed hunk. Adjacent expanded hunks are merged into one region.
 
 - **Default:** `8`
-- Ignored when `mode` is `"changed_files"`
+- Used by Claude's prepared snippets and Spectre's canonical unified diff in both modes; also used by projection-oriented file scanners when `mode` is `"diff_only"`. It does not limit Semgrep's parsing context.
 
 ### `timeoutMinutes`
 
-Hard time limit for a single scan job. If the limit is reached, the job is rethrown so BullMQ can retry it. The Check Run is only marked as failed on the final attempt.
+Hard time limit for a single scan job. If the limit is reached before terminal Check Run publication, the job is rethrown so BullMQ can retry it, and the Check Run is only marked failed on the final attempt. If publication already completed, the deadline aborts remaining best-effort side effects without retrying the job.
 
-- **Default:** `10`
+- **Default:** `15`
 - Accepts any positive integer
 
 Raise this for large monorepos where scanners may take a long time, or lower it to fail fast on repos that should scan quickly.
@@ -141,6 +143,24 @@ Raise this for large monorepos where scanners may take a long time, or lower it 
   }
 }
 ```
+
+### `maxFileSizeKb`
+
+Maximum full HEAD file size admitted by the dispatcher.
+
+- **Default:** `1024`
+- Accepts any positive integer
+
+Files above the limit are excluded before Semgrep, Trufflehog, Claude, and Spectre run. For Semgrep, Trufflehog, and Claude, this is a configured selection policy and does not by itself make their result incomplete. Spectre applies its built-in code-bearing eligibility filter first; intentionally excluded prose is skipped without size accounting. Eligible Spectre files omitted by the size limit are recorded in its coverage counters and make the result `incomplete`. Dep Doctor uses the separate lockfile limit below.
+
+### `maxLockfileSizeKb`
+
+Maximum changed HEAD lockfile size admitted to Dep Doctor.
+
+- **Default:** `4096` (4 MiB)
+- Accepts any positive integer
+
+Recognized lockfiles above this limit are reported as incomplete dependency coverage. This higher limit does not increase `maxFileSizeKb`: a lockfile between 1 MiB and 4 MiB is available to Dep Doctor but remains excluded from the ordinary file-scanner inputs.
 
 ### Examples
 
@@ -168,6 +188,29 @@ Raise this for large monorepos where scanners may take a long time, or lower it 
   }
 }
 ```
+
+
+## Spectre Budgets
+
+Spectre uses typed unified diffs, analyzes the whole selected PR in one request when it fits, and otherwise creates file/hunk chunks. The following limits are merged through `$global` and per-repository `spectre` blocks. See [Spectre](scanners/spectre.md) for file selection, providers, incomplete outcomes, and evaluator operations.
+
+| Key | Default | Hard maximum | Scope |
+|---|---:|---:|---|
+| `fileCap` | `20` | `30` | Primary files selected after deterministic risk scoring |
+| `secondaryFileCap` | `20` | `50` | Additional related or risk-scored files |
+| `maxInputBytes` | `65536` | `65536` | UTF-8 bytes in each request's user payload; excludes the system prompt |
+| `maxOutputTokens` | `1200` | `2000` | Generated tokens for each provider request |
+| `requestTimeoutSeconds` | `30` | `30` | Deadline for each provider request |
+| `maxCallsPerFile` | `4` | `20` | Admitted chunks associated with one file |
+| `maxCallsPerPullRequest` | `40` | `100` | Provider calls for one pull request |
+| `maxRepairCallsPerPullRequest` | `3` | `10` | Additional targeted response/evidence repair calls per pull request; `0` disables repair |
+| `astSignals.maxFiles` | `200` | `500` | Files admitted to optional structural routing |
+| `astSignals.maxTotalBytes` | `2097152` | `67108864` | Total UTF-8 bytes parsed by structural routing |
+| `astSignals.timeoutSeconds` | `3` | `30` | Structural analysis deadline |
+
+`maxDiffLines` also limits each chunk to 400 diff lines by default and has a hard maximum of 1000. Limits that prevent complete analysis produce an incomplete result; they do not produce a clean pass. If the selected-file caps leave any score-12-or-higher file unscanned, the incomplete result is a blocking coverage failure. Lower-risk file-cap overflow and other incomplete reasons remain neutral when no blocking finding exists.
+
+Structural routing is configured with `astSignals.mode`: `off` (default) preserves lexical selection, `shadow` records structural diagnostics without changing selection or coverage, and `enabled` selects from the union of lexical and changed-span structural signals. `$global` and repository `astSignals` objects merge key by key. Internal structural parser or worker failures fall back to lexical routing.
 
 
 ## Trigger
@@ -314,7 +357,9 @@ Layne can automatically add and remove GitHub labels on a PR based on the scan r
       "onFailure":       ["needs-security-review"],
       "removeOnFailure": ["security-ok"],
       "onSuccess":       ["security-ok"],
-      "removeOnSuccess": ["needs-security-review"]
+      "removeOnSuccess": ["needs-security-review"],
+      "onIncomplete":    ["security-scan-incomplete"],
+      "removeOnIncomplete": ["security-ok"]
     }
   }
 }
@@ -326,8 +371,10 @@ Layne can automatically add and remove GitHub labels on a PR based on the scan r
 | `removeOnFailure` | Scan conclusion is `failure` | Labels to remove from the PR |
 | `onSuccess` | Scan conclusion is `success` | Labels to add to the PR |
 | `removeOnSuccess` | Scan conclusion is `success` | Labels to remove from the PR |
+| `onIncomplete` | Scan conclusion is `neutral` because coverage is incomplete | Labels to add to the PR |
+| `removeOnIncomplete` | Scan conclusion is `neutral` because coverage is incomplete | Labels to remove from the PR |
 
-All four keys are optional. Omitting a key is a no-op.
+All keys are optional. Omitting a key is a no-op. Incomplete adapter or Git content coverage normally produces `neutral` when there is no blocking finding. Blocking findings retain `failure` precedence. Spectre's `high-risk-file-cap-exceeded` coverage condition also produces `failure`, so `onFailure`/`removeOnFailure` apply even when no finding was created for the omitted files.
 
 ### Exception labels
 
@@ -346,12 +393,14 @@ When an exception approval is used, you can configure a label to be added or rem
 
 | Key | When applied | Description |
 |---|---|---|
-| `onException` | Exception approved despite findings | Labels to add to the PR |
-| `removeOnException` | Exception approved despite findings | Labels to remove from the PR |
+| `onException` | Exception approved and final conclusion is `success` | Labels to add to the PR |
+| `removeOnException` | Exception approved and final conclusion is `success` | Labels to remove from the PR |
+
+Incomplete coverage takes precedence over exception labels. If all blocking findings are excepted but ordinary adapter coverage is incomplete, the final conclusion is `neutral` and Layne uses `onIncomplete`/`removeOnIncomplete` instead. If Spectre has `high-risk-file-cap-exceeded`, the final conclusion remains `failure` and Layne uses `onFailure`/`removeOnFailure`.
 
 ### Label auto-creation
 
-If a label listed in `onFailure`, `onSuccess`, or `onException` does not exist on the repository, Layne creates it automatically with a neutral gray color (`#ededed`). You do not need to pre-create labels.
+If a label Layne needs to add does not exist on the repository, Layne creates it automatically with a neutral gray color (`#ededed`). You do not need to pre-create labels.
 
 ## Exception Approvals
 

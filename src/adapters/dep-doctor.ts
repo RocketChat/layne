@@ -1,38 +1,24 @@
 import { execFile } from 'child_process';
-import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { basename, join } from 'path';
 import { DEFAULT_CONFIG } from '../config.js';
 import { debug } from '../debug.js';
-import type { DepDoctorConfig, DepDoctorFinding, Severity } from '../types.js';
-import { exec } from './helpers.js';
+import type { AdapterResult, DepDoctorConfig, DepDoctorFinding, Severity } from '../types.js';
+import {
+  canonicalizePackageName,
+  isDependencyLockfile,
+  lockedPackageKey,
+  parseDependencyLockfile,
+  supportsDependencyHealth,
+  type DependencyEcosystem,
+  type LockedPackage,
+  type LockfileParseResult,
+} from './dep-doctor-lockfiles.js';
+import { exec, throwIfAborted } from './helpers.js';
 
 // ---------------------------------------------------------------------------
 // Lockfile detection
 // ---------------------------------------------------------------------------
-
-const LOCKFILE_NAMES = new Set([
-  'package-lock.json',
-  'yarn.lock',
-  'pnpm-lock.yaml',
-  'requirements.txt',
-  'Pipfile.lock',
-  'poetry.lock',
-  'uv.lock',
-  'go.sum',
-]);
-
-type Ecosystem = 'npm' | 'PyPI' | 'Go';
-
-const LOCKFILE_ECOSYSTEM: Record<string, Ecosystem> = {
-  'package-lock.json': 'npm',
-  'yarn.lock':         'npm',
-  'pnpm-lock.yaml':    'npm',
-  'requirements.txt':  'PyPI',
-  'Pipfile.lock':      'PyPI',
-  'poetry.lock':       'PyPI',
-  'uv.lock':           'PyPI',
-  'go.sum':            'Go',
-};
 
 // ---------------------------------------------------------------------------
 // OSV-Scanner output types
@@ -47,17 +33,12 @@ interface OsvPackage {
 interface OsvVuln {
   id:                 string;
   database_specific?: { severity?: string };
+  severity?:          Array<{ type?: string; score?: string }>;
 }
 
 interface OsvParsedEntry {
   pkg:   OsvPackage;
   vulns: OsvVuln[];
-}
-
-interface DirectPackage {
-  name:      string;
-  version:   string;
-  ecosystem: Ecosystem;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +61,59 @@ function meetsSeverityThreshold(actual: Severity, minimum: Severity): boolean {
   return SEVERITY_ORDER[actual] >= SEVERITY_ORDER[minimum];
 }
 
+function severityFromScore(score: number): Severity {
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  if (score > 0) return 'low';
+  return 'info';
+}
+
+function cvssV3BaseScore(vector: string): number | null {
+  if (!/^CVSS:3\.[01]\//.test(vector)) return null;
+  const metrics: Record<string, string> = {};
+  for (const metric of vector.split('/').slice(1)) {
+    const [name, value] = metric.split(':', 2);
+    if (name && value) metrics[name] = value;
+  }
+  const scopeChanged = metrics.S === 'C';
+  const av = ({ N: .85, A: .62, L: .55, P: .2 } as Record<string, number>)[metrics.AV ?? ''];
+  const ac = ({ L: .77, H: .44 } as Record<string, number>)[metrics.AC ?? ''];
+  const pr = (scopeChanged
+    ? { N: .85, L: .68, H: .5 }
+    : { N: .85, L: .62, H: .27 } as Record<string, number>)[metrics.PR ?? ''];
+  const ui = ({ N: .85, R: .62 } as Record<string, number>)[metrics.UI ?? ''];
+  const impactMetric = { H: .56, L: .22, N: 0 } as Record<string, number>;
+  const confidentiality = impactMetric[metrics.C ?? ''];
+  const integrity = impactMetric[metrics.I ?? ''];
+  const availability = impactMetric[metrics.A ?? ''];
+  if ([av, ac, pr, ui, confidentiality, integrity, availability].some(value => value === undefined)) return null;
+
+  const impactSubScore = 1 - (1 - confidentiality!) * (1 - integrity!) * (1 - availability!);
+  const impact = scopeChanged
+    ? 7.52 * (impactSubScore - .029) - 3.25 * ((impactSubScore - .02) ** 15)
+    : 6.42 * impactSubScore;
+  if (impact <= 0) return 0;
+  const exploitability = 8.22 * av! * ac! * pr! * ui!;
+  const rawScore = scopeChanged
+    ? Math.min(1.08 * (impact + exploitability), 10)
+    : Math.min(impact + exploitability, 10);
+  return Math.ceil((rawScore - Number.EPSILON) * 10) / 10;
+}
+
+function osvSeverity(vuln: OsvVuln): Severity {
+  const databaseSeverity = vuln.database_specific?.severity?.toUpperCase() ?? '';
+  if (OSV_SEVERITY_MAP[databaseSeverity]) return OSV_SEVERITY_MAP[databaseSeverity];
+
+  const scores = (vuln.severity ?? []).flatMap(({ type, score }) => {
+    if (!score || !type?.startsWith('CVSS_')) return [];
+    const numericScore = Number(score);
+    const parsedScore = Number.isFinite(numericScore) ? numericScore : cvssV3BaseScore(score);
+    return parsedScore === null ? [] : [parsedScore];
+  });
+  return scores.length > 0 ? severityFromScore(Math.max(...scores)) : 'high';
+}
+
 // ---------------------------------------------------------------------------
 // Exported adapter entry point
 // ---------------------------------------------------------------------------
@@ -89,30 +123,55 @@ export async function runDepDoctor({
   changedFiles,
   baseSha,
   toolConfig = DEFAULT_CONFIG.depDoctor,
+  omittedFiles = [],
+  basePaths = {},
+  signal,
 }: {
   workspacePath: string;
   changedFiles?: string[] | null;
   baseSha: string;
   toolConfig?: DepDoctorConfig;
-}): Promise<DepDoctorFinding[]> {
-  if (!toolConfig.enabled) return [];
-  if (!changedFiles?.length) return [];
+  omittedFiles?: string[];
+  basePaths?: Record<string, string>;
+  signal?: AbortSignal;
+}): Promise<AdapterResult<DepDoctorFinding>> {
+  throwIfAborted(signal);
+  if (!toolConfig.enabled) return { findings: [], status: { outcome: 'disabled' } };
+  if (!changedFiles?.length) {
+    return omittedFiles.some(file => isDependencyLockfile(basename(file)))
+      ? { findings: [], status: { outcome: 'incomplete', reason: 'lockfile-size-limit-exceeded' } }
+      : { findings: [], status: { outcome: 'complete' } };
+  }
 
-  const lockfiles = changedFiles.filter(f => LOCKFILE_NAMES.has(basename(f)));
-  if (lockfiles.length === 0) return [];
+  const lockfiles = changedFiles.filter(file => isDependencyLockfile(basename(file)));
+  const omittedLockfiles = omittedFiles.filter(file => isDependencyLockfile(basename(file)));
+  if (lockfiles.length === 0) {
+    return omittedLockfiles.length > 0
+      ? { findings: [], status: { outcome: 'incomplete', reason: 'lockfile-size-limit-exceeded' } }
+      : { findings: [], status: { outcome: 'complete' } };
+  }
 
   debug('dep-doctor', `scanning ${lockfiles.length} lockfile(s): ${lockfiles.join(', ')}`);
 
+  const healthCache = new Map<string, Promise<HealthResult>>();
   const results = await Promise.all(
-    lockfiles.map(lf => processLockfile(lf, workspacePath, baseSha, toolConfig))
+    lockfiles.map(lf => processLockfile(lf, basePaths[lf] ?? lf, workspacePath, baseSha, toolConfig, healthCache, signal))
   );
-  const findings = results.flat();
+  throwIfAborted(signal);
+  const findings = results.flatMap(result => result.findings);
+  const incompleteReason = results.find(result => result.incompleteReason)?.incompleteReason
+    ?? (omittedLockfiles.length > 0 ? 'lockfile-size-limit-exceeded' : undefined);
 
   console.log(`[dep-doctor] ${findings.length} finding(s) across ${lockfiles.length} lockfile(s)`);
   for (const f of findings) {
     console.log(`[dep-doctor]   ${f.severity.toUpperCase()} ${f.file}:${f.line} [${f.ruleId}] ${f.message}`);
   }
-  return findings;
+  return {
+    findings,
+    status: incompleteReason
+      ? { outcome: 'incomplete', reason: incompleteReason }
+      : { outcome: 'complete' },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -121,28 +180,84 @@ export async function runDepDoctor({
 
 async function processLockfile(
   lockfilePath: string,
+  baseLockfilePath: string,
   workspacePath: string,
   baseSha: string,
   toolConfig: DepDoctorConfig,
-): Promise<DepDoctorFinding[]> {
+  healthCache: Map<string, Promise<HealthResult>>,
+  signal?: AbortSignal,
+): Promise<{ findings: DepDoctorFinding[]; incompleteReason?: string }> {
+  throwIfAborted(signal);
   const absPath = join(workspacePath, lockfilePath);
+  let incompleteReason: string | undefined;
+
+  let headLockfileContent: string;
+  try {
+    headLockfileContent = await readFile(absPath, 'utf8');
+  } catch (err) {
+    throwIfAborted(signal);
+    console.error(`[dep-doctor] failed to read selected lockfile ${lockfilePath}: ${(err as Error).message}`);
+    return { findings: [], incompleteReason: 'lockfile-unreadable' };
+  }
 
   // A — get base lockfile content
   let baseLockfileContent: string | null = null;
   try {
-    baseLockfileContent = await gitShow(workspacePath, baseSha, lockfilePath);
-  } catch {
-    debug('dep-doctor', `${lockfilePath}: no base version (new file) — treating all packages as new`);
+    baseLockfileContent = await gitShow(workspacePath, baseSha, baseLockfilePath, signal);
+  } catch (err) {
+    throwIfAborted(signal);
+    if (isMissingGitPathError(err)) {
+      debug('dep-doctor', `${lockfilePath}: no base version (new file) — treating all packages as new`);
+    } else {
+      incompleteReason = 'base-git-failed';
+      console.error(`[dep-doctor] failed to read base version of ${lockfilePath}: ${(err as Error).message}`);
+      return { findings: [], incompleteReason };
+    }
+  }
+
+  const healthEnabled = supportsDependencyHealth(basename(absPath))
+    && (toolConfig.checkAbandoned || toolConfig.checkDeprecated);
+  let headInventory: LockfileParseResult | null = null;
+  let baseInventory: LockfileParseResult | null = null;
+  if (healthEnabled) {
+    headInventory = parseDependencyLockfile(headLockfileContent, basename(absPath));
+    if (!headInventory.ok) {
+      incompleteReason ??= headInventory.reason;
+      console.error(`[dep-doctor] failed to parse ${lockfilePath} for health checks: ${headInventory.detail}`);
+    }
+    if (baseLockfileContent !== null) {
+      baseInventory = parseDependencyLockfile(baseLockfileContent, basename(absPath));
+      if (!baseInventory.ok) {
+        incompleteReason ??= baseInventory.reason;
+        console.error(`[dep-doctor] failed to parse base ${lockfilePath} for health checks: ${baseInventory.detail}`);
+      }
+    }
   }
 
   // B — run OSV-Scanner on head lockfile
-  let headOutput = '';
+  let headParsed: OsvParsedEntry[] = [];
+  let headScanSucceeded = false;
   try {
-    headOutput = await exec('osv-scanner', [
+    const { stdout, stderr, exitCode } = await exec('osv-scanner', [
       'scan', '--lockfile', absPath, '--format', 'json',
       ...(toolConfig.extraArgs ?? []),
-    ]);
+    ], { signal });
+    if (exitCode === 0 || exitCode === 1) {
+      const parsed = parseOsvOutput(stdout);
+      if (parsed) {
+        headParsed = parsed;
+        headScanSucceeded = true;
+      } else {
+        incompleteReason ??= 'osv-invalid-output';
+      }
+    } else {
+      incompleteReason ??= 'osv-unexpected-exit';
+      console.error(`[dep-doctor] osv-scanner exited with code ${exitCode} for ${lockfilePath}${stderr ? `: ${stderr.trim()}` : ''}`);
+    }
   } catch (err) {
+    throwIfAborted(signal);
+    if (typeof (err as NodeJS.ErrnoException).code !== 'string') throw err;
+    incompleteReason ??= 'osv-scanner-unavailable';
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       console.warn('[dep-doctor] osv-scanner not found in PATH — install it to enable CVE scanning');
     } else {
@@ -150,31 +265,49 @@ async function processLockfile(
     }
   }
 
-  const headParsed = parseOsvOutput(headOutput);
+  throwIfAborted(signal);
   if (headParsed.length === 0 && !toolConfig.checkAbandoned && !toolConfig.checkDeprecated) {
-    return [];
+    return { findings: [], incompleteReason };
   }
 
   // C — run OSV-Scanner on base lockfile (if it exists) to build the baseline package set
   let basePackageSet = new Set<string>();
-  if (baseLockfileContent !== null) {
-    const tempDir  = join(workspacePath, '.layne');
-    const tempPath = join(tempDir, `dep-doctor-base-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  let baseScanSucceeded = baseLockfileContent === null;
+  if (baseLockfileContent !== null && headScanSucceeded) {
+    // Use a unique subdirectory so the file retains its original basename (e.g. yarn.lock).
+    // OSV-Scanner v2 detects lockfile type by exact filename match, so the name must be
+    // preserved — a random suffix on the filename itself breaks detection.
+    const tempSubDir = await mkdtemp(join(workspacePath, '.layne-dep-doctor-'));
+    const tempPath   = join(tempSubDir, basename(absPath));
     try {
-      await mkdir(tempDir, { recursive: true });
+      throwIfAborted(signal);
       await writeFile(tempPath, baseLockfileContent, 'utf8');
-      let baseOutput = '';
+      throwIfAborted(signal);
       try {
-        baseOutput = await exec('osv-scanner', [
+        const { stdout, stderr, exitCode } = await exec('osv-scanner', [
           'scan', '--lockfile', tempPath, '--format', 'json',
           ...(toolConfig.extraArgs ?? []),
-        ]);
-      } catch {
-        // Base scan failure → treat all head packages as new
+        ], { signal });
+        if (exitCode === 0 || exitCode === 1) {
+          const parsed = parseOsvOutput(stdout);
+          if (parsed) {
+            basePackageSet = buildPackageSet(parsed);
+            baseScanSucceeded = true;
+          } else {
+            incompleteReason ??= 'osv-invalid-output';
+          }
+        } else {
+          incompleteReason ??= 'osv-unexpected-exit';
+          console.error(`[dep-doctor] base osv-scanner exited with code ${exitCode} for ${lockfilePath}${stderr ? `: ${stderr.trim()}` : ''}`);
+        }
+      } catch (err) {
+        throwIfAborted(signal);
+        if (typeof (err as NodeJS.ErrnoException).code !== 'string') throw err;
+        incompleteReason ??= 'osv-scanner-unavailable';
+        debug('dep-doctor', `base scan unavailable for ${lockfilePath}; suppressing baseline-dependent vulnerability findings: ${(err as Error).message}`);
       }
-      basePackageSet = buildPackageSet(parseOsvOutput(baseOutput));
     } finally {
-      try { await unlink(tempPath); } catch { /* ignore */ }
+      try { await rm(tempSubDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }
 
@@ -182,8 +315,9 @@ async function processLockfile(
   const findings: DepDoctorFinding[] = [];
   const seen = new Set<string>();
 
-  for (const { pkg, vulns } of headParsed) {
-    const pkgKey = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+  for (const { pkg, vulns } of baseScanSucceeded ? headParsed : []) {
+    throwIfAborted(signal);
+    const pkgKey = osvPackageKey(pkg);
     if (basePackageSet.has(pkgKey)) continue; // pre-existing dep
 
     for (const vuln of vulns) {
@@ -191,11 +325,10 @@ async function processLockfile(
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      const rawSeverity = vuln.database_specific?.severity?.toUpperCase() ?? '';
-      const severity: Severity = OSV_SEVERITY_MAP[rawSeverity] ?? 'high';
+      const severity = osvSeverity(vuln);
       if (!meetsSeverityThreshold(severity, toolConfig.minCveSeverity)) continue;
 
-      const line = await findLineInLockfile(absPath, pkg.name);
+      const line = findOsvPackageLine(pkg, headInventory, headLockfileContent, basename(absPath));
       findings.push({
         file:     lockfilePath,
         line,
@@ -210,41 +343,34 @@ async function processLockfile(
   // F — registry health checks (all new packages, from direct lockfile parse)
   // We parse the lockfile directly rather than using headParsed (OSV output) so that
   // packages with no CVEs — e.g. abandoned ones — are still health-checked.
-  if (toolConfig.checkAbandoned || toolConfig.checkDeprecated) {
-    let headContent = '';
-    try {
-      headContent = await readFile(absPath, 'utf8');
-    } catch { /* skip health checks if lockfile unreadable */ }
-
-    const allHeadPackages = parseLockfilePackages(headContent, basename(absPath));
-
-    const baseHealthKeys = new Set<string>();
-    if (baseLockfileContent !== null) {
-      for (const p of parseLockfilePackages(baseLockfileContent, basename(absPath))) {
-        baseHealthKeys.add(`${p.name}@${p.version}`);
-      }
-    }
-
-    const newPackages = allHeadPackages.filter(p => !baseHealthKeys.has(`${p.name}@${p.version}`));
+  if (healthEnabled && headInventory?.ok && (baseLockfileContent === null || baseInventory?.ok)) {
+    const baseHealthKeys = new Set(
+      baseInventory?.ok ? baseInventory.packages.map(lockedPackageKey) : [],
+    );
+    const newPackages = headInventory.packages.filter(pkg => !baseHealthKeys.has(lockedPackageKey(pkg)));
 
     const BATCH = 5;
     for (let i = 0; i < newPackages.length; i += BATCH) {
+      throwIfAborted(signal);
       const batch = newPackages.slice(i, i + BATCH);
       const healthResults = await Promise.all(
-        batch.map(pkg => checkPackageHealth({ name: pkg.name, version: pkg.version, ecosystem: pkg.ecosystem }, toolConfig))
+        batch.map(pkg => checkPackageHealthCached(pkg, toolConfig, healthCache, signal))
       );
+      throwIfAborted(signal);
 
       for (let j = 0; j < batch.length; j++) {
         const pkg    = batch[j]!;
         const health = healthResults[j]!;
-        const line   = await findLineInLockfile(absPath, pkg.name);
+        const line   = pkg.line;
+
+        if (health.requestFailed) incompleteReason ??= 'registry-request-failed';
 
         if (health.abandoned && toolConfig.checkAbandoned) {
           findings.push({
             file:     lockfilePath,
             line,
             severity: 'medium',
-            message:  `New dependency ${pkg.name}@${pkg.version} appears abandoned. ${health.reason}`,
+            message:  `New dependency ${pkg.name}@${pkg.version} appears abandoned. ${health.abandonedReason}`,
             ruleId:   'abandoned/deprecated',
             tool:     'dep-doctor',
           });
@@ -254,7 +380,7 @@ async function processLockfile(
             file:     lockfilePath,
             line,
             severity: 'medium',
-            message:  `New dependency ${pkg.name}@${pkg.version} is deprecated. ${health.reason}`,
+            message:  `New dependency ${pkg.name}@${pkg.version} is deprecated. ${health.deprecatedReason}`,
             ruleId:   'abandoned/deprecated',
             tool:     'dep-doctor',
           });
@@ -263,28 +389,54 @@ async function processLockfile(
     }
   }
 
-  return findings;
+  throwIfAborted(signal);
+  return { findings, incompleteReason };
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function gitShow(workspacePath: string, sha: string, filePath: string): Promise<string> {
+function gitShow(workspacePath: string, sha: string, filePath: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    try {
+      throwIfAborted(signal);
+    } catch (err) {
+      reject(err);
+      return;
+    }
     execFile(
       'git', ['-C', workspacePath, 'show', `${sha}:${filePath}`],
-      { maxBuffer: 50 * 1024 * 1024, encoding: 'utf8' },
-      (err, stdout) => {
-        if (err) reject(err);
+      { maxBuffer: 50 * 1024 * 1024, encoding: 'utf8', signal },
+      (err, stdout, stderr) => {
+        try {
+          throwIfAborted(signal);
+        } catch (abortErr) {
+          reject(abortErr);
+          return;
+        }
+        if (err) {
+          const gitError = err as Error & { stderr?: string };
+          if (!gitError.stderr && stderr) gitError.stderr = stderr as string;
+          reject(gitError);
+        }
         else resolve(stdout as string);
       },
     );
   });
 }
 
-function parseOsvOutput(stdout: string): OsvParsedEntry[] {
-  if (!stdout.trim()) return [];
+function isMissingGitPathError(err: unknown): boolean {
+  const error = err as { message?: string; stderr?: string };
+  const output = `${error.message ?? ''}\n${error.stderr ?? ''}`;
+  return /path (?:.+ )?(?:does not exist in|exists on disk, but not in|not found in commit)/i.test(output);
+}
+
+function parseOsvOutput(stdout: string): OsvParsedEntry[] | null {
+  if (!stdout.trim()) {
+    console.error('[dep-doctor] Failed to parse OSV-Scanner JSON output');
+    return null;
+  }
   try {
     const raw = JSON.parse(stdout) as {
       results?: Array<{
@@ -294,32 +446,84 @@ function parseOsvOutput(stdout: string): OsvParsedEntry[] {
         }>;
       }>;
     };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.results)) {
+      throw new Error('invalid OSV output shape');
+    }
     const entries: OsvParsedEntry[] = [];
-    for (const result of raw.results ?? []) {
-      for (const pkg of result.packages ?? []) {
-        if (!pkg.package) continue;
+    for (const result of raw.results) {
+      if (!result || typeof result !== 'object' || !Array.isArray(result.packages)) {
+        throw new Error('invalid OSV result shape');
+      }
+      for (const pkg of result.packages) {
+        if (!pkg || typeof pkg !== 'object' || !pkg.package) {
+          throw new Error('invalid OSV package entry');
+        }
+        if (
+          typeof pkg.package !== 'object'
+          || typeof pkg.package.name !== 'string'
+          || typeof pkg.package.version !== 'string'
+          || typeof pkg.package.ecosystem !== 'string'
+        ) {
+          throw new Error('invalid OSV package shape');
+        }
+        if (pkg.vulnerabilities !== undefined && !Array.isArray(pkg.vulnerabilities)) {
+          throw new Error('invalid OSV vulnerabilities shape');
+        }
+        if ((pkg.vulnerabilities ?? []).some(vuln => !vuln || typeof vuln !== 'object' || typeof vuln.id !== 'string')) {
+          throw new Error('invalid OSV vulnerability shape');
+        }
         entries.push({ pkg: pkg.package, vulns: pkg.vulnerabilities ?? [] });
       }
     }
     return entries;
   } catch {
     console.error('[dep-doctor] Failed to parse OSV-Scanner JSON output');
-    return [];
+    return null;
   }
 }
 
 function buildPackageSet(entries: OsvParsedEntry[]): Set<string> {
-  return new Set(entries.map(({ pkg }) => `${pkg.ecosystem}:${pkg.name}@${pkg.version}`));
+  return new Set(entries.map(({ pkg }) => osvPackageKey(pkg)));
 }
 
-async function findLineInLockfile(absPath: string, packageName: string): Promise<number> {
-  let content: string;
-  try {
-    content = await readFile(absPath, 'utf8');
-  } catch {
-    return 1;
+function osvEcosystem(ecosystem: string): DependencyEcosystem | null {
+  const normalized = ecosystem.toLowerCase();
+  if (normalized === 'npm') return 'npm';
+  if (normalized === 'pypi') return 'PyPI';
+  return null;
+}
+
+function osvPackageKey(pkg: OsvPackage): string {
+  const ecosystem = osvEcosystem(pkg.ecosystem);
+  return ecosystem
+    ? `${ecosystem}:${canonicalizePackageName(ecosystem, pkg.name)}@${pkg.version}`
+    : `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+}
+
+function findOsvPackageLine(
+  pkg: OsvPackage,
+  inventory: LockfileParseResult | null,
+  content: string,
+  filename: string,
+): number {
+  const ecosystem = osvEcosystem(pkg.ecosystem);
+  if (ecosystem && inventory?.ok) {
+    const canonicalName = canonicalizePackageName(ecosystem, pkg.name);
+    const exact = inventory.packages.find(candidate =>
+      candidate.ecosystem === ecosystem
+      && candidate.canonicalName === canonicalName
+      && candidate.version === pkg.version
+    );
+    if (exact) return exact.line;
+    const byName = inventory.packages.find(candidate =>
+      candidate.ecosystem === ecosystem && candidate.canonicalName === canonicalName
+    );
+    if (byName) return byName.line;
   }
-  const file    = basename(absPath);
+  return findLineInLockfile(content, filename, pkg.name);
+}
+
+function findLineInLockfile(content: string, file: string, packageName: string): number {
   const escaped = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   let pattern: RegExp;
 
@@ -343,104 +547,59 @@ async function findLineInLockfile(absPath: string, packageName: string): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Direct lockfile parsing (all packages, regardless of CVE status)
-// Used for health checks so packages with no CVEs are still flagged as abandoned/deprecated.
-// ---------------------------------------------------------------------------
-
-function parseLockfilePackages(content: string, filename: string): DirectPackage[] {
-  if (filename === 'package-lock.json') {
-    try {
-      const json = JSON.parse(content) as {
-        packages?:     Record<string, { version?: string }>;
-        dependencies?: Record<string, { version?: string }>;
-      };
-      if (json.packages) {
-        return Object.entries(json.packages)
-          .filter(([k, v]) => k.startsWith('node_modules/') && v.version)
-          .map(([k, v]) => {
-            const lastIdx = k.lastIndexOf('node_modules/');
-            const name    = k.slice(lastIdx + 'node_modules/'.length);
-            return { name, version: v.version!, ecosystem: 'npm' as Ecosystem };
-          });
-      }
-      if (json.dependencies) {
-        return Object.entries(json.dependencies)
-          .filter(([, v]) => v.version)
-          .map(([k, v]) => ({ name: k, version: v.version!, ecosystem: 'npm' as Ecosystem }));
-      }
-    } catch { /* fall through */ }
-    return [];
-  }
-
-  if (filename === 'yarn.lock') {
-    const packages: DirectPackage[] = [];
-    let currentName: string | null = null;
-    for (const line of content.split('\n')) {
-      if (!line.startsWith(' ') && !line.startsWith('#')) {
-        const m = line.match(/^"?(@?[^@\s"]+)@/);
-        currentName = m ? (m[1] ?? null) : null;
-      }
-      if (currentName) {
-        const m = line.match(/^\s+version\s+"([^"]+)"/);
-        if (m) {
-          packages.push({ name: currentName, version: m[1]!, ecosystem: 'npm' });
-          currentName = null;
-        }
-      }
-    }
-    return packages;
-  }
-
-  if (filename === 'requirements.txt') {
-    return content.split('\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('#'))
-      .flatMap(l => {
-        const m = l.match(/^([A-Za-z0-9_.-]+)==([^\s;#]+)/);
-        return m ? [{ name: m[1]!, version: m[2]!, ecosystem: 'PyPI' as Ecosystem }] : [];
-      });
-  }
-
-  return [];
-}
-
-// ---------------------------------------------------------------------------
 // Registry health checks
 // ---------------------------------------------------------------------------
 
 interface HealthResult {
   abandoned:  boolean;
   deprecated: boolean;
-  reason:     string;
+  abandonedReason: string;
+  deprecatedReason: string;
+  requestFailed: boolean;
 }
 
-async function checkPackageHealth(pkg: OsvPackage, config: DepDoctorConfig): Promise<HealthResult> {
-  const eco = LOCKFILE_ECOSYSTEM[pkg.ecosystem] ?? pkg.ecosystem as Ecosystem;
-  if (eco === 'npm')  return checkNpmHealth(pkg.name, pkg.version, config);
-  if (eco === 'PyPI') return checkPypiHealth(pkg.name, config);
-  return { abandoned: false, deprecated: false, reason: '' };
+function checkPackageHealthCached(
+  pkg: LockedPackage,
+  config: DepDoctorConfig,
+  cache: Map<string, Promise<HealthResult>>,
+  signal?: AbortSignal,
+): Promise<HealthResult> {
+  const key = lockedPackageKey(pkg);
+  const existing = cache.get(key);
+  if (existing) return existing;
+  const request = checkPackageHealth(pkg, config, signal);
+  cache.set(key, request);
+  return request;
 }
 
-async function checkNpmHealth(name: string, version: string, config: DepDoctorConfig): Promise<HealthResult> {
+async function checkPackageHealth(pkg: LockedPackage, config: DepDoctorConfig, signal?: AbortSignal): Promise<HealthResult> {
+  throwIfAborted(signal);
+  if (pkg.ecosystem === 'npm') return checkNpmHealth(pkg.name, pkg.version, config, signal);
+  return checkPypiHealth(pkg.canonicalName, config, signal);
+}
+
+async function checkNpmHealth(name: string, version: string, config: DepDoctorConfig, signal?: AbortSignal): Promise<HealthResult> {
   try {
+    throwIfAborted(signal);
     const url  = `https://registry.npmjs.org/${encodeURIComponent(name)}`;
+    const requestSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000);
     const resp = await fetch(url, {
       headers: { 'User-Agent': 'layne-dep-doctor/1.0' },
-      signal:  AbortSignal.timeout(10_000),
+      signal:  requestSignal,
     });
-    if (!resp.ok) return { abandoned: false, deprecated: false, reason: '' };
+    throwIfAborted(signal);
+    if (!resp.ok) return { abandoned: false, deprecated: false, abandonedReason: '', deprecatedReason: '', requestFailed: true };
 
     const data = await resp.json() as {
       time?:     Record<string, string>;
       versions?: Record<string, { deprecated?: string }>;
     };
 
-    if (config.checkDeprecated) {
-      const deprecatedMsg = data.versions?.[version]?.deprecated;
-      if (deprecatedMsg) {
-        return { abandoned: false, deprecated: true, reason: String(deprecatedMsg).slice(0, 200) };
-      }
-    }
+    const deprecatedMessage = config.checkDeprecated ? data.versions?.[version]?.deprecated : undefined;
+    let abandoned = false;
+    let abandonedReason = '';
 
     if (config.checkAbandoned) {
       const times = Object.entries(data.time ?? {})
@@ -453,41 +612,51 @@ async function checkNpmHealth(name: string, version: string, config: DepDoctorCo
         const daysSince    = (Date.now() - lastPublish) / (1000 * 60 * 60 * 24);
         if (daysSince > config.abandonedDays) {
           const lastDate = new Date(lastPublish).toISOString().slice(0, 10);
-          return { abandoned: true, deprecated: false, reason: `Last published: ${lastDate}` };
+          abandoned = true;
+          abandonedReason = `Last published: ${lastDate}`;
         }
       }
     }
 
-    return { abandoned: false, deprecated: false, reason: '' };
+    return {
+      abandoned,
+      deprecated: Boolean(deprecatedMessage),
+      abandonedReason,
+      deprecatedReason: deprecatedMessage ? String(deprecatedMessage).slice(0, 200) : '',
+      requestFailed: false,
+    };
   } catch (err) {
+    throwIfAborted(signal);
     debug('dep-doctor', `npm registry check failed for ${name}: ${(err as Error).message}`);
-    return { abandoned: false, deprecated: false, reason: '' };
+    return { abandoned: false, deprecated: false, abandonedReason: '', deprecatedReason: '', requestFailed: true };
   }
 }
 
-async function checkPypiHealth(name: string, config: DepDoctorConfig): Promise<HealthResult> {
+async function checkPypiHealth(name: string, config: DepDoctorConfig, signal?: AbortSignal): Promise<HealthResult> {
   try {
+    throwIfAborted(signal);
     const url  = `https://pypi.org/pypi/${encodeURIComponent(name)}/json`;
+    const requestSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+      : AbortSignal.timeout(10_000);
     const resp = await fetch(url, {
       headers: { 'User-Agent': 'layne-dep-doctor/1.0' },
-      signal:  AbortSignal.timeout(10_000),
+      signal:  requestSignal,
     });
-    if (!resp.ok) return { abandoned: false, deprecated: false, reason: '' };
+    throwIfAborted(signal);
+    if (!resp.ok) return { abandoned: false, deprecated: false, abandonedReason: '', deprecatedReason: '', requestFailed: true };
 
     const data = await resp.json() as {
       info?:     { classifiers?: string[] };
       releases?: Record<string, Array<{ upload_time_iso_8601?: string }>>;
     };
 
-    if (config.checkDeprecated) {
-      const classifiers = data.info?.classifiers ?? [];
-      const inactive = classifiers.some(c =>
+    const inactive = config.checkDeprecated
+      && (data.info?.classifiers ?? []).some(c =>
         c.includes('Development Status :: 7 - Inactive') || c.toLowerCase().includes('deprecated')
       );
-      if (inactive) {
-        return { abandoned: false, deprecated: true, reason: 'Package marked inactive/deprecated' };
-      }
-    }
+    let abandoned = false;
+    let abandonedReason = '';
 
     if (config.checkAbandoned) {
       const allDates: number[] = [];
@@ -504,14 +673,22 @@ async function checkPypiHealth(name: string, config: DepDoctorConfig): Promise<H
         const daysSince   = (Date.now() - lastPublish) / (1000 * 60 * 60 * 24);
         if (daysSince > config.abandonedDays) {
           const lastDate = new Date(lastPublish).toISOString().slice(0, 10);
-          return { abandoned: true, deprecated: false, reason: `Last published: ${lastDate}` };
+          abandoned = true;
+          abandonedReason = `Last published: ${lastDate}`;
         }
       }
     }
 
-    return { abandoned: false, deprecated: false, reason: '' };
+    return {
+      abandoned,
+      deprecated: inactive,
+      abandonedReason,
+      deprecatedReason: inactive ? 'Package marked inactive/deprecated' : '',
+      requestFailed: false,
+    };
   } catch (err) {
+    throwIfAborted(signal);
     debug('dep-doctor', `PyPI registry check failed for ${name}: ${(err as Error).message}`);
-    return { abandoned: false, deprecated: false, reason: '' };
+    return { abandoned: false, deprecated: false, abandonedReason: '', deprecatedReason: '', requestFailed: true };
   }
 }

@@ -1,0 +1,62 @@
+groups:
+  - name: layne-spectre
+    rules:
+      - alert: LayneSpectreSustainedIncompleteRate
+        expr: |
+          sum(increase(layne_spectre_scans_total{outcome="incomplete"}[15m]))
+          /
+          clamp_min(sum(increase(layne_spectre_scans_total{outcome=~"complete|incomplete"}[15m])), 1)
+          > 0.20
+          and
+          sum(increase(layne_spectre_scans_total{outcome=~"complete|incomplete"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spectre incomplete scan rate is elevated
+          description: More than 20% of enabled Spectre scans have been incomplete over a sustained 15-minute window.
+
+      - alert: LayneSpectreProviderFailureSpike
+        expr: sum by (provider) (increase(layne_spectre_provider_request_duration_seconds_count{outcome=~"failed|invalid"}[10m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spectre provider chunk failures are spiking
+          description: Provider {{ $labels.provider }} has produced at least five failed or invalid chunks in a rolling 10-minute window.
+
+      - alert: LayneSpectreGovernorDenialSpike
+        expr: sum by (provider, backend, reason) (increase(layne_spectre_governor_decisions_total{outcome="denied",reason!="cancelled"}[10m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spectre governor denials are spiking
+          description: Provider {{ $labels.provider }} on {{ $labels.backend }} is repeatedly denied for {{ $labels.reason }}.
+
+      - alert: LayneSpectreCircuitOpen
+        expr: max by (provider, backend) (layne_spectre_circuit_state) == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spectre provider circuit is open
+          description: Provider {{ $labels.provider }} on {{ $labels.backend }} has had an open circuit for at least five minutes.
+
+      - alert: LayneSpectreRedisGovernorErrors
+        expr: sum by (provider, operation) (increase(layne_spectre_governor_backend_errors_total{backend="redis"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spectre Redis governor errors are sustained
+          description: Redis governor operation {{ $labels.operation }} for provider {{ $labels.provider }} has failed repeatedly.
+
+      - alert: LayneSpectreLeaseRecoveryAnomaly
+        expr: sum by (provider) (increase(layne_spectre_governor_lease_recoveries_total{backend="redis"}[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spectre governor is recovering unusually many expired leases
+          description: Provider {{ $labels.provider }} has recovered at least five expired Redis leases in a rolling 15-minute window.

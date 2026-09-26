@@ -1,468 +1,387 @@
 import { readFile } from 'fs/promises';
-import { join, extname } from 'path';
-import { getModel, completeSimple, type TextContent } from '@mariozechner/pi-ai';
-import { debug } from '../debug.js';
+import { join } from 'path';
 import { DEFAULT_CONFIG } from '../config.js';
-import type { SpectreConfig, SpectreRawFinding, Severity, LineRangesByFile, LineRange } from '../types.js';
+import { debug } from '../debug.js';
+import {
+  buildSpectreSystemPrompt,
+  buildSpectreUserMessage,
+  runSpectreCore,
+  type SpectreSourceInput,
+} from '../spectre-core.js';
+import {
+  getSpectreGovernor,
+  spectreGovernorOptionsFromEnv,
+  type SpectreGovernor,
+} from '../spectre-governor.js';
+import { createRedisSpectreGovernorRegistry } from '../spectre-redis-governor.js';
+import { createProductionSpectreCache, type SpectreResponseCache } from '../spectre-cache.js';
+import {
+  spectreCircuitState,
+  spectreGovernorDecisionsTotal,
+  spectreGovernorInFlightRequests,
+} from '../metrics.js';
+import { isSpectreProvider, validateSpectreProviderConfig } from '../spectre-provider.js';
+import { redis } from '../queue.js';
+import { getSpectreModel } from '../spectre-models.js';
+import {
+  SPECTRE_HIGH_RISK_SCORE,
+  shouldSkipSpectreFile,
+} from '../spectre-signals.js';
+import { routeSpectreSignals, type SpectreStructuralAnalyzer } from '../spectre-routing.js';
+import type { SpectreTransport } from '../spectre-transport.js';
+import { createPiAiSpectreTransport } from '../spectre-transports/pi-ai.js';
+import type {
+  LineRange,
+  LineRangesByFile,
+  PullRequestMetadata,
+  SpectreConfig,
+  SpectreCacheContext,
+  SpectreRawFinding,
+  SpectreScanResult,
+  SpectreScanStatus,
+  UnifiedDiff,
+} from '../types.js';
 
-// ---------------------------------------------------------------------------
-// Built-in skip lists (never configurable — these are never security-relevant)
-// ---------------------------------------------------------------------------
+const MAX_HIGH_RISK_CAPPED_DETAILS = 10;
 
-const BUILT_IN_SKIP_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
-  '.pdf', '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
-  '.exe', '.dll', '.so', '.dylib', '.bin', '.o', '.a',
-  '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac',
-  '.ttf', '.otf', '.woff', '.woff2', '.eot',
-  '.pyc', '.class', '.jar',
-  '.css', '.scss', '.sass', '.less',
-]);
+export { buildSpectreSystemPrompt, buildSpectreUserMessage };
+export { shouldSkipSpectreFile } from '../spectre-signals.js';
 
-const BUILT_IN_SKIP_PATTERNS: RegExp[] = [
-  /\.d\.ts$/,
-  /\.min\.js$/,
-  /\.min\.css$/,
-];
+const getRedisGovernor = createRedisSpectreGovernorRegistry({
+  ...spectreGovernorOptionsFromEnv(),
+  client: redis,
+});
 
-// ---------------------------------------------------------------------------
-// Tier 1: high-value targets — counted first against the cap, never dropped
-// for being beyond fileCap unless fileCap itself is exhausted by tier 1 alone.
-// ---------------------------------------------------------------------------
-
-const TIER1_PATTERNS: RegExp[] = [
-  /^package\.json$/,
-  /^package-lock\.json$/,
-  /\.lock$/,
-  /^\.github\/workflows\//,
-  /^Dockerfile/,
-  /^docker-compose/,
-  /^\.env/,
-];
-
-// ---------------------------------------------------------------------------
-// Tier 2: content-based keyword patterns
-// Files whose full content matches any of these are promoted above the cap
-// ahead of ordinary tier-3 files.
-// ---------------------------------------------------------------------------
-
-const TIER2_PATTERNS: RegExp[] = [
-  // Dynamic code execution
-  /\beval\s*\(/,
-  /\bnew\s+Function\s*\(/,
-
-  // Base64 / encoding decode
-  /\batob\s*\(/,
-  /String\.fromCharCode\s*\(/,
-
-  // Shell execution
-  /require\s*\(\s*['"`]child_process['"`]\s*\)/,
-  /\/bin\/(?:sh|bash|zsh|dash)\b/,
-  /\/dev\/tcp\//,
-  /\bexecSync\s*\(/,
-  /\bspawnSync\s*\(/,
-
-  // Raw TCP / exfiltration sinks
-  /\bnet\.Socket\b/,
-  /169\.254\.169\.254/,
-  /metadata\.google\.internal/,
-
-  // Supply-chain lifecycle hooks
-  /"(?:postinstall|preinstall|prepare)"\s*:/,
-
-  // Remote fetch in shell/CI steps
-  /\b(?:curl|wget)\s+\S*https?:\/\//,
-
-  // Dynamic import/require with a non-literal argument
-  /\bimport\s*\(\s*[^'"`\s]/,
-];
-
-// ---------------------------------------------------------------------------
-// Severity ranking for minSeverity filtering
-// ---------------------------------------------------------------------------
-
-const SEVERITY_RANK: Record<Severity, number> = {
-  critical: 4,
-  high:     3,
-  medium:   2,
-  low:      1,
-  info:     0,
-};
-
-// ---------------------------------------------------------------------------
-// Allowed ruleIds — anything else is rejected
-// ---------------------------------------------------------------------------
-
-const ALLOWED_RULE_IDS = new Set([
-  'reverse-shell',
-  'credential-exfiltration',
-  'obfuscated-payload',
-  'backdoor',
-  'supply-chain-abuse',
-  'covert-execution',
-]);
-
-// ---------------------------------------------------------------------------
-// System prompt
-// ---------------------------------------------------------------------------
-
-// The analysis instructions are customisable per-repo via toolConfig.prompt.
-// The JSON response format is always appended unchanged so parsers never break.
-
-const DEFAULT_ANALYSIS_INSTRUCTIONS =
-  'You are a security code reviewer specialising in detecting malicious intent in pull request changes. ' +
-  'Analyse the provided file for: reverse shells, backdoors, credential exfiltration, ' +
-  'obfuscated payloads, and supply-chain attacks. ' +
-  'Report ONLY confirmed malicious patterns with high confidence. ' +
-  'Do not report: bugs, style issues, theoretical vulnerabilities, ordinary insecure code, ' +
-  'eval/exec/spawn in clearly benign static contexts, or unknown packages with no hostile behavior in the provided diff.';
-
-const JSON_RESPONSE_SUFFIX =
-  'For each finding, copy the smallest exact verbatim contiguous snippet from the file that uniquely identifies the malicious logic. ' +
-  'Do not paraphrase, insert ellipses, or combine non-adjacent lines. ' +
-  'Respond ONLY with a JSON object — no markdown, no explanation outside the JSON:\n' +
-  '{"findings": [{"file": "path/to/file", "startLine": 1, "endLine": 2, ' +
-  '"severity": "high|medium|low", ' +
-  '"ruleId": "reverse-shell|credential-exfiltration|obfuscated-payload|backdoor|supply-chain-abuse|covert-execution", ' +
-  '"message": "brief description of the malicious pattern", ' +
-  '"evidence": "exact verbatim snippet from the file"}]}\n' +
-  'If there are no findings, respond with {"findings": []}.';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function isTier1(file: string): boolean {
-  return TIER1_PATTERNS.some(p => p.test(file));
+function circuitStateValue(state: ReturnType<SpectreGovernor['getState']>['state']): number {
+  return state === 'closed' ? 0 : state === 'open' ? 1 : 2;
 }
 
-function shouldSkipFile(file: string, config: SpectreConfig): boolean {
-  const ext = extname(file).toLowerCase();
-  if (BUILT_IN_SKIP_EXTENSIONS.has(ext)) return true;
-  if (BUILT_IN_SKIP_PATTERNS.some(p => p.test(file))) return true;
-  if (config.skipExtensions?.some(e => file.endsWith(e))) return true;
-  if (config.skipPaths?.some(p => matchesPattern(file, p))) return true;
-  return false;
-}
+type GovernorBackend = 'in_process' | 'redis';
 
-function matchesPattern(file: string, pattern: string): boolean {
-  if (!pattern.includes('*')) {
-    return file === pattern || file.startsWith(pattern.endsWith('/') ? pattern : `${pattern}/`);
+function governorBackend(): GovernorBackend {
+  const backend = process.env.SPECTRE_GOVERNOR_BACKEND ?? 'in_process';
+  if (backend !== 'in_process' && backend !== 'redis') {
+    throw new Error(`Invalid SPECTRE_GOVERNOR_BACKEND: ${backend}`);
   }
-  const regexSource = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '\x00')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\x00/g, '.*');
-  return new RegExp(`^${regexSource}$`).test(file);
+  return backend;
 }
 
-function truncateToLines(content: string, maxLines: number): string {
-  const lines = content.split('\n');
-  if (lines.length <= maxLines) return content;
-  return lines.slice(0, maxLines).join('\n') + '\n[truncated — diff exceeded line cap]';
+function governorRefusalReason(error: unknown): 'rate_limited' | 'concurrency_timeout' | 'circuit_open' | 'cancelled' | 'unknown' {
+  const reason = typeof error === 'object' && error !== null ? (error as { reason?: unknown }).reason : undefined;
+  return reason === 'rate_limited' || reason === 'concurrency_timeout' || reason === 'circuit_open' || reason === 'cancelled'
+    ? reason
+    : 'unknown';
 }
 
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-interface RawFindingFromLLM {
-  file?: unknown;
-  startLine?: unknown;
-  endLine?: unknown;
-  severity?: unknown;
-  ruleId?: unknown;
-  message?: unknown;
-  evidence?: unknown;
-}
-
-function normalizeFinding(raw: RawFindingFromLLM, expectedFile: string): SpectreRawFinding | null {
-  if (typeof raw.severity !== 'string') return null;
-  if (typeof raw.message !== 'string' || !raw.message.trim()) return null;
-  if (typeof raw.ruleId !== 'string' || !ALLOWED_RULE_IDS.has(raw.ruleId)) return null;
-  if (typeof raw.evidence !== 'string' || !raw.evidence.trim()) return null;
-
-  const startLine = normalizePositiveInt(raw.startLine) ?? 1;
-  const endLine   = normalizePositiveInt(raw.endLine) ?? startLine;
+function instrumentGovernor(governor: SpectreGovernor, provider: string, backend: GovernorBackend): SpectreGovernor {
+  const updateState = (): void => {
+    const current = governor.getState();
+    const labels = { provider, backend };
+    (spectreCircuitState as { set(labels: Record<string, string>, value: number): void })
+      .set(labels, circuitStateValue(current.state));
+    (spectreGovernorInFlightRequests as { set(labels: Record<string, string>, value: number): void })
+      .set(labels, current.inFlight);
+  };
 
   return {
-    file:      expectedFile,
-    line:      startLine,
-    startLine,
-    endLine:   endLine >= startLine ? endLine : startLine,
-    severity:  raw.severity as SpectreRawFinding['severity'],
-    message:   raw.message.trim(),
-    ruleId:    raw.ruleId,
-    evidence:  raw.evidence.trim(),
-    tool:      'spectre',
+    async acquire(signal?: AbortSignal) {
+      try {
+        const lease = await governor.acquire(signal);
+        spectreGovernorDecisionsTotal.inc({ provider, backend, outcome: 'acquired', reason: 'none' });
+        updateState();
+        return {
+          async succeed() {
+            try {
+              await lease.succeed();
+            } finally {
+              updateState();
+            }
+          },
+          async fail() {
+            try {
+              await lease.fail();
+            } finally {
+              updateState();
+            }
+          },
+          async release() {
+            try {
+              await lease.release();
+            } finally {
+              updateState();
+            }
+          },
+        };
+      } catch (error) {
+        spectreGovernorDecisionsTotal.inc({
+          provider,
+          backend,
+          outcome: 'denied',
+          reason: governorRefusalReason(error),
+        });
+        updateState();
+        throw error;
+      }
+    },
+    getState: () => governor.getState(),
   };
 }
 
-async function runConcurrent<T>(
-  items: string[],
-  concurrency: number,
-  fn: (item: string) => Promise<T[]>,
-): Promise<T[]> {
-  const results: T[] = [];
-  const queue = [...items];
-
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-      while (queue.length > 0) {
-        const item = queue.shift();
-        if (item === undefined) break;
-        const found = await fn(item);
-        results.push(...found);
-      }
-    }),
-  );
-
-  return results;
+function configuredGovernor(provider: string, backend: GovernorBackend): SpectreGovernor {
+  return backend === 'redis'
+    ? getRedisGovernor(provider)
+    : getSpectreGovernor(provider);
 }
 
-// ---------------------------------------------------------------------------
-// Per-file scan
-// ---------------------------------------------------------------------------
-
-async function scanFile({
-  file,
-  diffContent,
-  workspacePath,
-  changedLineRanges,
-   
-  model,
-  maxDiffLines,
-  systemPrompt,
-}: {
-  file: string;
-  diffContent: string | null;
-  workspacePath: string;
-  changedLineRanges: LineRangesByFile | Record<string, LineRange[]>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  model: any;
-  maxDiffLines: number;
-  systemPrompt: string;
-}): Promise<SpectreRawFinding[]> {
-  let content = diffContent;
-
-  if (!content) {
-    try {
-      content = await readFile(join(workspacePath, file), 'utf8');
-    } catch {
-      debug('spectre', `could not read file: ${file}`);
-      return [];
-    }
-  }
-
-  content = truncateToLines(content, maxDiffLines);
-
-  const ranges: LineRange[] = changedLineRanges instanceof Map
-    ? (changedLineRanges.get(file) ?? [])
-    : ((changedLineRanges as Record<string, LineRange[]>)[file] ?? []);
-
-  const rangeStr = ranges.length > 0
-    ? `Changed lines in this PR: ${ranges.map(r => `${r.start}-${r.end}`).join(', ')}\n`
-    : '';
-
-  const userMessage = `File: ${file}\n${rangeStr}\n${content}`;
-
-  let responseText = '';
-  try {
-    const result = await completeSimple(model, {
-      systemPrompt,
-      messages: [{
-        role:      'user' as const,
-        timestamp: Date.now(),
-        content:   userMessage,
-      }],
-    }, { temperature: 0 });
-
-    responseText = result.content
-      .filter((c): c is TextContent => c.type === 'text')
-      .map(c => c.text)
-      .join('');
-  } catch (err) {
-    debug('spectre', `LLM error for ${file}: ${(err as Error).message}`);
-    return [];
-  }
-
-  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    debug('spectre', `no JSON found in response for ${file}`);
-    return [];
-  }
-
-  let parsed: { findings?: RawFindingFromLLM[] };
-  try {
-    parsed = JSON.parse(jsonMatch[0]) as { findings?: RawFindingFromLLM[] };
-  } catch {
-    debug('spectre', `JSON parse error for ${file}`);
-    return [];
-  }
-
-  const findings: SpectreRawFinding[] = [];
-  for (const raw of parsed.findings ?? []) {
-    const finding = normalizeFinding(raw, file);
-    if (finding) findings.push(finding);
-  }
-
-  return findings;
+function rangesForFile(ranges: LineRangesByFile | Record<string, LineRange[]>, file: string): LineRange[] {
+  return ranges instanceof Map ? (ranges.get(file) ?? []) : (ranges[file] ?? []);
 }
 
-// ---------------------------------------------------------------------------
-// Keyword promotion helpers
-// ---------------------------------------------------------------------------
-
-function buildBoostPatterns(custom: string[]): RegExp[] {
-  const patterns = [...TIER2_PATTERNS];
-  for (const raw of custom) {
-    try {
-      patterns.push(new RegExp(raw));
-    } catch {
-      console.warn(`[spectre] ignoring invalid boostPattern: ${raw}`);
-    }
-  }
-  return patterns;
-}
-
-async function partitionByKeywords(
-  files: string[],
+async function readSelectionContent(
+  file: string,
   workspacePath: string,
-  patterns: RegExp[],
-): Promise<{ tier2: string[]; tier3: string[] }> {
-  const tier2: string[] = [];
-  const tier3: string[] = [];
-
-  for (const file of files) {
-    let content: string;
-    try {
-      content = await readFile(join(workspacePath, file), 'utf8');
-    } catch {
-      tier3.push(file);
-      continue;
-    }
-    if (patterns.some(p => p.test(content))) {
-      tier2.push(file);
-    } else {
-      tier3.push(file);
-    }
+  contentByFile: Map<string, string | null>,
+): Promise<string | null> {
+  if (contentByFile.has(file)) return contentByFile.get(file) ?? null;
+  try {
+    const content = await readFile(join(workspacePath, file), 'utf8');
+    contentByFile.set(file, content);
+    return content;
+  } catch {
+    contentByFile.set(file, null);
+    return null;
   }
-
-  return { tier2, tier3 };
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
+function filesFromDiff(diff: UnifiedDiff | null | undefined): string[] {
+  if (!diff) return [];
+  return diff.files
+    .filter(file => file.change.newKind === 'regular')
+    .flatMap(file => file.change.newPath ?? [])
+    .filter((file, index, all) => all.indexOf(file) === index);
+}
 
-export async function runSpectre({
-  workspacePath,
-  changedFiles,
-  changedLineRanges = new Map(),
-  promptFiles = [],
-  toolConfig = DEFAULT_CONFIG.spectre,
-}: {
+function addedLinesForFile(diff: UnifiedDiff | null | undefined, file: string): Array<{ line: number; content: string }> | undefined {
+  if (!diff) return undefined;
+  const entry = diff.files.find(item => item.change.newPath === file && item.change.newKind === 'regular');
+  return entry?.hunks.flatMap(hunk => hunk.lines.flatMap(line =>
+    line.type === 'addition' ? [{ line: line.newLine, content: line.content }] : []
+  ));
+}
+
+function newModeForFile(diff: UnifiedDiff | null | undefined, file: string): string | undefined {
+  return diff?.files.find(item => item.change.newPath === file)?.change.newMode;
+}
+
+function emptyResult(outcome: SpectreScanStatus['outcome'], reason?: string, skipped = 0): SpectreScanResult {
+  return {
+    findings: [],
+    status: {
+      outcome,
+      selected: 0,
+      scanned: 0,
+      skipped,
+      oversized: 0,
+      capped: 0,
+      truncated: 0,
+      failed: 0,
+      invalidResponses: 0,
+      cancelled: 0,
+      rateLimited: 0,
+      concurrencyLimited: 0,
+      circuitOpen: 0,
+      rejectedFindings: 0,
+      plannedChunks: 0,
+      attemptedChunks: 0,
+      completedChunks: 0,
+      cappedChunks: 0,
+      truncatedHunks: 0,
+      reason,
+    },
+  };
+}
+
+export interface RunSpectreInput {
   workspacePath: string;
   changedFiles?: string[] | null;
   changedLineRanges?: LineRangesByFile | Record<string, LineRange[]>;
   promptFiles?: Array<{ file: string; content: string }>;
+  unifiedDiff?: UnifiedDiff | null;
+  pullRequestMetadata?: PullRequestMetadata | null;
   toolConfig?: SpectreConfig;
-}): Promise<SpectreRawFinding[]> {
-  if (!changedFiles || changedFiles.length === 0) return [];
+  signal?: AbortSignal;
+  governor?: SpectreGovernor;
+  transport?: SpectreTransport;
+  cacheContext?: SpectreCacheContext;
+  cache?: SpectreResponseCache;
+  owner?: string;
+  repo?: string;
+  structuralAnalyzer?: SpectreStructuralAnalyzer;
+}
 
+export async function runSpectreWithStatus({
+  workspacePath,
+  changedFiles,
+  changedLineRanges = new Map(),
+  promptFiles = [],
+  unifiedDiff,
+  pullRequestMetadata,
+  toolConfig = DEFAULT_CONFIG.spectre,
+  signal,
+  governor,
+  transport,
+  cacheContext,
+  cache,
+  owner,
+  repo,
+  structuralAnalyzer,
+}: RunSpectreInput): Promise<SpectreScanResult> {
+  const inputFiles = changedFiles ?? filesFromDiff(unifiedDiff);
+  if (inputFiles.length === 0) return emptyResult('complete');
   if (!toolConfig.enabled) {
-    console.log('[spectre] skipping — not enabled for this repo (set "spectre": {"enabled": true, "provider": "..."} in layne.json)');
-    return [];
+    console.log('[spectre] skipping - not enabled for this repo (set "spectre": {"enabled": true, "provider": "..."} in layne.json)');
+    return emptyResult('disabled', 'not-enabled');
   }
 
-  if (!toolConfig.provider) {
-    console.log('[spectre] skipping — no provider configured');
-    return [];
+  const eligible = inputFiles.filter(file => !shouldSkipSpectreFile(file, toolConfig, newModeForFile(unifiedDiff, file)));
+  const skippedCount = inputFiles.length - eligible.length;
+  if (eligible.length === 0) {
+    const complete = emptyResult('complete');
+    complete.status.skipped = skippedCount;
+    return complete;
   }
 
-  const fileCap          = toolConfig.fileCap          ?? 20;
-  const secondaryFileCap = toolConfig.secondaryFileCap ?? 20;
-  const maxDiffLines     = toolConfig.maxDiffLines      ?? 400;
-  const minSeverity      = toolConfig.minSeverity       ?? 'high';
-  const concurrency      = toolConfig.concurrency       ?? 5;
-  const minRank          = SEVERITY_RANK[minSeverity] ?? SEVERITY_RANK.high;
+  const providerConfigError = validateSpectreProviderConfig(toolConfig);
+  if (providerConfigError) {
+    console.error(`[spectre] invalid provider configuration: ${providerConfigError}`);
+    return emptyResult('incomplete', 'provider-configuration-invalid', skippedCount);
+  }
 
-  // Step 1: filter
-  const eligible     = changedFiles.filter(f => !shouldSkipFile(f, toolConfig));
-  const skippedCount = changedFiles.length - eligible.length;
+  const provider = toolConfig.provider!;
+  const activeBackend = governor ? 'in_process' : governorBackend();
+  // Resolve the production model before reading source so invalid deployment
+  // configuration retains the existing fail-fast behavior.
+  let model: ReturnType<typeof getSpectreModel>;
+  try {
+    model = getSpectreModel(provider, toolConfig.model);
+    if (!model) throw new Error(`unknown provider/model: ${provider}/${toolConfig.model}`);
+  } catch (error) {
+    console.error(`[spectre] failed to initialise model: ${(error as Error).message}`);
+    return emptyResult('incomplete', 'model-initialisation-failed', skippedCount);
+  }
 
-  // Step 2: build diff map (needed before keyword scanning)
-  const diffByFile = new Map(promptFiles.map(p => [p.file, p.content]));
+  const fileCap = Math.min(toolConfig.fileCap ?? 20, 30);
+  const contentByFile = new Map<string, string | null>(promptFiles.map(prompt => [prompt.file, prompt.content]));
+  const signalInputs = [];
+  for (const file of eligible) {
+    if (signal?.aborted) break;
+    signalInputs.push({
+      file,
+      content: await readSelectionContent(file, workspacePath, contentByFile),
+      addedLines: addedLinesForFile(unifiedDiff, file),
+    });
+  }
+  if (signal?.aborted) {
+    const cancelled = emptyResult('incomplete', 'cancelled');
+    cancelled.status.selected = eligible.length;
+    cancelled.status.skipped = skippedCount;
+    cancelled.status.cancelled = eligible.length;
+    return cancelled;
+  }
 
-  // Step 3: three-tier primary cap
-  //   Tier 1 — path-matched high-value files (manifests, CI, Dockerfiles, .env)
-  //   Tier 2 — content-matched files: full-file keyword scan promotes these above the cap
-  //   Tier 3 — everything else: fills remaining slots after tiers 1 and 2
-  const tier1    = eligible.filter(isTier1);
-  const nonTier1 = eligible.filter(f => !isTier1(f));
-
-  const boostPatterns    = buildBoostPatterns(toolConfig.boostPatterns ?? []);
-  const { tier2, tier3 } = await partitionByKeywords(nonTier1, workspacePath, boostPatterns);
-
-  const selectedT1  = tier1.slice(0, fileCap);
-  const remT1       = fileCap - selectedT1.length;
-  const selectedT2  = remT1 > 0 ? tier2.slice(0, remT1) : [];
-  const remT2       = remT1 - selectedT2.length;
-  const selectedT3  = remT2 > 0 ? tier3.slice(0, remT2) : [];
-  const primary     = [...selectedT1, ...selectedT2, ...selectedT3];
-
-  // Step 4: secondary batch — keyword-matched files that overflowed the primary cap.
-  // tier2 files that didn't get a primary slot already contain suspicious patterns; no extra
-  // file reads are needed because partitionByKeywords already classified all nonTier1 files.
-  const tier2Overflow = tier2.slice(selectedT2.length);
-  const secondary     = secondaryFileCap > 0 ? tier2Overflow.slice(0, secondaryFileCap) : [];
-
-  const selected      = [...primary, ...secondary];
-
-  const promotedCount   = selectedT2.length;
-  const secondaryCount  = secondary.length;
-  const cappedCount     = eligible.length - selected.length;
+  const routing = await routeSpectreSignals({ files: signalInputs, config: toolConfig, signal, analyzer: structuralAnalyzer });
+  const routingContext = routing.context;
+  const selection = routing.selection;
+  const { primary, secondary, selected } = selection;
+  const cappedCount = selection.capped;
+  const highRiskCappedCount = selection.highRiskCapped.length;
+  const promoted = routingContext.files.filter(file => selected.includes(file.file) && file.signals.length > 0);
 
   console.log(
-    `[spectre] scanning ${primary.length} file(s)` +
-    (secondaryCount > 0 ? ` + ${secondaryCount} keyword-triggered` : '') +
-    ` with ${toolConfig.provider}/${toolConfig.model}` +
-    (skippedCount   > 0 ? `, ${skippedCount} skipped by filter`           : '') +
-    (promotedCount  > 0 ? `, ${promotedCount} keyword-promoted`           : '') +
-    (cappedCount    > 0 ? `, ${cappedCount} dropped by cap of ${fileCap}` : ''),
+    `[spectre] scanning ${primary.length} file(s)`
+      + (secondary.length > 0 ? ` + ${secondary.length} risk-triggered` : '')
+      + ` with ${provider}/${toolConfig.model}`
+      + (skippedCount > 0 ? `, ${skippedCount} skipped by filter` : '')
+      + (promoted.length > 0 ? `, ${promoted.length} signal-promoted` : '')
+      + (cappedCount > 0 ? `, ${cappedCount} dropped by cap of ${fileCap}` : ''),
   );
-  if (selectedT1.length > 0) debug('spectre', `tier1 (path-matched): ${selectedT1.join(', ')}`);
-  if (selectedT2.length > 0) debug('spectre', `tier2 (keyword-matched): ${selectedT2.join(', ')}`);
-  if (secondary.length  > 0) debug('spectre', `secondary (keyword-triggered overflow): ${secondary.join(', ')}`);
-
-  // Step 4: initialise model
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let model: any;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    model = getModel(toolConfig.provider as any, toolConfig.model as any);
-  } catch (err) {
-    console.error(`[spectre] failed to initialise model: ${(err as Error).message}`);
-    return [];
+  if (promoted.length > 0) {
+    debug('spectre', `risk signals: ${promoted.map(file => `${file.file}=${file.score}[${file.signals.join(',')}]`).join('; ')}`);
+  }
+  if (secondary.length > 0) debug('spectre', `secondary (risk or relation overflow): ${secondary.join(', ')}`);
+  if (routing.diagnostics.mode === 'shadow') {
+    const diagnostics = routing.diagnostics;
+    debug(
+      'spectre',
+      `structural shadow: outcome=${diagnostics.outcome}, files=${diagnostics.files}, facts=${diagnostics.facts}, selected-added=${diagnostics.selectionDelta.selectedAddedCount}, selected-removed=${diagnostics.selectionDelta.selectedRemovedCount}`,
+    );
+  } else if (routing.diagnostics.mode === 'enabled' && routing.diagnostics.outcome !== 'complete') {
+    console.warn(`[spectre] structural routing ${routing.diagnostics.outcome}; lexical fallback remains active for unavailable facts`);
   }
 
-  // Step 5: build system prompt (custom instructions + fixed JSON format suffix)
-  const analysisInstructions = toolConfig.prompt?.trim() || DEFAULT_ANALYSIS_INSTRUCTIONS;
-  const systemPrompt = `${analysisInstructions}\n\n${JSON_RESPONSE_SUFFIX}`;
+  const sources: SpectreSourceInput[] = [];
+  for (const file of selected) {
+    if (signal?.aborted) break;
+    const ranges = rangesForFile(changedLineRanges, file);
+    sources.push({
+      file,
+      content: await readSelectionContent(file, workspacePath, contentByFile),
+      ...(ranges.length > 0 ? { changedLineRanges: ranges } : {}),
+    });
+  }
 
-  // Step 6: scan concurrently
-  const allFindings = await runConcurrent(selected, concurrency, async (file) => {
-    const diff    = diffByFile.get(file) ?? null;
-    const results = await scanFile({ file, diffContent: diff, workspacePath, changedLineRanges, model, maxDiffLines, systemPrompt });
-    return results.filter(f => (SEVERITY_RANK[f.severity] ?? 0) >= minRank);
+  const maxOutputTokens = Math.min(toolConfig.maxOutputTokens ?? 1_200, 2_000);
+  const activeTransport = transport ?? createPiAiSpectreTransport({ model, maxOutputTokens });
+  const metricProvider = isSpectreProvider(provider) ? provider : 'unknown';
+  const activeGovernor = instrumentGovernor(governor ?? configuredGovernor(provider, activeBackend), metricProvider, activeBackend);
+  const activeCache = cache ?? (!transport ? createProductionSpectreCache({
+    context: cacheContext,
+    provider,
+    model: model.id,
+    modelApi: model.api,
+    maxOutputTokens,
+    config: toolConfig,
+  }) : undefined);
+  const result = await runSpectreCore({
+    selectedFiles: selected,
+    sources,
+    unifiedDiff,
+    pullRequestMetadata,
+    routingContext,
+    transport: activeTransport,
+    governor: activeGovernor,
+    config: toolConfig,
+    signal,
+    cache: activeCache,
+    cacheContext,
+    owner,
+    repo,
   });
-
-  console.log(`[spectre] ${allFindings.length} finding(s):`);
-  for (const f of allFindings) {
-    console.log(`[spectre]   ${f.severity.toUpperCase()} ${f.file}:${f.startLine}-${f.endLine} [${f.ruleId}] ${f.message}`);
+  result.status.skipped = skippedCount;
+  result.status.capped = cappedCount;
+  if (highRiskCappedCount > 0) {
+    result.status.highRiskCapped = highRiskCappedCount;
+    result.status.highRiskCappedFiles = selection.highRiskCapped
+      .slice(0, MAX_HIGH_RISK_CAPPED_DETAILS)
+      .map(({ file, score, signals }) => ({ file, score, signals }));
+    result.status.outcome = 'incomplete';
+    result.status.reason = 'high-risk-file-cap-exceeded';
+    console.error(
+      `[spectre] ${highRiskCappedCount} unscanned file(s) scored at or above ${SPECTRE_HIGH_RISK_SCORE}`,
+    );
+  } else if (cappedCount > 0) {
+    result.status.outcome = 'incomplete';
+    result.status.reason ??= 'file-cap-exceeded';
   }
 
-  return allFindings;
+  console.log(`[spectre] ${result.findings.length} finding(s):`);
+  for (const finding of result.findings) {
+    console.log(`[spectre]   ${finding.severity.toUpperCase()} ${finding.file}:${finding.startLine}-${finding.endLine} [${finding.ruleId}] ${finding.message}`);
+  }
+  return result;
+}
+
+/** Backwards-compatible findings-only adapter entry point. */
+export async function runSpectre(args: RunSpectreInput): Promise<SpectreRawFinding[]> {
+  return (await runSpectreWithStatus(args)).findings;
 }

@@ -22,6 +22,17 @@ const SUCCESS_BODY = [
   'No security issues found on latest push.',
 ].join('\n');
 
+const INCOMPLETE_ALERT =
+  '> [!WARNING]\n' +
+  '> Layne could not complete every configured security scan. The findings below may be incomplete.';
+
+const INCOMPLETE_BODY = [
+  COMMENT_MARKER,
+  '⚠️ **Layne — scan incomplete**',
+  '',
+  'Layne could not analyze all changed content. Review the Check Run summary before merging.',
+].join('\n');
+
 function buildDefaultComment(ctx: TemplateContext, alertBlock: string): string {
   return [
     COMMENT_MARKER,
@@ -45,10 +56,14 @@ async function findExistingComment(
   owner: string,
   repo: string,
   prNumber: number,
+  signal?: AbortSignal,
 ): Promise<number | null> {
+  signal?.throwIfAborted();
   const comments = await octokit.paginate(octokit.issues.listComments, {
     owner, repo, issue_number: prNumber,
+    ...(signal && { request: { signal } }),
   }) as Array<{ id: number; body?: string }>;
+  signal?.throwIfAborted();
   return comments.find(c => c.body?.includes(COMMENT_MARKER))?.id ?? null;
 }
 
@@ -56,7 +71,7 @@ async function findExistingComment(
  * Creates or updates a Layne security comment on a PR.
  * Never throws.
  */
-export async function postComment({ findings, owner, repo, prNumber, installationId, headSha, conclusion, commentConfig }: {
+export async function postComment({ findings, owner, repo, prNumber, installationId, headSha, conclusion, commentConfig, coverageFailure, signal }: {
   findings: ProcessedFinding[];
   owner: string;
   repo: string;
@@ -65,17 +80,32 @@ export async function postComment({ findings, owner, repo, prNumber, installatio
   headSha: string;
   conclusion: string;
   commentConfig: CommentConfig & { warningTemplate?: string | null };
+  coverageFailure?: string | null;
+  signal?: AbortSignal;
 }): Promise<void> {
   try {
-    const octokit = await getInstallationOctokit(installationId);
-    const existingId = await findExistingComment(octokit, owner, repo, prNumber);
+    signal?.throwIfAborted();
+    const octokit = await getInstallationOctokit(installationId, signal);
+    const existingId = await findExistingComment(octokit, owner, repo, prNumber, signal);
 
     let body: string;
     if (conclusion === 'failure') {
-      const ctx = buildContext(findings, owner, repo, prNumber, headSha);
-      body = commentConfig.template
-        ? renderTemplate(commentConfig.template, ctx)
-        : buildDefaultComment(ctx, CAUTION_ALERT);
+      if (findings.length === 0 && coverageFailure) {
+        body = `${COMMENT_MARKER}\n\n> [!CAUTION]\n> Spectre could not scan every high-risk changed file.\n\n${coverageFailure}`;
+      } else {
+        const ctx = buildContext(findings, owner, repo, prNumber, headSha);
+        body = commentConfig.template
+          ? renderTemplate(commentConfig.template, ctx)
+          : buildDefaultComment(ctx, CAUTION_ALERT);
+        if (coverageFailure) body = `${body}\n\n${coverageFailure}`;
+      }
+    } else if (conclusion === 'neutral') {
+      if (findings.length > 0) {
+        const ctx = buildContext(findings, owner, repo, prNumber, headSha);
+        body = buildDefaultComment(ctx, INCOMPLETE_ALERT);
+      } else {
+        body = INCOMPLETE_BODY;
+      }
     } else if (findings.length > 0) {
       const ctx = buildContext(findings, owner, repo, prNumber, headSha);
       body = commentConfig.warningTemplate
@@ -87,11 +117,14 @@ export async function postComment({ findings, owner, repo, prNumber, installatio
     }
 
     if (existingId) {
-      await octokit.issues.updateComment({ owner, repo, comment_id: existingId, body });
+      signal?.throwIfAborted();
+      await octokit.issues.updateComment({ owner, repo, comment_id: existingId, body, ...(signal && { request: { signal } }) });
     } else {
-      await octokit.issues.createComment({ owner, repo, issue_number: prNumber, body });
+      signal?.throwIfAborted();
+      await octokit.issues.createComment({ owner, repo, issue_number: prNumber, body, ...(signal && { request: { signal } }) });
     }
   } catch (err) {
+    signal?.throwIfAborted();
     console.error(`[commenter] Failed to post PR comment: ${(err as Error).message}`);
   }
 }

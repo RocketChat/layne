@@ -19,13 +19,35 @@ function getAppAuth(): ReturnType<typeof createAppAuth> {
   return appAuth;
 }
 
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Returns an Octokit instance authenticated as the given installation.
  * The underlying token is short-lived (1 hour) and scoped to that installation's repos.
  */
-export async function getInstallationOctokit(installationId: number): Promise<Octokit> {
+export async function getInstallationOctokit(installationId: number, signal?: AbortSignal): Promise<Octokit> {
+  signal?.throwIfAborted();
   debug('auth', `generating installation token for installation ${installationId}`);
-  const { token } = await getAppAuth()({ type: 'installation', installationId });
+  const { token } = await abortable(getAppAuth()({ type: 'installation', installationId }), signal);
+  signal?.throwIfAborted();
   return new Octokit({ auth: token });
 }
 
@@ -33,8 +55,10 @@ export async function getInstallationOctokit(installationId: number): Promise<Oc
  * Returns just the raw installation token string.
  * Useful when passing credentials to a subprocess (e.g. git clone).
  */
-export async function getInstallationToken(installationId: number): Promise<string> {
+export async function getInstallationToken(installationId: number, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   debug('auth', `generating installation token for installation ${installationId}`);
-  const { token } = await getAppAuth()({ type: 'installation', installationId });
+  const { token } = await abortable(getAppAuth()({ type: 'installation', installationId }), signal);
+  signal?.throwIfAborted();
   return token;
 }

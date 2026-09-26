@@ -117,6 +117,9 @@ GITHUB_WEBHOOK_SECRET=your-32-char-hex-secret
 # Your domain and email for Let's Encrypt
 DOMAIN=your-domain.com
 LETSENCRYPT_EMAIL=you@example.com
+
+# Recommended when Spectre is enabled on more than one worker process
+SPECTRE_GOVERNOR_BACKEND=redis
 ```
 
 To convert the private key to a single line:
@@ -156,7 +159,7 @@ curl https://your-domain.com/health
 
 ## Step 5 - Verify
 
-If you're using default settings/the pull request trigger, just open a PR on one of the repos where Layne is installed. Within a few seconds you should see a **Layne** check appear on the PR in `queued` status, then `in progress`, then `success` or `failure` with inline annotations if issues were found.
+If you're using default settings/the pull request trigger, just open a PR on one of the repos where Layne is installed. Within a few seconds you should see a **Layne** check appear on the PR in `queued` status, then `in progress`, then `success`, `failure`, or `neutral`. A neutral result means some configured scanner or Git content coverage was incomplete; review the Check Run summary before merging. A failure can represent blocking findings or Spectre's `high-risk-file-cap-exceeded` coverage condition.
 
 
 ## Operations
@@ -190,6 +193,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - run: npm run build
       - run: npm run lint
       - run: npm run validate-config
       - run: npm test
@@ -233,6 +237,21 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SPECTRE_GOVERNOR_BACKEND: ${{ vars.SPECTRE_GOVERNOR_BACKEND }}
+          SPECTRE_GLOBAL_CONCURRENCY: ${{ vars.SPECTRE_GLOBAL_CONCURRENCY }}
+          SPECTRE_REQUESTS_PER_MINUTE: ${{ vars.SPECTRE_REQUESTS_PER_MINUTE }}
+          SPECTRE_REQUEST_BURST: ${{ vars.SPECTRE_REQUEST_BURST }}
+          SPECTRE_QUEUE_TIMEOUT_MS: ${{ vars.SPECTRE_QUEUE_TIMEOUT_MS }}
+          SPECTRE_CIRCUIT_FAILURES: ${{ vars.SPECTRE_CIRCUIT_FAILURES }}
+          SPECTRE_CIRCUIT_WINDOW_SECONDS: ${{ vars.SPECTRE_CIRCUIT_WINDOW_SECONDS }}
+          SPECTRE_CIRCUIT_COOLDOWN_SECONDS: ${{ vars.SPECTRE_CIRCUIT_COOLDOWN_SECONDS }}
           ROCKETCHAT_WEBHOOK_URL: ${{ secrets.ROCKETCHAT_WEBHOOK_URL }}
           METRICS_ENABLED: ${{ vars.METRICS_ENABLED }}
           METRICS_PORT: ${{ vars.METRICS_PORT }}
@@ -244,6 +263,21 @@ jobs:
             printf 'DOMAIN=%s\n'                    "$DOMAIN"
             printf 'LETSENCRYPT_EMAIL=%s\n'         "$LETSENCRYPT_EMAIL"
             printf 'ANTHROPIC_API_KEY=%s\n'         "$ANTHROPIC_API_KEY"
+            printf 'OPENAI_API_KEY=%s\n'            "$OPENAI_API_KEY"
+            printf 'GEMINI_API_KEY=%s\n'            "$GEMINI_API_KEY"
+            printf 'MISTRAL_API_KEY=%s\n'           "$MISTRAL_API_KEY"
+            printf 'AWS_BEARER_TOKEN_BEDROCK=%s\n'  "$AWS_BEARER_TOKEN_BEDROCK"
+            printf 'AWS_ACCESS_KEY_ID=%s\n'          "$AWS_ACCESS_KEY_ID"
+            printf 'AWS_SECRET_ACCESS_KEY=%s\n'     "$AWS_SECRET_ACCESS_KEY"
+            printf 'AWS_REGION=%s\n'                 "$AWS_REGION"
+            printf 'SPECTRE_GOVERNOR_BACKEND=%s\n'  "${SPECTRE_GOVERNOR_BACKEND:-in_process}"
+            printf 'SPECTRE_GLOBAL_CONCURRENCY=%s\n' "${SPECTRE_GLOBAL_CONCURRENCY:-4}"
+            printf 'SPECTRE_REQUESTS_PER_MINUTE=%s\n' "${SPECTRE_REQUESTS_PER_MINUTE:-35}"
+            printf 'SPECTRE_REQUEST_BURST=%s\n'     "${SPECTRE_REQUEST_BURST:-35}"
+            printf 'SPECTRE_QUEUE_TIMEOUT_MS=%s\n'  "${SPECTRE_QUEUE_TIMEOUT_MS:-2000}"
+            printf 'SPECTRE_CIRCUIT_FAILURES=%s\n'  "${SPECTRE_CIRCUIT_FAILURES:-3}"
+            printf 'SPECTRE_CIRCUIT_WINDOW_SECONDS=%s\n' "${SPECTRE_CIRCUIT_WINDOW_SECONDS:-60}"
+            printf 'SPECTRE_CIRCUIT_COOLDOWN_SECONDS=%s\n' "${SPECTRE_CIRCUIT_COOLDOWN_SECONDS:-60}"
             printf 'ROCKETCHAT_WEBHOOK_URL=%s\n'    "$ROCKETCHAT_WEBHOOK_URL"
             printf 'METRICS_ENABLED=%s\n'           "${METRICS_ENABLED:-false}"
             printf 'METRICS_PORT=%s\n'              "${METRICS_PORT:-9091}"
@@ -272,7 +306,11 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 | `DOMAIN` | Domain name for TLS (e.g. `layne.example.com`) |
 | `LETSENCRYPT_EMAIL` | Email for Let's Encrypt expiry notifications |
 | `ANTHROPIC_API_KEY` | Anthropic API key - required when any repo has `claude.enabled: true`, or when Spectre uses `provider: "anthropic"` |
-| *(provider key)* | Spectre provider credentials - add the variable for whichever provider you configure (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` for Bedrock). See [Spectre - Provider credentials](scanners/spectre.md#provider-credentials) for the full list |
+| `OPENAI_API_KEY` | Optional; required when Spectre uses OpenAI |
+| `GEMINI_API_KEY` | Optional; required when Spectre uses Google |
+| `MISTRAL_API_KEY` | Optional; required when Spectre uses Mistral |
+| `AWS_BEARER_TOKEN_BEDROCK` | Optional Bedrock bearer-token authentication |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional Bedrock static IAM authentication; use both together. Instance/task roles can be used instead |
 | `ROCKETCHAT_WEBHOOK_URL` | Global Rocket.Chat incoming webhook URL (required when `$global.notifications.rocketchat.webhookUrl` is `"$ROCKETCHAT_WEBHOOK_URL"`) |
 
 **Optional GitHub Actions variables** (Settings → Secrets and variables → Actions → Variables):
@@ -281,6 +319,15 @@ Go to your repository → **Settings → Secrets and variables → Actions** and
 |---|---|---|
 | `METRICS_ENABLED` | `false` | Set to `true` to enable Prometheus metrics on the deployed instance |
 | `METRICS_PORT` | `9091` | Port for the worker metrics HTTP server |
+| `AWS_REGION` | (none) | Required when Spectre uses Bedrock, for example `us-east-1` |
+| `SPECTRE_GOVERNOR_BACKEND` | `in_process` | Set to `redis` when Spectre runs across multiple worker processes |
+| `SPECTRE_GLOBAL_CONCURRENCY` | `4` | Provider-scoped concurrency limit |
+| `SPECTRE_REQUESTS_PER_MINUTE` | `35` | Provider-scoped sustained request rate |
+| `SPECTRE_REQUEST_BURST` | `35` | Provider-scoped burst, never greater than requests per minute |
+| `SPECTRE_QUEUE_TIMEOUT_MS` | `2000` | Governor concurrency wait in milliseconds |
+| `SPECTRE_CIRCUIT_FAILURES` | `3` | Retryable failures needed to open a provider circuit |
+| `SPECTRE_CIRCUIT_WINDOW_SECONDS` | `60` | Failure-counting window |
+| `SPECTRE_CIRCUIT_COOLDOWN_SECONDS` | `60` | Open-circuit cooldown |
 
 GitHub reserves the `GITHUB_` prefix for its own built-in variables, so the three app secrets use a `GH_` prefix here. The workflow maps them to the correct `GITHUB_`-prefixed names when writing `.env`.
 
@@ -294,6 +341,21 @@ The worker runs with `concurrency: 5` by default (5 jobs per process). To handle
 ```bash
 docker compose up --scale worker=6 -d
 ```
+
+If Spectre is enabled, scaled workers should use `SPECTRE_GOVERNOR_BACKEND=redis`. The default `in_process` backend keeps independent concurrency, rate, and circuit state in each process, so aggregate provider traffic rises as workers are added. The Redis backend uses the existing `REDIS_URL` and shares provider-scoped state deployment-wide.
+
+| Variable | Default | Hard maximum | Description |
+|---|---:|---:|---|
+| `SPECTRE_GOVERNOR_BACKEND` | `in_process` | n/a | Set to `redis` for multiple worker processes |
+| `SPECTRE_GLOBAL_CONCURRENCY` | `4` | `100` | Concurrent requests per provider |
+| `SPECTRE_REQUESTS_PER_MINUTE` | `35` | `10000` | Sustained rate per provider |
+| `SPECTRE_REQUEST_BURST` | min(`35`, RPM) | configured RPM | Burst capacity per provider |
+| `SPECTRE_QUEUE_TIMEOUT_MS` | `2000` | `60000` | Wait for a concurrency lease |
+| `SPECTRE_CIRCUIT_FAILURES` | `3` | `100` | Retryable failures before opening the circuit |
+| `SPECTRE_CIRCUIT_WINDOW_SECONDS` | `60` | `3600` | Circuit failure window |
+| `SPECTRE_CIRCUIT_COOLDOWN_SECONDS` | `60` | `3600` | Open-circuit cooldown |
+
+Enable metrics and alerting before rollout. Redis governor errors, expired lease recoveries, provider denials, open circuits, and incomplete scan rates are exposed through the [Spectre metrics and supplied alerts](metrics.md#available-metrics). A governor backend error makes affected Spectre coverage incomplete rather than bypassing the limit.
 
 
 ### Renewing TLS Certificates
@@ -330,6 +392,7 @@ Set `DEBUG_MODE=true` in your `.env` file (or as a Docker environment variable) 
 - Every GitHub API call (createCheckRun, startCheckRun, completeCheckRun) and annotation chunk counts
 - Installation token generation events
 - Webhook event details (action, repo, PR number, commit SHA)
+- Spectre invalid-response reasons, cache hit/serve details, field-level violation codes, response sizes, and tool-call structure (without raw source or finding contents)
 
 Stderr from subprocesses (git, semgrep, trufflehog) is always logged when non-empty, regardless of `DEBUG_MODE`. This is intentional - stderr from these tools almost always indicates a misconfiguration or tool error worth knowing about.
 

@@ -4,62 +4,54 @@
   <img src="/img/spectre.png" alt="Spectre" width="160" />
 </div>
 
-Spectre is a malicious-intent scanner that makes a single direct LLM call per changed file. It looks for **reverse shells, backdoors, obfuscated payloads, credential exfiltration, supply-chain attacks, and covert execution** - confirmed hostile patterns with high confidence, not theoretical vulnerabilities.
+Spectre is a bounded, non-agentic malicious-intent scanner. It analyzes a typed base-to-head unified diff and looks for **reverse shells, backdoors, obfuscated payloads, credential exfiltration, supply-chain attacks, and covert execution**. It reports confirmed hostile behavior with exact evidence, not general bugs or theoretical vulnerabilities.
 
-Spectre replaced the previous Pi Agent scanner, and is built on top of Pi to leverage its multi-provider support. The key design principle is cost control: one LLM call per file, no agent sessions, no multi-turn conversations, no import following. This keeps spend predictable and low enough for a $50/month budget across dozens of active repositories.
+Spectre is disabled by default. Enabling it sends changed source data and bounded pull request metadata to the configured external AI provider.
 
-Spectre **sends code to an external AI provider's API**. It is disabled by default and must be opted in per repo. A `provider` must be configured explicitly - omitting it disables Spectre even when `enabled: true` is set. The provider must also be configured with the correct credentials in the environment - see [Provider credentials](#provider-credentials) below.
+## Analysis model
 
+Spectre no longer sends a HEAD-only snippet or unconditionally makes one call per file. Its provider-neutral core receives an in-memory typed diff, selected file paths, untrusted PR metadata, configuration, a governor, and a transport. Production uses the Pi AI transport; the deterministic simulator and manual evaluators use separate transports without changing the core response contract.
 
-## What it detects
+For each scan, Spectre:
 
-Spectre looks specifically for confirmed malicious patterns with high confidence:
+1. Filters changed regular files to code-bearing inputs, then extracts bounded, deterministic routing signals and prioritizes eligible files by execution surface and compound behavior. These signals cannot create findings.
+2. Builds a typed base-to-head unified diff containing file status and modes, old/new paths, hunk coordinates, additions, deletions, and unchanged context. `contextLines` controls the Git diff context for Spectre in both Layne scan modes.
+3. Adds only the PR title, body, and author. These fields are explicitly marked untrusted and bounded to 512, 4,096, and 128 UTF-8 bytes respectively. The body is further limited to one fifth of the request input budget. Metadata cannot independently justify a finding.
+4. Uses one whole-PR request when at most ten selected files are representable and the complete bounded diff fits both `maxInputBytes` and `maxDiffLines`. This preserves the response contract of up to three findings per supplied file.
+5. When the whole PR does not fit, groups up to ten directly related changed files such as a lifecycle manifest and its script before falling back to file, hunk, source-line, and overlong-line splits. A related group that cannot fit is recorded as an incomplete context gap. Prompt-flooded files reserve an early request for their tail.
+6. Applies `maxCallsPerFile` and `maxCallsPerPullRequest`. Content omitted by file, size, input, or call limits is never presented as complete coverage.
+7. Forces one schema-constrained `report_findings` tool call with an allowed rule ID, severity, exact chunk file, message, and evidence. Layne still validates every field locally.
+8. Grounds evidence verbatim against HEAD and changed lines. Invalid chunk output or ungrounded evidence receives at most one targeted retry per affected chunk, bounded by `maxRepairCallsPerPullRequest`. Evidence repair cannot change the candidate's file, rule, severity, or message.
 
-- Reverse shells and command-and-control callbacks
-- Backdoors and authentication bypasses
-- Credential and secret exfiltration
-- Obfuscated payloads (base64/hex encoded, eval chains)
-- Supply-chain attacks (postinstall hooks, URL dependencies with hostile execution, dependency confusion)
-- Covert execution (dangerous dynamic execution where the surrounding logic is clearly hostile)
+The core is stateless and does not run tools, follow imports, browse a repository, or start an agent session.
 
-The built-in prompt instructs Spectre to omit anything it cannot validate with a verbatim evidence snippet, and to ignore style issues, bugs, and theoretical vulnerabilities.
+## File selection
 
+Spectre first removes formats outside its malicious-code scope. Binary, media, archive, compiled, generated TypeScript declaration, minified CSS, and ordinary prose files are skipped before size accounting, scoring, file caps, or provider requests. Built-in prose exclusions are `.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, and `.asciidoc`, including agent-instruction Markdown such as `AGENTS.md` and `SKILL.md`. Known code-bearing text names remain eligible: `CMakeLists.txt`, `requirements*.txt`, and `constraints*.txt`. `.mdx` remains eligible as executable source, and a prose-suffixed file with executable Git mode remains eligible. These intentional exclusions increment the skipped counter and do not make coverage incomplete. Built-in exclusions cannot be opted out through repository configuration; `skipPaths` and `skipExtensions` can only narrow eligibility further.
 
-## Data privacy
+Eligible files are scored before request planning. Path roles prioritize manifests, lockfiles, CI workflows, registry configuration, Dockerfiles, startup/persistence files, and automatic execution surfaces such as `build.rs`, `setup.py`, executable `.pth`, `binding.gyp`, and GYP includes. Content signals cover lifecycle hooks, workflow trust crossings, registry redirection, process/network/secret access, network plus process or dynamic execution, startup persistence, dynamic or encoded execution, covert child processes, prompt flooding, and source files whose content conflicts with their extension. Secret routing requires explicit environment/secret syntax, browser credential access, reads from known credential files, or a secret-shaped shell reference; bare platform words such as `AWS` do not count as secret access.
 
-Source code leaves your environment when Spectre is enabled. Consider whether this is appropriate for repositories containing sensitive business logic, PII, or regulated data. The destination depends on the configured `provider` - code may be sent to Anthropic, OpenAI, Google, Amazon Bedrock, or another third-party API.
+`astSignals.mode` optionally augments this lexical routing with bounded structural analysis for JavaScript, TypeScript, TSX, Python, and Go. `off` preserves lexical routing exactly. `shadow` computes structural routing and diagnostics but never changes selected files or coverage. `enabled` uses the union of lexical and changed-span structural signals. Primitive structural facts outside added lines are ignored; changed compound sink facts can promote a file. Parser, worker, or deadline failures fall back to lexical routing, while cancellation of the parent scan still propagates. Structural signals remain non-evidentiary and never create findings.
 
-What is sent depends on the [scan mode](../configuration.md#scan-mode) configured for the repo:
+Signals are stronger when they form a compound chain such as network plus process execution, automatic execution plus network/process behavior, or sensitive data plus an HTTP, WebSocket, DNS, mail, browser, or cloud-upload sink. Encoding coverage includes base64, hex, compression, PowerShell encoded commands, and computed dynamic execution. Related changed files are co-selected when package lifecycle scripts, Python build backends, Dockerfiles, CMake files, CI workflows, GYP commands, local actions, or sourced shell scripts reference them. Relations are expanded from primary and high-risk candidates so a risk-selected execution surface can bring along its helper. Signals contain only controlled names and relation keys; they are non-evidentiary routing context and never become findings by themselves.
 
-- **`changed_files` mode (default):** The full content of every changed source file is sent to the provider.
-- **`diff_only` mode:** Only the changed hunks with surrounding context are sent. This reduces both cost and the amount of code that leaves the environment.
+The primary selection is bounded by `fileCap`. Related or risk-scored overflow can use up to `secondaryFileCap` additional slots. If eligible files with a routing score of at least `12` remain unselected after both caps are full, Layne records `high-risk-file-cap-exceeded` and fails the Check Run. Routing scores still cannot create findings or annotations; the failure reports missing high-risk coverage instead. Active code-bearing text formats such as ordinary CSS, SVG, minified JavaScript, and MDX are not broadly excluded by the built-in filter.
 
-Spectre never follows imports into unchanged files. Only files explicitly changed in the PR are considered.
+## Data and credentials
 
+Production provider requests contain the system prompt, bounded PR title/body/author, selected eligible paths and Git metadata, and their typed diff hunks with added, removed, and context lines. Excluded prose is not sent. Spectre does not send unchanged files or follow imports. This behavior is independent of `mode`; unlike file-oriented CLI scanners, Spectre uses the canonical unified diff in both `changed_files` and `diff_only` mode.
 
-## How Layne runs it
+Review provider retention, region, training, and contractual controls before enabling Spectre for proprietary, regulated, or personal data. Provider credentials grant the worker the ability to submit this source data and incur model charges. Scope and rotate them accordingly.
 
-1. Files are filtered by the built-in skip list (binary files, images, stylesheets, minified files) and any `skipPaths`/`skipExtensions` configured for the repo.
-2. Eligible files are sorted into three tiers by priority:
-   - **Tier 1** - path-matched high-value files: `package.json`, lock files, `.github/workflows/`, `Dockerfile*`, `docker-compose*`, `.env*`. Always processed first; supply-chain attacks concentrate here.
-   - **Tier 2** - keyword-promoted files: the full content of each remaining file is scanned for suspicious patterns. Files matching any pattern are promoted above ordinary files. Add repo-specific patterns via `boostPatterns`. The built-in pattern set covers:
-     - Dynamic code execution: `eval(`, `new Function(`
-     - Encoding/decode sinks: `atob(`, `String.fromCharCode(`
-     - Shell execution: `require('child_process')`, `execSync(`, `spawnSync(`
-     - Direct shell invocation: `/bin/sh`, `/bin/bash`, `/bin/zsh`, `/bin/dash`
-     - TCP shell redirection: `/dev/tcp/`
-     - Raw TCP: `net.Socket`
-     - Cloud metadata endpoints: `169.254.169.254`, `metadata.google.internal`
-     - npm lifecycle hooks: `"postinstall":`, `"preinstall":`, `"prepare":`
-     - Remote fetch in shell/CI: `curl`/`wget` with an HTTP(S) URL
-     - Dynamic imports with a non-literal argument: `import(`
-   - **Tier 3** - everything else: fills remaining capacity after tiers 1 and 2.
-3. The combined list is capped at `fileCap` (default: 20). Tiers fill capacity in order - a file with a suspicious keyword that would otherwise be position 28 in the diff gets scanned ahead of a benign file at position 3.
-4. **Secondary batch:** any keyword-matched (tier 2) files that overflowed the primary cap are collected and scanned as an additional batch, capped at `secondaryFileCap` (default: 20). This means a PR with many suspicious files can scan up to 40 files total without ever spending LLM calls on ordinary files that matched no patterns. Set `secondaryFileCap: 0` to disable this and restore a hard 20-file ceiling.
-5. Each file in the final list is scanned with a single LLM call. The prompt includes the file content (or diff in `diff_only` mode) and asks for a JSON response listing any findings with verbatim evidence snippets.
-5. Findings with severity below `minSeverity` are dropped. Findings that lack an `evidence` field or have an empty evidence string are also silently dropped - the evidence snippet is required for location validation. For each surviving finding, Layne re-validates the evidence string against the actual file content before reporting it.
-6. API errors are caught and logged without failing the scan.
+| Provider value | Required environment variable(s) |
+|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `google` | `GEMINI_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `amazon-bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION`, plus credentials resolved by the standard AWS credential chain. This can include `AWS_BEARER_TOKEN_BEDROCK`, static IAM credentials, a profile, or an instance/task role. |
 
+Missing credentials, an invalid provider/model, or an unavailable provider produces an **incomplete** result rather than a clean pass.
 
 ## Configuration
 
@@ -75,81 +67,207 @@ Spectre never follows imports into unchanged files. Only files explicitly change
 }
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `false` | Must be `true` to enable Spectre scanning for this repo |
-| `provider` | string | (none) | **Required.** AI provider to use. Omitting this disables Spectre even if `enabled: true`. Supported values: `anthropic`, `openai`, `google`, `mistral`, `amazon-bedrock` |
-| `model` | string | `claude-haiku-4-5-20251001` | Model ID to use. Must be a valid model ID for the configured provider. **Bedrock uses provider-prefixed IDs** (e.g. `anthropic.claude-haiku-4-5-20251001-v1:0`) - the default `claude-haiku-4-5-20251001` will not resolve on Bedrock |
-| `fileCap` | number | `20` | Maximum number of files to scan in the primary batch. Tier 1 files (manifests, lock files, CI configs) always consume capacity first |
-| `secondaryFileCap` | number | `20` | Maximum number of additional keyword-matched files to scan beyond the primary cap. Set to `0` to disable and enforce a hard `fileCap` ceiling |
-| `maxDiffLines` | number | `400` | Maximum lines of file content to send to the LLM per file. Longer files are truncated to this limit before the API call |
-| `minSeverity` | string | `"high"` | Minimum severity to report. One of `"critical"`, `"high"`, `"medium"`, `"low"`, `"info"`. Findings below this threshold are dropped before annotation |
-| `skipPaths` | string[] | `[]` | Glob patterns for paths to exclude. Supports `*` (single path segment) and `**` (any depth). Example: `["vendor/**", "test/**"]` |
-| `skipExtensions` | string[] | `[]` | File extensions to exclude. Must start with `.`. Example: `[".test.ts", ".spec.js"]` |
-| `concurrency` | number | `5` | Maximum number of files to scan in parallel per job |
-| `prompt` | string | built-in | Custom analysis instructions. Replaces the default "what to detect" section of the system prompt. The JSON output format is always appended automatically - your prompt should only describe what to look for, not how to format the response |
-| `boostPatterns` | string[] | `[]` | Additional regex patterns (as strings) added to the tier 2 keyword list. Files whose full content matches any pattern are prioritised within the cap ahead of tier 3 files. Invalid regex strings are silently ignored with a console warning - test patterns before deploying. See the Examples section for usage |
+| Key | Type | Default | Hard maximum | Description |
+|---|---|---:|---:|---|
+| `enabled` | boolean | `false` | n/a | Enables Spectre for the repository |
+| `provider` | string | none | n/a | Required when enabled: `anthropic`, `openai`, `google`, `mistral`, or `amazon-bedrock` |
+| `model` | string | `claude-haiku-4-5-20251001` | n/a | Provider-specific model ID. Bedrock model IDs are provider-prefixed |
+| `fileCap` | integer | `20` | `30` | Primary selected-file limit after deterministic risk scoring. High-risk overflow after both caps is blocking |
+| `secondaryFileCap` | integer | `20` | `50` | Additional related or risk-scored files; `0` disables secondary selection. High-risk overflow after this cap is blocking |
+| `maxDiffLines` | integer | `400` | `1000` | Maximum typed diff lines in one request chunk |
+| `maxInputBytes` | integer | `65536` | `65536` | Maximum UTF-8 bytes in one request's user payload, including metadata and the diff envelope but excluding the system prompt |
+| `maxOutputTokens` | integer | `1200` | `2000` | Provider generation limit. Reaching it makes the response invalid and coverage incomplete |
+| `requestTimeoutSeconds` | integer | `30` | `30` | Deadline for each provider request |
+| `maxCallsPerFile` | integer | `4` | `20` | Maximum admitted chunks associated with one selected file |
+| `maxCallsPerPullRequest` | integer | `40` | `100` | Maximum provider calls for one PR |
+| `maxRepairCallsPerPullRequest` | integer | `3` | `10` | Additional targeted calls for invalid responses or ungrounded evidence; set to `0` to disable repair |
+| `minSeverity` | string | `high` | n/a | Lowest reported severity: `critical`, `high`, `medium`, `low`, or `info` |
+| `skipPaths` | string[] | `[]` | n/a | Glob-like path exclusions using `*` and `**` |
+| `skipExtensions` | string[] | `[]` | n/a | Additional suffix exclusions, each beginning with `.`; built-in prose exclusions cannot be re-enabled |
+| `concurrency` | integer | `2` | `2` | Per-scan request concurrency; deployment-wide concurrency is governed separately |
+| `prompt` | string or null | built-in | n/a | Replaces the analysis instructions; the trust and JSON response contract is always appended |
+| `boostPatterns` | string[] | `[]` | n/a | Additional regular expressions converted to non-evidentiary routing signals |
+| `cache.enabled` | boolean | `false` | n/a | Allows this repository to use the deployment's Spectre response cache |
+| `cache.positiveTtlSeconds` | integer | `86400` | `604800` | Absolute TTL for validated finding-bearing responses |
+| `cache.negativeTtlSeconds` | integer | `3600` | `604800` | Absolute TTL for validated clean responses |
+| `astSignals.mode` | `off`, `shadow`, or `enabled` | `off` | n/a | Structural routing rollout mode. Shadow mode cannot change selection or coverage |
+| `astSignals.maxFiles` | integer | `200` | `500` | Maximum files admitted to structural analysis |
+| `astSignals.maxTotalBytes` | integer | `2097152` | `67108864` | Maximum total UTF-8 source bytes parsed structurally |
+| `astSignals.timeoutSeconds` | integer | `3` | `30` | Structural analysis and isolated-worker deadline |
 
-Spectre scanning is disabled by default to avoid unexpected API costs. Each repo must explicitly opt in with both `enabled: true` and a `provider`.
+The call and input budgets are separate. `maxInputBytes` and `maxDiffLines` apply to each request; `maxCallsPerPullRequest` bounds initial analysis requests. Up to `maxRepairCallsPerPullRequest` additional calls can correct invalid structured output or re-ground evidence for existing identity-locked candidates. Therefore, a configured worst-case user-payload ceiling is approximately `maxInputBytes * (maxCallsPerPullRequest + maxRepairCallsPerPullRequest)`, plus the repeated system prompt and generated output. The whole-PR path normally reduces repeated prompt overhead for small changes.
 
+## Response cache
 
-## Rule IDs
+The optional Redis response cache reuses only exact, PR-scoped Spectre requests. Its identity binds the immutable GitHub repository ID, installation, PR number, actual merge base, provider/model, scanner build and configuration, prompts, response schema, Git blob OIDs, full HEAD source hashes, and changed ranges. `headSha` is deliberately omitted so an unchanged chunk can survive a later push; changing any source blob used by a chunk always changes its key.
 
-| Rule ID | Description |
-|---|---|
-| `reverse-shell` | Reverse shells, bind shells, or interactive stdio forwarding to a remote process |
-| `credential-exfiltration` | Secrets, tokens, keys, cookies, or env vars sent to an external destination |
-| `obfuscated-payload` | Encoded or constructed strings that decode into code, commands, or malicious URLs fed to an execution sink |
-| `backdoor` | Hidden admin paths, secret trigger strings, kill switches, or covert remote command execution |
-| `supply-chain-abuse` | Hostile install-time scripts, URL/git dependencies with suspicious execution, or dependency confusion with concrete hostile behavior |
-| `covert-execution` | Dangerous dynamic execution where the surrounding logic is clearly hostile and does not fit a more specific category above |
+Cached values are HMAC-signed and contain bounded raw provider output. Positive responses include the exact source evidence returned with findings, so the cache has the same confidentiality requirements as scanned source and is persisted in AOF by the bundled Redis. Prompts and full source files are not stored as values. Every hit is parsed with the current schema and exact evidence is grounded against current HEAD source again. Invalid, expired, corrupted, oversized, or ungrounded entries are deleted and scanned live. Redis failures also fall back to live analysis. Invalid, repaired, cancelled, timed-out, rate-limited, circuit-open, or otherwise incomplete responses are never cached.
 
+Finding-bearing responses are eligible after one complete live scan. Clean responses are probationary until two independent complete live scans agree, preventing one stochastic false negative from becoming sticky. Existing file and PR call caps remain logical coverage limits, so cache warmth does not admit files that a cold scan would cap.
 
-## Cost
+Both repository configuration and deployment mode must enable caching. `SPECTRE_CACHE_MODE` supports `off`, `write-only`, `verify`, and `read-write`. `verify` reads and compares entries but always uses the live response. The shared-Redis deployment keeps Redis in `noeviction` mode and enforces `SPECTRE_CACHE_MAX_BYTES` over serialized cache values; its cache script deletes only cache keys. Redis object/index overhead and AOF amplification are outside that payload budget, so memory, disk, and latency must still be monitored.
 
-Spectre makes one API call per scanned file. Total cost per PR = *(files scanned)* × *(tokens per file)* × *(provider rate)*.
+The shared Redis service is a trusted control-plane dependency: an actor able to rewrite BullMQ jobs can already change what commit Layne scans, and HMAC signatures detect cache corruption or forgery but cannot prevent replay of an older still-valid signed value. Use `SPECTRE_CACHE_REDIS_URL` with an isolated, access-controlled Redis endpoint when the cache should have a separate failure or trust boundary.
 
-The `fileCap` (default: 20) is the primary cost control, and `secondaryFileCap` (default: 20) controls how many additional keyword-matched overflow files are scanned. In the worst case - a PR with 40+ files that all contain suspicious patterns - Spectre scans up to 40 files total. PRs with no keyword-matching files stay at the 20-file ceiling. Set `secondaryFileCap: 0` to enforce a hard cap of `fileCap` regardless. Combined with `diff_only` mode, which reduces tokens per file, a typical PR costs a few cents at most with a small model like `claude-haiku-4-5-20251001`.
+## Incomplete outcomes
 
-Amazon Bedrock is an attractive option for cost-sensitive deployments - it provides access to multiple model families (Claude, Llama, Mistral) under your own AWS billing, often at rates below the direct provider API. See [Provider credentials](#provider-credentials) below.
+Spectre records incomplete coverage for file caps, oversized or unavailable files, unprojectable Git content, call caps, hunks that require conservative split/truncation accounting, invalid or output-truncated responses that survive targeted retry, evidence that remains ungrounded after repair, request failures/timeouts, governor queue/rate denials, and open provider circuits. The Check Run summary includes coverage counters and a reason.
 
-The most effective cost control is the `workflow_run` or `workflow_job` trigger, which defers scanning until after CI passes. PRs that fail CI quickly are not scanned at all. See [Configuration - Trigger](../configuration.md#trigger) for details.
+Most incomplete Spectre results with no blocking finding produce GitHub conclusion `neutral`, use `onIncomplete`/`removeOnIncomplete` labels, and use the incomplete PR comment. The exception is `high-risk-file-cap-exceeded`: when score-12-or-higher files remain unscanned after primary and secondary selection, the conclusion is `failure`, failure labels apply, and the Check Run summary lists up to ten bounded file paths with scores and routing signals plus any additional count. This is a coverage failure, not a synthetic malicious-code finding, so no inline annotation is created for the omitted files.
 
+Valid findings from scanned files are still validated, suppressed, annotated, commented on, and notified normally when high-risk overflow occurs. Exception approvals can waive those individual findings but cannot waive the coverage failure. Other incomplete reasons remain neutral under the current rollout policy. See [Rollout gate](#rollout-gate) for the criteria required before changing those reasons.
 
-## Provider credentials
+## Governor
 
-Each provider reads credentials from environment variables. The worker logs a warning and skips Spectre if credentials are missing rather than failing the scan.
+Every request passes through a provider-scoped concurrency, rate, and circuit-breaker governor. `SPECTRE_GOVERNOR_BACKEND=in_process` is the default and limits only one worker process. Set `SPECTRE_GOVERNOR_BACKEND=redis` for deployment-wide limits shared by horizontally scaled workers through `REDIS_URL`.
 
-| Provider value | Required environment variable(s) |
-|---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `openai` | `OPENAI_API_KEY` |
-| `google` | `GEMINI_API_KEY` |
-| `mistral` | `MISTRAL_API_KEY` |
-| `amazon-bedrock` | **Option A (API key):** `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` - simplest, no IAM user needed<br/>**Option B (IAM):** `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION`<br/>**Option C (profile/role):** set `AWS_PROFILE` and let the SDK resolve credentials from `~/.aws/credentials` or an EC2 instance role |
+| Variable | Default | Hard maximum | Description |
+|---|---:|---:|---|
+| `SPECTRE_GOVERNOR_BACKEND` | `in_process` | n/a | `in_process` or `redis` |
+| `SPECTRE_GLOBAL_CONCURRENCY` | `4` | `100` | Concurrent provider requests per provider |
+| `SPECTRE_REQUESTS_PER_MINUTE` | `35` | `10000` | Sustained request rate per provider |
+| `SPECTRE_REQUEST_BURST` | min(`35`, RPM) | configured RPM | Burst capacity per provider |
+| `SPECTRE_QUEUE_TIMEOUT_MS` | `2000` | `60000` | Time waiting for a concurrency lease |
+| `SPECTRE_CIRCUIT_FAILURES` | `3` | `100` | Retryable failures that open the circuit |
+| `SPECTRE_CIRCUIT_WINDOW_SECONDS` | `60` | `3600` | Failure counting window |
+| `SPECTRE_CIRCUIT_COOLDOWN_SECONDS` | `60` | `3600` | Open-circuit cooldown before a half-open probe |
 
-Add the relevant variable(s) to your `.env` file and to your production secrets store.
+The Redis backend uses renewable leases and recovers expired leases. Redis backend errors and denied acquisitions make affected chunks incomplete; they do not silently bypass the governor.
 
+## Cancellation
+
+The job deadline aborts Spectre selection, governor waits, in-flight provider requests, and further chunk scheduling. Spectre accounts for interrupted chunks internally, but worker-level cancellation is rethrown: a deadline before terminal Check Run publication causes BullMQ retry/final failure rather than a normal neutral result. If publication already completed, only remaining best-effort side effects are aborted and the job is not retried. Per-request provider deadlines remain ordinary incomplete coverage. The worker also fences publication so late work cannot publish a stale success.
+
+## Evaluation
+
+### Deterministic simulator
+
+```bash
+npm run spectre:simulate
+# Optional fixture file:
+npm run spectre:simulate -- path/to/simulations.json
+```
+
+The simulator materializes scripted base/head snapshots in a temporary Git repository and exercises Git change extraction, typed diff parsing, whole-PR/chunk planning, response validation, findings, status counters, and cleanup. It emits one machine-readable JSON report and exits non-zero on fixture mismatch.
+
+Responses are scripted. Its precision, recall, and F1 fields measure agreement with those scripts only; they do **not** measure LLM semantic quality.
+
+### Manual semantic evaluators
+
+```bash
+# Authenticated Claude Code CLI
+npm run spectre:eval
+
+# Authenticated Codex CLI
+npm run spectre:eval:codex
+```
+
+### Local AST battle test
+
+```bash
+# Fully local and deterministic: no model or network inference
+npm run spectre:battle:ast
+
+# Replay pinned public GitHub PRs through lexical and AST shadow routing
+# Requires an authenticated GitHub CLI; no model is invoked
+npm run spectre:replay:prs -- path/to/your-public-pr-manifest.json report.json
+
+# Run the expanded semantic corpus through Codex with production AST routing
+# (local CLI orchestration, but REMOTE inference and source disclosure)
+SPECTRE_CORPUS=fixtures/spectre-ast-corpus.json \
+SPECTRE_EVAL_AST_MODE=enabled \
+npm run spectre:eval:codex
+
+# Run the same corpus through Claude for a provider differential
+SPECTRE_CORPUS=fixtures/spectre-ast-corpus.json \
+SPECTRE_EVAL_AST_MODE=enabled \
+npm run spectre:eval
+
+# Compare paired base-case/run results without invoking a model
+npm run spectre:eval:compare -- before.json after.json differential.json
+```
+
+`spectre:battle:ast` parses inert fixture strings and exercises the production shared router without calling any model. It covers 60+ JS/TS, Python, and Go routing cases, expands deterministic identifier, whitespace, and line-break variants to more than 500 analyses, checks 60 alias/decoy adversarial transformations, and injects parser and worker limit failures. `fixtures/spectre-ast-corpus.json` is a separate expanded semantic corpus, while `fixtures/spectre-ast-saturation-corpus.json` forces a file-cap selection delta for causal off-versus-enabled evaluator comparisons. The 33-case `fixtures/spectre-corpus.json` baseline remains unchanged.
+
+`spectre:replay:prs` is a provider-independent routing benchmark. Its manifest pins public pull requests by base and head commit, labels review-critical files with a rationale, and defines file caps. The script obtains comparison patches and immutable blobs through `gh`, applies production file filtering and AST shadow routing with `secondaryFileCap: 0`, then reports lexical and augmented routing recall, beneficial promotions, harmful displacements, and selection churn. It accesses GitHub but sends no source to an LLM; review manifest labels before using the scores as a quality gate.
+
+The Codex CLI is only local orchestration. **Codex inference is remote**, just like Claude inference, and the supplied source is disclosed to the provider. Checked-in semantic and routing fixtures must contain only synthetic examples or code already approved for public disclosure. Never add private production source, credentials, live endpoints, or customer data to either corpus.
+
+Both commands use `fixtures/spectre-corpus.json` by default and run cases through production file filtering, the shared lexical/AST router, deterministic selection, request planning, response schemas, and parsing. Corpus cases may contain one file or a related multi-file change. Expected and actual findings are scored as file-aware multisets, so wrong-file attribution or a missed second behavior with the same rule counts as a false positive or false negative. Reports include aggregate and per-rule precision, recall, F1, false positives, false negatives, malformed responses, errors, bounded routing diagnostics, repeat stability, and reproducibility hashes.
+
+Cases may include `tags` and a narrow `routing` object. Supported routing overrides are `fileCap`, `secondaryFileCap`, `maxDiffLines`, and `astSignals` fields `mode`, `maxFiles`, `maxTotalBytes`, and `timeoutSeconds`. The evaluator environment AST mode takes precedence over a per-case mode and never modifies `config/layne.json`. The legacy top-level case `maxDiffLines` remains accepted for the baseline corpus.
+
+Both evaluators are **manual-only and must never run in CI or tests**. They enforce this at startup. The Codex subprocess is ephemeral, ignores Codex user configuration/rules, uses a read-only sandbox and isolated working, home, temporary, and config directories, receives prompts over stdin, and inherits only a small execution/authentication environment allowlist. The evaluator copies only the local Codex authentication file into the isolated config when it exists. Cancellation terminates the isolated process group before those directories are removed.
+
+The local isolation and read-only sandbox do not prevent source disclosure: Codex receives the supplied source in its prompt and sends it to the remote Codex service. The Claude evaluator invokes the locally authenticated `claude` CLI with tools disabled, no session persistence, a JSON schema, and a default per-provider-call budget of USD 0.25. One case can require multiple calls when production request planning splits its diff. The Codex evaluator invokes the locally authenticated `codex` CLI and has no Layne-enforced monetary cap. Both can incur charges and send corpus data or files under `SPECTRE_SOURCE_ROOT` to their respective provider. Never point `SPECTRE_SOURCE_ROOT` at source that the evaluator account is not authorized to disclose.
+
+Common evaluator settings:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SPECTRE_CORPUS` | `fixtures/spectre-corpus.json` | Corpus JSON path |
+| `SPECTRE_SOURCE_ROOT` | none | Root for cases that name a file but omit inline content |
+| `SPECTRE_EVAL_OWNER` / `SPECTRE_EVAL_REPO` | `example-org` / `example-repo` | Repository config whose Spectre prompt is evaluated; defaults to global settings when no matching repository is configured |
+| `SPECTRE_EVAL_OFFSET` / `SPECTRE_EVAL_LIMIT` | `0` / `0` | Corpus slice; limit `0` means all remaining cases |
+| `SPECTRE_EVAL_TAGS` | none | Comma-separated tag filter matching any listed tag; offset and limit apply after filtering |
+| `SPECTRE_EVAL_REPEATS` | `1` | Runs per selected base case, from `1` through `10` |
+| `SPECTRE_EVAL_AST_MODE` | repository config, normally `off` | Ephemeral `off`, `shadow`, or `enabled` router mode override |
+| `SPECTRE_EVAL_OUTPUT` | evaluator-specific report file | JSON report path |
+| `SPECTRE_EVAL_MODEL` | `haiku` for Claude; CLI default for Codex | Evaluator model |
+| `SPECTRE_EVAL_CODEX_MODEL` | falls back to `SPECTRE_EVAL_MODEL` | Codex-only model override |
+| `SPECTRE_EVAL_BUDGET_PER_CALL` | `0.25` | Claude-only maximum USD per planned provider call |
+| `SPECTRE_EVAL_TIMEOUT_MS` | `45000` | Codex-only per-case timeout; maximum `300000` |
+
+The JSON report records the full corpus size, tag-matched size, selected base-case count, offset, limit, repeats, and each result's base case/run index and stability. Reproducibility metadata includes the structural rules version, effective AST mode, corpus/config/prompt SHA-256 values, Git HEAD when available, Node/platform, model, CLI timeout, and effective Spectre provider-request timeout. Routing diagnostics intentionally exclude raw parser errors or diagnostics.
+
+Thresholds are optional and have no defaults. When unset, the command writes scores without failing on quality. When set, any violation exits non-zero:
+
+| Variable | Range | Failure condition |
+|---|---:|---|
+| `SPECTRE_EVAL_MIN_PRECISION` | `0` to `1` | Aggregate precision is lower |
+| `SPECTRE_EVAL_MIN_RECALL` | `0` to `1` | Aggregate recall is lower |
+| `SPECTRE_EVAL_MIN_F1` | `0` to `1` | Aggregate F1 is lower |
+| `SPECTRE_EVAL_MAX_FALSE_POSITIVES` | non-negative | Aggregate false positives are higher |
+| `SPECTRE_EVAL_MAX_FALSE_NEGATIVES` | non-negative | Aggregate false negatives are higher |
+| `SPECTRE_EVAL_MAX_MALFORMED` | non-negative | Malformed responses are higher |
+| `SPECTRE_EVAL_MAX_ERRORS` | non-negative | Evaluator errors are higher |
+
+## Safe-pattern changes
+
+Use prompt guidance, not broad path suppression, to address recurring benign patterns. A safe-pattern change is acceptable only when:
+
+1. A minimal hard-negative regression fixture reproduces the false positive.
+2. A paired malicious fixture proves that the narrowed wording still catches hostile behavior using the same primitive or path class.
+3. Both manual evaluators are reviewed against the previous accepted report, with explicit thresholds set for the run.
+4. A security reviewer approves the prompt/config diff and recorded reports.
+5. The change is deployed gradually while incomplete and finding metrics are observed.
+
+Do not add broad exclusions for code-bearing formats or categorical "never report" wording as false-positive tuning; attackers can deliberately move behavior into those blind spots. The built-in prose boundary is a scanner-scope decision, not a recurring-false-positive suppression. Keep the previous prompt/config ready for immediate rollback. Roll back if a malicious regression appears, false negatives increase, malformed/errors exceed the accepted threshold, or production alerts fire after deployment.
+
+## Metrics and alerts
+
+Provider-labelled scan, chunk, latency, input-size, governor, circuit, backend-error, and lease-recovery metrics are documented on the [Metrics](../metrics.md) page. The supplied Grafana dashboard includes Spectre coverage, incomplete reasons, provider latency, chunks, governor denials, circuit state, backend errors, and lease recoveries. Prometheus rules cover sustained incomplete rates, provider failure spikes, governor denials, open circuits, Redis errors, and lease recovery anomalies.
+
+## Rollout gate
+
+Keep incomplete results other than `high-risk-file-cap-exceeded` neutral until all of these objective conditions hold:
+
+1. At least 30 consecutive production days and 500 enabled Spectre scans have been observed, including at least 100 scans for every provider that will be fail-closed.
+2. For 14 consecutive days, incomplete outcomes are at or below 1% overall and 2% for each provider, with no single incomplete reason above 1%.
+3. For the same 14 days, no `LayneSpectreSustainedIncompleteRate`, `LayneSpectreProviderFailureSpike`, `LayneSpectreGovernorDenialSpike`, `LayneSpectreCircuitOpen`, `LayneSpectreRedisGovernorErrors`, or `LayneSpectreLeaseRecoveryAnomaly` alert fires.
+4. Provider p95 request latency remains below 24 seconds, 80% of the default request deadline, for each provider.
+5. The accepted semantic-evaluation baseline has no errors or malformed responses, meets the organization-approved precision/recall/F1 thresholds, and has no malicious-fixture regression.
+6. Security and operations approve a staged fail-closed rollout and a tested rollback to neutral.
+
+After promotion, continue observing the same alerts and rates. A breach of the rate, latency, evaluator, or alert criteria triggers rollback to neutral while the cause is investigated.
 
 ## Examples
 
-**Enable Spectre with Anthropic (fast, cheap model):**
-```json
-{
-  "acme/backend": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001"
-    }
-  }
-}
-```
+**Amazon Bedrock:**
 
-**Use Amazon Bedrock:**
 ```json
 {
-  "acme/backend": {
+  "owner/repo": {
     "spectre": {
       "enabled": true,
       "provider": "amazon-bedrock",
@@ -159,128 +277,24 @@ Add the relevant variable(s) to your `.env` file and to your production secrets 
 }
 ```
 
-Bedrock model IDs use a provider-prefixed format. Cross-region inference profile variants are also available (`us.anthropic.claude-haiku-4-5-20251001-v1`, `eu.anthropic.claude-haiku-4-5-20251001-v1`). The region defaults to `us-east-1` unless `AWS_REGION` is set.
+**Explicitly reduce spend:**
 
-**Use OpenAI:**
 ```json
 {
-  "acme/backend": {
+  "owner/repo": {
     "spectre": {
       "enabled": true,
       "provider": "openai",
-      "model": "gpt-4o-mini"
+      "model": "gpt-4o-mini",
+      "fileCap": 10,
+      "secondaryFileCap": 0,
+      "maxInputBytes": 32768,
+      "maxOutputTokens": 800,
+      "maxCallsPerFile": 2,
+      "maxCallsPerPullRequest": 12
     }
   }
 }
 ```
 
-**Lower the file cap for a small, focused service:**
-```json
-{
-  "acme/auth-service": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "fileCap": 10
-    }
-  }
-}
-```
-
-**Skip test files and vendored code:**
-```json
-{
-  "acme/backend": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "skipPaths": ["vendor/**", "**/__tests__/**", "**/*.test.ts"],
-      "skipExtensions": [".spec.js", ".spec.ts"]
-    }
-  }
-}
-```
-
-**Report medium-severity findings too:**
-```json
-{
-  "acme/backend": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "minSeverity": "medium"
-    }
-  }
-}
-```
-
-**Use a domain-specific prompt for a monorepo with known threat patterns:**
-```json
-{
-  "acme/backend": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "prompt": "You are a security reviewer for a Node.js payment service. Detect malicious intent only: reverse shells, backdoors, credential exfiltration, obfuscated payloads, and supply-chain attacks.\n\nPay extra attention to:\n- package.json lifecycle scripts - primary supply-chain vector\n- Any code that touches process.env and makes outbound network calls\n- Calls to cloud metadata endpoints (169.254.169.254)\n\nReport ONLY confirmed malicious patterns with high confidence."
-    }
-  }
-}
-```
-
-The JSON output format is appended automatically - your prompt only needs to describe the threat model and context, not the response structure.
-
-**Add repo-specific keyword patterns to promote suspicious files (Python service example):**
-```json
-{
-  "acme/data-pipeline": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "boostPatterns": [
-        "\\bsubprocess\\.(?:run|call|Popen)\\b",
-        "\\bos\\.system\\b",
-        "\\bpyc_compile\\b"
-      ]
-    }
-  }
-}
-```
-
-Each entry is a regex pattern string. Backslashes must be double-escaped in JSON (`\\b` for a word boundary, `\\.` for a literal dot). Files whose full content matches any pattern are promoted to tier 2 and scanned ahead of ordinary files when the cap is applied.
-
-**Defer Spectre until after CI passes (recommended for cost control):**
-```json
-{
-  "acme/backend": {
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001"
-    },
-    "trigger": {
-      "on": "workflow_run",
-      "workflow": "CI"
-    }
-  }
-}
-```
-
-**Use `diff_only` mode to reduce tokens and cost:**
-```json
-{
-  "acme/backend": {
-    "mode": "diff_only",
-    "contextLines": 8,
-    "spectre": {
-      "enabled": true,
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001"
-    }
-  }
-}
-```
+For the most effective cost control, defer Layne until a successful CI workflow or job with the [`workflow_run` or `workflow_job` trigger](../configuration.md#trigger).

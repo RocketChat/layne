@@ -7,3 +7,4 @@ coverage/
 website/node_modules/
 website/.docusaurus/
 website/build/
+spectre-eval*-report.json

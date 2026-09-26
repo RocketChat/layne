@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ProcessedFinding, ExceptionData } from '../types.js';
 
-type FindingIdInput = Pick<ProcessedFinding, 'tool' | 'file' | 'line' | 'startLine'>;
+type FindingIdInput = Pick<ProcessedFinding, 'tool' | 'file' | 'line' | 'startLine'> & Partial<Pick<ProcessedFinding, 'ruleId' | 'evidence'>>;
 
 vi.mock('../github.js', () => ({
   getTeamMembers: vi.fn(),
@@ -9,8 +9,21 @@ vi.mock('../github.js', () => ({
 
 vi.mock('../queue.js', () => ({
   redis: {
+    multi:    vi.fn(() => {
+      const transaction = {
+        set:    vi.fn(),
+        sadd:   vi.fn(),
+        expire: vi.fn(),
+        exec:   vi.fn().mockResolvedValue([]),
+      };
+      transaction.set.mockReturnValue(transaction);
+      transaction.sadd.mockReturnValue(transaction);
+      transaction.expire.mockReturnValue(transaction);
+      return transaction;
+    }),
     set:      vi.fn().mockResolvedValue('OK'),
     get:      vi.fn().mockResolvedValue(null),
+    eval:     vi.fn(),
     sadd:     vi.fn().mockResolvedValue(1),
     expire:   vi.fn().mockResolvedValue(1),
     smembers: vi.fn().mockResolvedValue([]),
@@ -28,7 +41,11 @@ const { redis }                             = await import('../queue.js');
 const { fetchCommit, getChangedLineRanges, buildLineMapForFile } = await import('../fetcher.js');
 const {
   generateFindingId,
+  generateLegacyFindingId,
   parseExceptionCommand,
+  storeBulkExceptionRequest,
+  loadBulkExceptionRequest,
+  materializeBulkExceptionRequest,
   storeExceptions,
   loadExceptions,
   filterStaleExceptions,
@@ -42,9 +59,9 @@ const {
 // ---------------------------------------------------------------------------
 
 describe('generateFindingId()', () => {
-  it('returns a string matching LAYNE-[0-9a-f]{16}', () => {
+  it('returns a versioned 16-character fingerprint', () => {
     const id = generateFindingId({ tool: 'semgrep', file: 'src/a.js', line: 10 });
-    expect(id).toMatch(/^LAYNE-[0-9a-f]{16}$/);
+    expect(id).toMatch(/^LAYNE-v2-[0-9a-f]{16}$/);
   });
 
   it('is deterministic — same input always returns the same ID', () => {
@@ -64,10 +81,16 @@ describe('generateFindingId()', () => {
     expect(a).not.toBe(b);
   });
 
-  it('returns the same ID regardless of ruleId', () => {
-    const a = generateFindingId({ tool: 'claude', file: 'a.js', line: 1 });
-    const b = generateFindingId({ tool: 'claude', file: 'a.js', line: 1 });
-    expect(a).toBe(b);
+  it('returns different IDs for different rules at the same location', () => {
+    const a = generateFindingId({ tool: 'claude', ruleId: 'backdoor', file: 'a.js', line: 1 });
+    const b = generateFindingId({ tool: 'claude', ruleId: 'exfiltration', file: 'a.js', line: 1 });
+    expect(a).not.toBe(b);
+  });
+
+  it('returns different IDs when the exact evidence changes', () => {
+    const a = generateFindingId({ tool: 'claude', ruleId: 'backdoor', evidence: 'eval(payload)', file: 'a.js', line: 1 });
+    const b = generateFindingId({ tool: 'claude', ruleId: 'backdoor', evidence: 'eval(other)', file: 'a.js', line: 1 });
+    expect(a).not.toBe(b);
   });
 
   it('uses startLine when line is absent', () => {
@@ -114,18 +137,23 @@ describe('parseExceptionCommand()', () => {
 
   it('parses a valid single-ID command', () => {
     const result = parseExceptionCommand('/layne exception-approve LAYNE-a3f29c81b7e41d22 reason: test credential');
-    expect(result).toEqual({ ids: ['LAYNE-a3f29c81b7e41d22'], reason: 'test credential' });
+    expect(result).toEqual({ target: 'ids', ids: ['LAYNE-a3f29c81b7e41d22'], reason: 'test credential' });
+  });
+
+  it('parses a versioned finding ID', () => {
+    const result = parseExceptionCommand('/layne exception-approve LAYNE-v2-a3f29c81b7e41d22 reason: reviewed');
+    expect(result).toEqual({ target: 'ids', ids: ['LAYNE-v2-a3f29c81b7e41d22'], reason: 'reviewed' });
   });
 
   it('parses a valid multi-ID command', () => {
     const result = parseExceptionCommand('/layne exception-approve LAYNE-a3f29c81b7e41d22 LAYNE-b7e41d22a3f29c81 reason: legacy code');
-    expect(result).toEqual({ ids: ['LAYNE-a3f29c81b7e41d22', 'LAYNE-b7e41d22a3f29c81'], reason: 'legacy code' });
+    expect(result).toEqual({ target: 'ids', ids: ['LAYNE-a3f29c81b7e41d22', 'LAYNE-b7e41d22a3f29c81'], reason: 'legacy code' });
   });
 
   it('finds the command when embedded mid-comment', () => {
     const body = `Great PR overall!\n\n/layne exception-approve LAYNE-a3f29c81b7e41d22 reason: test only\n\nShip it!`;
     const result = parseExceptionCommand(body);
-    expect(result).toEqual({ ids: ['LAYNE-a3f29c81b7e41d22'], reason: 'test only' });
+    expect(result).toEqual({ target: 'ids', ids: ['LAYNE-a3f29c81b7e41d22'], reason: 'test only' });
   });
 
   it('preserves multi-word reason text', () => {
@@ -138,6 +166,30 @@ describe('parseExceptionCommand()', () => {
     expect(result?.ids).toEqual(['LAYNE-a3f29c81b7e41d22']);
     expect(result?.reason).toBe('ok');
   });
+
+  it('parses the all target with a required reason', () => {
+    expect(parseExceptionCommand('/layne exception-approve all reason: accepted risk')).toEqual({
+      target: 'all', ids: [], reason: 'accepted risk',
+    });
+  });
+
+  it('rejects mixing all with finding IDs', () => {
+    expect(parseExceptionCommand('/layne exception-approve all LAYNE-v2-a3f29c81b7e41d22 reason: accepted')).toMatchObject({
+      target: 'all', error: expect.any(String),
+    });
+  });
+
+  it('does not treat IDs or all inside the reason as approval targets', () => {
+    expect(parseExceptionCommand('/layne exception-approve LAYNE-v2-a3f29c81b7e41d22 reason: covers all not LAYNE-v2-b7e41d22a3f29c81')).toEqual({
+      target: 'ids', ids: ['LAYNE-v2-a3f29c81b7e41d22'], reason: 'covers all not LAYNE-v2-b7e41d22a3f29c81',
+    });
+  });
+
+  it('deduplicates repeated finding IDs', () => {
+    expect(parseExceptionCommand('/layne exception-approve LAYNE-v2-a3f29c81b7e41d22 LAYNE-v2-a3f29c81b7e41d22 reason: accepted')).toMatchObject({
+      target: 'ids', ids: ['LAYNE-v2-a3f29c81b7e41d22'], reason: 'accepted',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -147,13 +199,22 @@ describe('parseExceptionCommand()', () => {
 describe('storeExceptions()', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('calls redis.set with the correct key format (no headSha in key)', async () => {
+  function transaction(): {
+    set: ReturnType<typeof vi.fn>;
+    sadd: ReturnType<typeof vi.fn>;
+    expire: ReturnType<typeof vi.fn>;
+    exec: ReturnType<typeof vi.fn>;
+  } {
+    return (redis.multi as ReturnType<typeof vi.fn>).mock.results[0].value;
+  }
+
+  it('queues the correct key format without the head SHA', async () => {
     await storeExceptions({
       owner: 'org', repo: 'repo', prNumber: 42, approvedHeadSha: 'abc123',
       findingIds: ['LAYNE-a3f29c81'], approver: 'alice', reason: 'test cred',
     });
 
-    expect(redis.set).toHaveBeenCalledWith(
+    expect(transaction().set).toHaveBeenCalledWith(
       'layne:exception:org/repo#42:LAYNE-a3f29c81',
       expect.any(String),
       'EX',
@@ -167,7 +228,7 @@ describe('storeExceptions()', () => {
       findingIds: ['LAYNE-a3f29c81'], approver: 'alice', reason: 'ok',
     });
 
-    const [, , , ttl] = (redis.set as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string, string, number];
+    const [, , , ttl] = transaction().set.mock.calls[0] as [string, string, string, number];
     expect(ttl).toBe(30 * 24 * 60 * 60);
   });
 
@@ -177,7 +238,7 @@ describe('storeExceptions()', () => {
       findingIds: ['LAYNE-a3f29c81'], approver: 'alice', reason: 'test cred',
     });
 
-    const [, value] = (redis.set as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string];
+    const [, value] = transaction().set.mock.calls[0] as [string, string];
     const parsed = JSON.parse(value);
     expect(parsed).toMatchObject({
       approver:        'alice',
@@ -187,14 +248,14 @@ describe('storeExceptions()', () => {
     });
   });
 
-  it('writes one key per finding ID in parallel', async () => {
+  it('queues one key per finding ID in one transaction', async () => {
     await storeExceptions({
       owner: 'org', repo: 'repo', prNumber: 42, approvedHeadSha: 'abc123',
       findingIds: ['LAYNE-a3f29c81', 'LAYNE-b7e41d22'], approver: 'alice', reason: 'ok',
     });
 
-    expect(redis.set).toHaveBeenCalledTimes(2);
-    const keys = (redis.set as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(transaction().set).toHaveBeenCalledTimes(2);
+    const keys = transaction().set.mock.calls.map((c: unknown[]) => c[0]);
     expect(keys).toContain('layne:exception:org/repo#42:LAYNE-a3f29c81');
     expect(keys).toContain('layne:exception:org/repo#42:LAYNE-b7e41d22');
   });
@@ -205,12 +266,96 @@ describe('storeExceptions()', () => {
       findingIds: ['LAYNE-a3f29c81', 'LAYNE-b7e41d22'], approver: 'alice', reason: 'ok',
     });
 
-    expect(redis.sadd).toHaveBeenCalledWith(
+    expect(transaction().sadd).toHaveBeenCalledWith(
       'layne:exception-ids:org/repo#42',
       'LAYNE-a3f29c81',
       'LAYNE-b7e41d22',
     );
-    expect(redis.expire).toHaveBeenCalledWith('layne:exception-ids:org/repo#42', 30 * 24 * 60 * 60);
+    expect(transaction().expire).toHaveBeenCalledWith('layne:exception-ids:org/repo#42', 30 * 24 * 60 * 60);
+    expect(transaction().exec).toHaveBeenCalledOnce();
+  });
+
+  it('reports an aborted transaction as a storage failure', async () => {
+    const abortedTransaction = {
+      set: vi.fn(), sadd: vi.fn(), expire: vi.fn(), exec: vi.fn().mockResolvedValue(null),
+    };
+    abortedTransaction.set.mockReturnValue(abortedTransaction);
+    abortedTransaction.sadd.mockReturnValue(abortedTransaction);
+    abortedTransaction.expire.mockReturnValue(abortedTransaction);
+    (redis.multi as ReturnType<typeof vi.fn>).mockReturnValueOnce(abortedTransaction);
+
+    await expect(storeExceptions({
+      owner: 'org', repo: 'repo', prNumber: 42, approvedHeadSha: 'abc123',
+      findingIds: ['LAYNE-a3f29c81'], approver: 'alice', reason: 'ok',
+    })).rejects.toThrow('transaction was aborted');
+  });
+});
+
+describe('bulk exception requests', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const request = {
+    owner: 'org', repo: 'repo', prNumber: 42, approvedHeadSha: 'abc123',
+    requestId: '9001', approver: 'alice', reason: 'accepted risk',
+  };
+
+  it('stores a pending request scoped to the exact head and comment', async () => {
+    (redis.set as ReturnType<typeof vi.fn>).mockResolvedValueOnce('OK');
+
+    await expect(storeBulkExceptionRequest(request)).resolves.toBe('stored');
+    expect(redis.set).toHaveBeenNthCalledWith(
+      1,
+      'layne:exception-all-comment:org/repo#42:9001',
+      'abc123', 'EX', 30 * 24 * 60 * 60, 'NX',
+    );
+    expect(redis.set).toHaveBeenNthCalledWith(
+      2,
+      'layne:exception-all-request:org/repo#42@abc123:9001',
+      expect.any(String), 'EX', 30 * 24 * 60 * 60, 'NX',
+    );
+    const stored = JSON.parse((redis.set as ReturnType<typeof vi.fn>).mock.calls[1][1] as string);
+    expect(stored).toMatchObject({ state: 'pending', findingIds: [], approver: 'alice', reason: 'accepted risk' });
+  });
+
+  it('reports an existing request without replacing it', async () => {
+    (redis.set as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('abc123');
+    await expect(storeBulkExceptionRequest(request)).resolves.toBe('exists');
+  });
+
+  it('does not rebind the same comment to another head', async () => {
+    (redis.set as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('older-head');
+
+    await expect(storeBulkExceptionRequest(request)).resolves.toBe('head-mismatch');
+    expect(redis.set).toHaveBeenCalledOnce();
+  });
+
+  it('loads a stored request by its head-scoped key', async () => {
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(JSON.stringify({
+      ...request, state: 'pending', findingIds: [], timestamp: '2026-01-01T00:00:00.000Z',
+    }));
+
+    await expect(loadBulkExceptionRequest(request)).resolves.toMatchObject({ state: 'pending', requestId: '9001' });
+    expect(redis.get).toHaveBeenCalledWith('layne:exception-all-request:org/repo#42@abc123:9001');
+  });
+
+  it('materializes an exact finding list atomically', async () => {
+    const materialized = {
+      ...request, state: 'materialized', findingIds: ['LAYNE-v2-a3f29c81b7e41d22'], timestamp: '2026-01-01T00:00:00.000Z',
+    };
+    (redis.eval as ReturnType<typeof vi.fn>).mockResolvedValueOnce(JSON.stringify(materialized));
+
+    await expect(materializeBulkExceptionRequest({
+      ...request,
+      findingIds: ['LAYNE-v2-a3f29c81b7e41d22'],
+      expectedExceptions: new Map(),
+    })).resolves.toEqual(materialized);
+
+    const args = (redis.eval as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(args).toContain('layne:exception-all-request:org/repo#42@abc123:9001');
+    expect(args).toContain('layne:exception:org/repo#42:');
+    expect(args).toContain(JSON.stringify(['LAYNE-v2-a3f29c81b7e41d22']));
   });
 });
 
@@ -496,6 +641,8 @@ describe('buildExceptionSummary()', () => {
     });
     expect(result.summary).toContain('@alice');
     expect(result.summary).toContain('test credential');
+    expect(result.summary).toContain('All blocking findings were excepted');
+    expect(result.summary).not.toContain('Scan passed');
   });
 
   it('does not include non-blocking findings in the exception block', () => {
@@ -573,7 +720,7 @@ describe('resolveDriftedExceptions()', () => {
   it('resolves a drifted finding when the line map maps currentLine back to an approved line', async () => {
     // Line 47 in the current head maps back to line 42 at approval time (unchanged context line).
     const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const expectedOldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+    const expectedOldId = realGenerate({ tool: 'semgrep', ruleId: 'eval', file: 'src/app.js', line: 42 });
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([expectedOldId]);
     (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify(storedException));
@@ -591,7 +738,7 @@ describe('resolveDriftedExceptions()', () => {
 
   it('does not resolve when the line map returns null (line was modified, not just shifted)', async () => {
     const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const oldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+    const oldId = realGenerate({ tool: 'semgrep', ruleId: 'eval', file: 'src/app.js', line: 42 });
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([oldId]);
     (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify(storedException));
@@ -609,7 +756,7 @@ describe('resolveDriftedExceptions()', () => {
 
   it('does not resolve when the current line is absent from the line map', async () => {
     const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const oldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+    const oldId = realGenerate({ tool: 'semgrep', ruleId: 'eval', file: 'src/app.js', line: 42 });
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([oldId]);
     (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify(storedException));
@@ -626,7 +773,7 @@ describe('resolveDriftedExceptions()', () => {
 
   it('skips the approval SHA when fetchCommit throws (graceful degradation)', async () => {
     const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const oldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+    const oldId = realGenerate({ tool: 'semgrep', ruleId: 'eval', file: 'src/app.js', line: 42 });
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([oldId]);
     (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify(storedException));
@@ -644,7 +791,7 @@ describe('resolveDriftedExceptions()', () => {
 
   it('skips the file when buildLineMapForFile throws (graceful degradation)', async () => {
     const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const oldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+    const oldId = realGenerate({ tool: 'semgrep', ruleId: 'eval', file: 'src/app.js', line: 42 });
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([oldId]);
     (redis.get as ReturnType<typeof vi.fn>).mockResolvedValue(JSON.stringify(storedException));
@@ -659,9 +806,8 @@ describe('resolveDriftedExceptions()', () => {
     expect(result.has(finding._findingId!)).toBe(false);
   });
 
-  it('skips exceptions at the current SHA (no drift possible at same commit)', async () => {
-    const { generateFindingId: realGenerate } = await import('../exception-approvals.js');
-    const oldId = realGenerate({ tool: 'semgrep', file: 'src/app.js', line: 42 });
+  it('migrates a legacy ID at the current SHA without a Git drift lookup', async () => {
+    const oldId = generateLegacyFindingId({ tool: 'semgrep', file: 'src/app.js', line: 47 });
     const sameShException = { ...storedException, approvedHeadSha: CURRENT_SHA };
 
     (redis.smembers as ReturnType<typeof vi.fn>).mockResolvedValue([oldId]);
@@ -673,8 +819,9 @@ describe('resolveDriftedExceptions()', () => {
       workspacePath: WORKSPACE, currentHeadSha: CURRENT_SHA,
     });
 
-    expect(result.has(finding._findingId!)).toBe(false);
+    expect(result.has(finding._findingId!)).toBe(true);
     expect(fetchCommit).not.toHaveBeenCalled();
+    expect(buildLineMapForFile).not.toHaveBeenCalled();
   });
 });
 

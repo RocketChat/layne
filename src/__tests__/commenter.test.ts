@@ -78,6 +78,38 @@ describe('postComment()', () => {
       expect(body).toContain('View 1 finding(s)');
       expect(body).toContain('[!CAUTION]');
     });
+
+    it('creates a coverage-only failure comment without claiming there are zero findings', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({
+        ...BASE,
+        findings: [],
+        conclusion: 'failure',
+        coverageFailure: '### Spectre coverage failure\n\n- crates/a/build.rs - score 36',
+      });
+
+      const { body } = createComment.mock.calls[0][0] as { body: string };
+      expect(body).toContain(COMMENT_MARKER);
+      expect(body).toContain('[!CAUTION]');
+      expect(body).toContain('crates/a/build.rs - score 36');
+      expect(body).not.toContain('View 0 finding(s)');
+    });
+
+    it('appends coverage failure details after normal findings', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({
+        ...BASE,
+        findings: [FINDING_HIGH],
+        conclusion: 'failure',
+        coverageFailure: '### Spectre coverage failure\n\n- crates/a/build.rs - score 36',
+      });
+
+      const { body } = createComment.mock.calls[0][0] as { body: string };
+      expect(body).toContain('View 1 finding(s)');
+      expect(body).toContain('crates/a/build.rs - score 36');
+    });
   });
 
   describe('failure conclusion — existing comment', () => {
@@ -136,6 +168,29 @@ describe('postComment()', () => {
 
       expect(createComment).not.toHaveBeenCalled();
       expect(updateComment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('neutral conclusion', () => {
+    it('creates an incomplete comment instead of claiming the scan passed', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({ ...BASE, findings: [], conclusion: 'neutral' });
+
+      expect(createComment).toHaveBeenCalledOnce();
+      const { body } = createComment.mock.calls[0][0] as { body: string };
+      expect(body).toContain('scan incomplete');
+      expect(body).not.toContain('scan passed');
+    });
+
+    it('shows findings together with the incomplete coverage warning', async () => {
+      const { createComment } = makeOctokit({ existingComments: [] });
+
+      await postComment({ ...BASE, findings: [FINDING_MEDIUM], conclusion: 'neutral' });
+
+      const { body } = createComment.mock.calls[0][0] as { body: string };
+      expect(body).toContain('could not complete every configured security scan');
+      expect(body).toContain('View 1 finding(s)');
     });
   });
 

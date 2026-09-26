@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ProcessedFinding } from '../types.js';
+import type { AdapterStatuses, ProcessedFinding, SpectreScanStatus } from '../types.js';
 
 const mockReadFile = vi.fn();
 
@@ -7,7 +7,21 @@ vi.mock('fs/promises', () => ({
   readFile: mockReadFile,
 }));
 
-const { validateFindingLocations } = await import('../location-validator.js');
+const { applyAdapterValidationCoverage, applySpectreValidationCoverage, validateFindingLocations } = await import('../location-validator.js');
+
+function completeStatuses(): AdapterStatuses {
+  return {
+    semgrep: { outcome: 'complete' },
+    trufflehog: { outcome: 'complete' },
+    claude: { outcome: 'complete' },
+    spectre: {
+      outcome: 'complete', selected: 1, scanned: 1, skipped: 0, oversized: 0, capped: 0, truncated: 0,
+      failed: 0, invalidResponses: 0, rejectedFindings: 0, cancelled: 0, rateLimited: 0,
+      concurrencyLimited: 0, circuitOpen: 0,
+    },
+    'dep-doctor': { outcome: 'complete' },
+  };
+}
 
 describe('validateFindingLocations()', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -80,7 +94,9 @@ describe('validateFindingLocations()', () => {
       severity: 'high',
       message: 'credential exfiltration',
       ruleId: 'claude/x',
-      line: 0,
+      line: 1,
+      startLine: 1,
+      endLine: 1,
       tool: 'claude',
     }], {
       workspacePath: '/tmp/ws',
@@ -461,6 +477,78 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationReason).toBe('file-not-in-diff');
   });
 
+  it('rejects spectre evidence that resolves outside the changed line ranges', async () => {
+    mockReadFile.mockResolvedValueOnce('old suspicious();\nconst safe = true;\nnewlyChanged();\n');
+    const [finding] = await validateFindingLocations([{
+      file: 'src/app.js', evidence: 'old suspicious();', severity: 'high', message: 'stale code',
+      ruleId: 'covert-execution', line: 3, startLine: 3, endLine: 3, tool: 'spectre',
+    }], {
+      workspacePath: '/tmp/ws', changedFiles: ['src/app.js'],
+      changedLineRanges: new Map([['src/app.js', [{ start: 3, end: 3 }]]]),
+    });
+
+    expect(finding.locationValidated).toBe(false);
+    expect(finding.annotationEligible).toBe(false);
+    expect(finding.locationReason).toBe('evidence-outside-changed-range');
+  });
+
+  it('validates multiline spectre evidence in a CRLF file', async () => {
+    mockReadFile.mockResolvedValueOnce('const token = process.env.TOKEN;\r\nawait send(token);\r\n');
+    const [finding] = await validateFindingLocations([{
+      file: 'src/app.js', evidence: 'const token = process.env.TOKEN;\nawait send(token);', severity: 'high',
+      message: 'credential exfiltration', ruleId: 'credential-exfiltration', line: 99, tool: 'spectre',
+    }], {
+      workspacePath: '/tmp/ws', changedFiles: ['src/app.js'],
+      changedLineRanges: new Map([['src/app.js', [{ start: 1, end: 2 }]]]),
+    });
+
+    expect(finding.locationValidated).toBe(true);
+    expect(finding.startLine).toBe(1);
+    expect(finding.endLine).toBe(2);
+  });
+
+  it('uses changed ranges to disambiguate repeated spectre evidence', async () => {
+    mockReadFile.mockResolvedValueOnce('send(token);\nconst safe = true;\nsend(token);\n');
+    const [finding] = await validateFindingLocations([{
+      file: 'src/app.js', evidence: 'send(token);', severity: 'high', message: 'exfiltration',
+      ruleId: 'credential-exfiltration', line: 1, tool: 'spectre',
+    }], {
+      workspacePath: '/tmp/ws', changedFiles: ['src/app.js'],
+      changedLineRanges: new Map([['src/app.js', [{ start: 3, end: 3 }]]]),
+    });
+
+    expect(finding.locationValidated).toBe(true);
+    expect(finding.startLine).toBe(3);
+  });
+
+  it('uses a verified provider line hint when repeated spectre evidence is changed twice', async () => {
+    mockReadFile.mockResolvedValueOnce('send(token);\nconst safe = true;\nsend(token);\n');
+    const [finding] = await validateFindingLocations([{
+      file: 'src/app.js', evidence: 'send(token);', severity: 'high', message: 'exfiltration',
+      ruleId: 'credential-exfiltration', line: 1, reportedStartLine: 3, reportedEndLine: 3, tool: 'spectre',
+    }], {
+      workspacePath: '/tmp/ws', changedFiles: ['src/app.js'],
+      changedLineRanges: new Map([['src/app.js', [{ start: 1, end: 1 }, { start: 3, end: 3 }]]]),
+    });
+
+    expect(finding.locationValidated).toBe(true);
+    expect(finding.startLine).toBe(3);
+  });
+
+  it('rejects spectre evidence that is only partially changed', async () => {
+    mockReadFile.mockResolvedValueOnce('const token = process.env.TOKEN;\nawait send(token);\n');
+    const [finding] = await validateFindingLocations([{
+      file: 'src/app.js', evidence: 'const token = process.env.TOKEN;\nawait send(token);', severity: 'high',
+      message: 'credential exfiltration', ruleId: 'credential-exfiltration', line: 2, tool: 'spectre',
+    }], {
+      workspacePath: '/tmp/ws', changedFiles: ['src/app.js'],
+      changedLineRanges: new Map([['src/app.js', [{ start: 2, end: 2 }]]]),
+    });
+
+    expect(finding.locationValidated).toBe(false);
+    expect(finding.locationReason).toBe('evidence-outside-changed-range');
+  });
+
   it('keeps Claude findings inlineable even when the exact evidence is outside the changed hunks', async () => {
     mockReadFile.mockResolvedValueOnce('line1\nconst token = getSecret();\nline3\n');
 
@@ -481,5 +569,44 @@ describe('validateFindingLocations()', () => {
     expect(finding.annotationEligible).toBe(true);
     expect(finding.annotationStartLine).toBe(2);
     expect(finding.annotationEndLine).toBe(2);
+  });
+});
+
+describe('adapter validation coverage', () => {
+  const rejectedClaudeFinding: ProcessedFinding = {
+    file: 'src/app.js', line: 2, severity: 'high', message: 'candidate', ruleId: 'claude/x', tool: 'claude',
+    locationValidated: false,
+  };
+  const rejectedSpectreFinding: ProcessedFinding = {
+    file: 'src/app.js', line: 2, severity: 'high', message: 'candidate', ruleId: 'spectre/x', tool: 'spectre',
+    locationValidated: false,
+  };
+
+  it('marks every enabled evidence-validated adapter incomplete when findings are rejected', () => {
+    const statuses = completeStatuses();
+
+    expect(applyAdapterValidationCoverage(statuses, [rejectedClaudeFinding, rejectedSpectreFinding])).toBe(2);
+
+    expect(statuses.claude).toEqual({ outcome: 'incomplete', reason: 'finding-validation-rejected' });
+    expect(statuses.spectre).toMatchObject({
+      outcome: 'incomplete', rejectedFindings: 1, reason: 'finding-validation-rejected',
+    });
+  });
+
+  it('does not change disabled adapter statuses for rejected findings', () => {
+    const statuses = completeStatuses();
+    statuses.claude = { outcome: 'disabled' };
+
+    expect(applyAdapterValidationCoverage(statuses, [rejectedClaudeFinding])).toBe(0);
+    expect(statuses.claude).toEqual({ outcome: 'disabled' });
+  });
+
+  it('retains the Spectre-only helper used by the simulator', () => {
+    const status: SpectreScanStatus = completeStatuses().spectre;
+
+    expect(applySpectreValidationCoverage(status, [rejectedSpectreFinding])).toBe(1);
+    expect(status).toMatchObject({
+      outcome: 'incomplete', rejectedFindings: 1, reason: 'finding-validation-rejected',
+    });
   });
 });

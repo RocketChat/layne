@@ -3,7 +3,8 @@ import { join, extname } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { debug } from '../debug.js';
 import { DEFAULT_CONFIG } from '../config.js';
-import type { ClaudeConfig, ClaudeRawFinding, AnchorKind, LineRangesByFile, LineRange } from '../types.js';
+import type { AdapterResult, ClaudeConfig, ClaudeRawFinding, AnchorKind, LineRangesByFile, LineRange } from '../types.js';
+import { throwIfAborted } from './helpers.js';
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
@@ -91,13 +92,20 @@ interface FileContent {
 }
 
 interface ScanBatchResult {
-  findings?: ClaudeRawFinding[];
-  error?: boolean;
+  findings: ClaudeRawFinding[];
+  outcome: 'complete' | 'failed' | 'invalid';
 }
+
+const INCOMPLETE_REASONS = {
+  unreadableFiles: 'file-read-failed',
+  clientInitialization: 'client-initialization-failed',
+  failedBatch: 'api-batch-failed',
+  invalidResponse: 'invalid-provider-response',
+} as const;
 
 /**
  * Runs Claude against the files changed in the PR and returns findings
- * in the common format: { file, line, severity, message, ruleId, tool }.
+ * in the common format with the adapter's completion status.
  */
 export async function runClaude({
   workspacePath,
@@ -105,17 +113,22 @@ export async function runClaude({
   changedLineRanges = new Map(),
   promptFiles = [],
   toolConfig = DEFAULT_CONFIG.claude,
+  signal,
 }: {
   workspacePath: string;
   changedFiles?: string[] | null;
   changedLineRanges?: LineRangesByFile | Record<string, LineRange[]>;
   promptFiles?: Array<{ file: string; content: string }>;
   toolConfig?: ClaudeConfig;
-}): Promise<ClaudeRawFinding[]> {
-  if (!changedFiles || changedFiles.length === 0) return [];
+  signal?: AbortSignal;
+}): Promise<AdapterResult<ClaudeRawFinding>> {
+  throwIfAborted(signal);
   if (!toolConfig.enabled) {
     console.log('[claude] skipping — not enabled for this repo (set "claude": {"enabled": true} in config/layne.json)');
-    return [];
+    return { findings: [], status: { outcome: 'disabled' } };
+  }
+  if (!changedFiles || changedFiles.length === 0) {
+    return { findings: [], status: { outcome: 'complete' } };
   }
 
   const mode = toolConfig.skill ? 'skill' : 'prompt';
@@ -126,6 +139,7 @@ export async function runClaude({
 
   // 1. Build file contents.
   const fileContents: FileContent[] = [];
+  let unreadableFiles = 0;
 
   // Helper to get ranges from either a Map or plain object
   function getRanges(file: string): LineRange[] {
@@ -136,11 +150,19 @@ export async function runClaude({
   }
 
   if (promptFiles.length > 0) {
+    const promptFileSet = new Set(promptFiles.map(({ file }) => file));
+    unreadableFiles += changedFiles.filter(file =>
+      !promptFileSet.has(file)
+      && !BINARY_EXTENSIONS.has(extname(file).toLowerCase())
+      && getRanges(file).length > 0
+    ).length;
     for (const { file, content } of promptFiles) {
+      throwIfAborted(signal);
       fileContents.push({ file, content, promptContent: formatSnippetForPrompt(file, content) });
     }
   } else {
     for (const file of changedFiles) {
+      throwIfAborted(signal);
       if (BINARY_EXTENSIONS.has(extname(file).toLowerCase())) {
         debug('claude', `skipping binary file: ${file}`);
         continue;
@@ -149,9 +171,12 @@ export async function runClaude({
       try {
         content = await readFile(join(workspacePath, file), 'utf8');
       } catch {
+        throwIfAborted(signal);
         debug('claude', `could not read file: ${file}`);
+        unreadableFiles++;
         continue;
       }
+      throwIfAborted(signal);
       if (content.length > FILE_SIZE_LIMIT) {
         content = content.slice(0, FILE_SIZE_LIMIT) + '\n[truncated]';
       }
@@ -163,37 +188,72 @@ export async function runClaude({
     }
   }
 
-  if (fileContents.length === 0) return [];
+  if (fileContents.length === 0) {
+    return {
+      findings: [],
+      status: unreadableFiles > 0
+        ? { outcome: 'incomplete', reason: INCOMPLETE_REASONS.unreadableFiles }
+        : { outcome: 'complete' },
+    };
+  }
 
   // 2. Split into batches by BATCH_CHAR_LIMIT
   const batches = splitIntoBatches(fileContents, BATCH_CHAR_LIMIT);
   debug('claude', `split into ${batches.length} batch(es)`);
 
   // 3. Call Claude for each batch
-  const client = new Anthropic();
+  let client: Anthropic;
+  try {
+    client = new Anthropic();
+  } catch (err) {
+    throwIfAborted(signal);
+    console.error('[claude] client initialization failed:', (err as Error).message ?? err);
+    return {
+      findings: [],
+      status: { outcome: 'incomplete', reason: INCOMPLETE_REASONS.clientInitialization },
+    };
+  }
   const findings: ClaudeRawFinding[] = [];
-  let errorCount = 0;
+  let failedBatchCount = 0;
+  let invalidResponseCount = 0;
   for (const batch of batches) {
+    throwIfAborted(signal);
     const result = toolConfig.skill
-      ? await scanBatchWithSkill(client, batch, toolConfig.model, toolConfig.skill)
-      : await scanBatchWithPrompt(client, batch, toolConfig.model, toolConfig.prompt ?? SYSTEM_PROMPT);
+      ? await scanBatchWithSkill(client, batch, toolConfig.model, toolConfig.skill, signal)
+      : await scanBatchWithPrompt(client, batch, toolConfig.model, toolConfig.prompt ?? SYSTEM_PROMPT, signal);
+    throwIfAborted(signal);
 
-    if (result.error) {
-      errorCount++;
-    } else {
-      findings.push(...(result.findings ?? []));
+    findings.push(...result.findings);
+    if (result.outcome === 'failed') {
+      failedBatchCount++;
+    } else if (result.outcome === 'invalid') {
+      invalidResponseCount++;
     }
   }
 
-  if (errorCount > 0) {
-    console.error(`[claude] ${errorCount}/${batches.length} batch(es) failed — findings may be incomplete`);
+  if (failedBatchCount > 0) {
+    console.error(`[claude] ${failedBatchCount}/${batches.length} batch(es) failed — findings may be incomplete`);
   }
-  console.log(`[claude] ${findings.length} finding(s)${errorCount > 0 ? ' (incomplete — API errors occurred)' : ''}:`);
+  if (invalidResponseCount > 0) {
+    console.error(`[claude] ${invalidResponseCount}/${batches.length} batch(es) returned an invalid response — findings may be incomplete`);
+  }
+  const incomplete = unreadableFiles > 0 || failedBatchCount > 0 || invalidResponseCount > 0;
+  console.log(`[claude] ${findings.length} finding(s)${incomplete ? ' (incomplete)' : ''}:`);
   for (const f of findings) {
     console.log(`[claude]   ${f.severity.toUpperCase()} ${f.file}:${f.startLine ?? f.line}-${f.endLine ?? f.line} [${f.ruleId}] ${f.message}`);
   }
 
-  return findings;
+  const reason = failedBatchCount > 0
+    ? INCOMPLETE_REASONS.failedBatch
+    : invalidResponseCount > 0
+      ? INCOMPLETE_REASONS.invalidResponse
+      : unreadableFiles > 0
+        ? INCOMPLETE_REASONS.unreadableFiles
+        : undefined;
+  return {
+    findings,
+    status: reason ? { outcome: 'incomplete', reason } : { outcome: 'complete' },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,23 +265,30 @@ async function scanBatchWithPrompt(
   files: FileContent[],
   model: string,
   prompt: string,
+  signal?: AbortSignal,
 ): Promise<ScanBatchResult> {
   const userMessage = buildUserMessage(files);
 
   try {
-    const response = await client.messages.create({
+    throwIfAborted(signal);
+    const params = {
       model,
       max_tokens: 1024,
       system: prompt,
-      messages: [{ role: 'user', content: userMessage }],
+      messages: [{ role: 'user' as const, content: userMessage }],
       tools: [REPORT_FINDINGS_TOOL],
-      tool_choice: { type: 'any' },
-    });
+      tool_choice: { type: 'any' as const },
+    };
+    const response = signal
+      ? await client.messages.create(params, { signal })
+      : await client.messages.create(params);
+    throwIfAborted(signal);
 
     return extractFindings(response.content);
   } catch (err) {
+    throwIfAborted(signal);
     console.error('[claude] API error during scan batch (prompt mode):', (err as Error).message ?? err);
-    return { error: true };
+    return { findings: [], outcome: 'failed' };
   }
 }
 
@@ -234,6 +301,7 @@ async function scanBatchWithSkill(
   files: FileContent[],
   model: string,
   skillConfig: NonNullable<ClaudeConfig['skill']>,
+  signal?: AbortSignal,
 ): Promise<ScanBatchResult> {
   const userMessage = buildUserMessage(files);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -253,35 +321,40 @@ async function scanBatchWithSkill(
   ];
 
   try {
+    throwIfAborted(signal);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let response = await (client.beta.messages as any).create({
+    const betaMessages = client.beta.messages as any;
+    let response = await betaMessages.create({
       model,
       max_tokens: 4096,
       betas:    ['code-execution-2025-08-25', 'skills-2025-10-02'],
       container: containerSpec,
       messages,
       tools,
-    });
+    }, ...(signal ? [{ signal }] : []));
+    throwIfAborted(signal);
 
     // Continue if the skill needs more turns (long-running code execution)
     for (let i = 0; i < MAX_SKILL_TURNS && response.stop_reason === 'pause_turn'; i++) {
+      throwIfAborted(signal);
       debug('claude', `pause_turn continuation ${i + 1}/${MAX_SKILL_TURNS}`);
       messages.push({ role: 'assistant', content: response.content });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      response = await (client.beta.messages as any).create({
+      response = await betaMessages.create({
         model,
         max_tokens: 4096,
         betas:    ['code-execution-2025-08-25', 'skills-2025-10-02'],
         container: { id: response.container.id, ...containerSpec },
         messages,
         tools,
-      });
+      }, ...(signal ? [{ signal }] : []));
+      throwIfAborted(signal);
     }
 
     return extractFindings(response.content);
   } catch (err) {
+    throwIfAborted(signal);
     console.error('[claude] API error during scan batch (skill mode):', (err as Error).message ?? err);
-    return { error: true };
+    return { findings: [], outcome: 'failed' };
   }
 }
 
@@ -311,14 +384,40 @@ interface RawFindingFromApi {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractFindings(content: any[]): ScanBatchResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const toolUse = content.find((b: any) =>
+  const toolUses = content.filter((b: any) =>
     b.type === 'tool_use' && b.name === 'report_findings'
   );
-  if (!toolUse) return { findings: [] };
+  if (toolUses.length === 0) return { findings: [], outcome: 'invalid' };
 
-  return {
-    findings: ((toolUse.input.findings as RawFindingFromApi[] | undefined) ?? []).map(normalizeFinding),
-  };
+  const findings: ClaudeRawFinding[] = [];
+  let invalid = toolUses.length > 1;
+  for (const toolUse of toolUses) {
+    if (!toolUse.input || !Array.isArray(toolUse.input.findings)) {
+      invalid = true;
+      continue;
+    }
+    for (const candidate of toolUse.input.findings as RawFindingFromApi[]) {
+      if (!isRawFindingFromApi(candidate)) {
+        invalid = true;
+        continue;
+      }
+      try {
+        findings.push(normalizeFinding(candidate));
+      } catch {
+        invalid = true;
+      }
+    }
+  }
+  return { findings, outcome: invalid ? 'invalid' : 'complete' };
+}
+
+function isRawFindingFromApi(value: unknown): value is RawFindingFromApi {
+  if (!value || typeof value !== 'object') return false;
+  const finding = value as Partial<RawFindingFromApi>;
+  return typeof finding.file === 'string'
+    && ['critical', 'high', 'medium', 'low', 'info'].includes(finding.severity ?? '')
+    && typeof finding.message === 'string'
+    && typeof finding.ruleId === 'string';
 }
 
 function splitIntoBatches(fileContents: FileContent[], charLimit: number): FileContent[][] {

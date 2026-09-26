@@ -49,7 +49,8 @@ export function buildAnnotations(findings: ProcessedFinding[]): ReportResult {
       `${count(findings, 'critical')} critical, ` +
       `${count(findings, 'high')} high, ` +
       `${count(findings, 'medium')} medium, ` +
-      `${count(findings, 'low')} low.` +
+      `${count(findings, 'low')} low, ` +
+      `${count(findings, 'info')} info.` +
       `${inlineableFindings.length === findings.length ? '' : ` ${findings.length - inlineableFindings.length} finding(s) could not be placed inline.`}`;
 
   return { annotations, conclusion, summary };

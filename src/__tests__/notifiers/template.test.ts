@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildContext, renderTemplate } from '../../notifiers/template.js';
+import { projectNotificationState } from '../../notification-state.js';
+import { buildContext, buildNotificationContext, renderTemplate } from '../../notifiers/template.js';
+import type { FinalSecurityState } from '../../notifiers/types.js';
 import type { ProcessedFinding, TemplateContext } from '../../types.js';
 
 const FINDING_CRITICAL: ProcessedFinding = { file: 'a.js', line: 1, severity: 'critical', message: 'critical', ruleId: 'r/c', tool: 'semgrep' };
@@ -77,11 +79,35 @@ describe('buildContext()', () => {
     expect(ctx.rules).toBe('');
   });
 
-  it('ignores unknown severity values in counts', () => {
-    const unknownSev = { ...FINDING_HIGH, severity: 'info' as 'high' };
-    const ctx = buildContext([unknownSev], 'o', 'r', 1);
+  it('counts info findings', () => {
+    const infoFinding = { ...FINDING_HIGH, severity: 'info' as const };
+    const ctx = buildContext([infoFinding], 'o', 'r', 1);
     expect(ctx.high).toBe(0);
-    expect(ctx.total).toBe(1); // total still counts all findings
+    expect(ctx.info).toBe(1);
+    expect(ctx.severitySummary).toBe('1 info');
+  });
+
+  it('builds threshold-aware notification and event-specific coverage values', () => {
+    const state: FinalSecurityState = {
+      conclusion: 'failure',
+      findings: [FINDING_HIGH, FINDING_MEDIUM, FINDING_LOW],
+      coverageIssues: [
+        { level: 'blocking', source: 'spectre', reason: 'omitted-high-risk-file', count: 2 },
+        { level: 'incomplete', source: 'semgrep', reason: 'partial-results', count: 1 },
+      ],
+      exceptionApproval: null,
+    };
+    const projection = projectNotificationState(state, {
+      enabled: true,
+      notifyOn: ['findings', 'coverage-failure', 'incomplete-scan'],
+      minFindingSeverity: 'medium',
+    });
+    const ctx = buildNotificationContext(state, projection, 'acme', 'payments', 42);
+
+    expect(ctx.notificationTotal).toBe(2);
+    expect(ctx.blockingCoverageSummary).toBe('spectre: omitted-high-risk-file (2)');
+    expect(ctx.incompleteCoverageSummary).toBe('semgrep: partial-results (1)');
+    expect(ctx.coverageSummary).toBe('spectre: omitted-high-risk-file (2), semgrep: partial-results (1)');
   });
 });
 

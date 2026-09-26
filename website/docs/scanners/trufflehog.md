@@ -30,9 +30,11 @@ Arguments are passed via `execFile` - not through a shell - so shell injection t
 
 **Batching:** To stay under the OS `ARG_MAX` limit, files are processed in batches of 200. On most PRs this is invisible; on large monorepo PRs with many changed files, you will see batch progress in the logs when `DEBUG_MODE=true`.
 
-**Exit codes:** Trufflehog exits `183` when secrets are found. Layne treats this as a normal result and parses stdout, not as an error.
+**Exit codes:** Trufflehog exits `0` for a valid clean result and `183` when secrets are found. Layne treats both as complete and parses stdout. Any other exit code makes the adapter incomplete.
 
 **Output format:** Trufflehog emits newline-delimited JSON - one result object per line.
+
+If a batch cannot run or any output line is malformed, Trufflehog is marked incomplete. Findings parsed from earlier batches and valid lines are retained. Without a blocking finding, Layne publishes a `neutral` Check Run rather than claiming complete secret-scanning coverage. Raw failures stay in worker logs; summaries use stable reason codes.
 
 **Severity:** All Trufflehog findings are reported as `high` severity, which maps to a `failure` annotation in the GitHub Check Run and blocks merge when branch protection is enabled.
 

@@ -76,7 +76,7 @@ Two separate Node.js processes:
 - **`pull_request` trigger (default):** ignores drafts by default; on opened/synchronize/reopened/ready_for_review for eligible PRs, creates a Check Run in `queued` state, enqueues a BullMQ job, returns 200
 - **`workflow_run` trigger:** on `pull_request` events, caches PR metadata in Redis (TTL 7 days) and creates a `skipped` Check Run; on `workflow_run completed` events matching the configured workflow name and conclusion, looks up cached PR metadata (falls back to GitHub API if cache is cold) then enqueues the scan
 - **`workflow_job` trigger:** same two-stage pattern as `workflow_run` but gates on a single named job completing rather than the whole workflow
-- **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores exceptions in Redis scoped to the PR (not the commit SHA); re-enqueues the scan if the current check run is in `failure` state
+- **`issue_comment` trigger:** parses `/layne exception-approve` commands from PR comments; validates the commenter is an authorized exception approver; stores selected-ID exceptions in Redis scoped to the PR (not the commit SHA); `/layne exception-approve all` creates a one-shot head-scoped request that the re-scan materializes into exact blocking finding IDs; re-enqueues the scan if the current check run is in `failure` state
 - Job ID is deduplicated by `{repo}#{pr}@{sha}` - duplicate webhook deliveries are no-ops (Redis lock + queue check)
 - Exported `app` and `processWebhookRequest` for use in tests
 
@@ -105,17 +105,17 @@ Two separate Node.js processes:
 15. Complete Check Run
 16. Post PR comment if `comment.enabled` via `src/commenter.ts` → `postComment`
 17. Apply/remove PR labels via `src/github.ts` → `ensureLabelsExist` + `setLabels`
-18. Notify via `src/notifiers/index.ts` → `notify()` (always fires on exception approval; otherwise only when finding count increases)
+18. Build the final notification state and dispatch via `src/notifiers/index.ts` → `notify()`; each notifier fingerprints relevant findings, coverage failures, internal errors, and exceptions independently
 19. Clean up workspace in `finally`
 
 **Scanners (`src/adapters/`):**
-- `semgrep.ts` - runs `semgrep scan --config auto --json`; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low
+- `semgrep.ts` - runs `semgrep scan --config auto --json` against complete selected HEAD files; `diff_only` findings are post-filtered to exact changed lines; exit code 1 = findings found (not an error); maps ERROR→high, WARNING→medium, INFO→low
 - `trufflehog.ts` - runs `trufflehog filesystem --json --no-update`; exit code 183 = secrets found (not an error); batched at 200 files to stay under ARG_MAX; all findings are severity `high`
 - `claude.ts` - calls the Anthropic API to detect malicious intent; **disabled by default**, opt in per repo; skips binary files; caps files at 50 KB; batches at 100 KB per API call; errors are caught and logged without failing the scan. Supports two modes (configured per-repo in `config/layne.json`):
   - **Prompt mode** (default): single `messages.create` call with a system prompt; use `claude.prompt` to override
   - **Skill mode**: uses the Anthropic [API Skills beta](https://platform.claude.com/docs/en/build-with-claude/skills-guide) - adds a `code_execution` tool + an uploaded skill to each batch call, enabling runtime decoding, registry lookups, and richer static analysis; set `claude.skill: { id, version }` to enable; handles `pause_turn` continuations automatically (up to 10 turns per batch)
-- `spectre.ts` - malicious intent scanner; **disabled by default**, opt in per repo; makes a single direct LLM call per file (no agent session, no tools, no import following); supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock via `@mariozechner/pi-ai`; tier-prioritised file cap (manifest/CI files always scanned first); configurable per-repo skip paths/extensions, file cap, diff line cap, min severity, and concurrency; ruleId prefix `spectre/`
-- `dep-doctor.ts` - dependency health scanner; **disabled by default**, opt in per repo; only fires when a lockfile is changed by the PR; diffs the changed lockfile against the merge-base version (via `git show`) to identify newly-added packages only; runs OSV-Scanner for CVE detection (ruleId `dep-doctor/<CVE-ID>`); checks npm/PyPI registry APIs for abandoned (ruleId `dep-doctor/abandoned`) and deprecated (ruleId `dep-doctor/deprecated`) packages; supported lockfiles: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `go.sum`; registry health checks for npm and PyPI only (Go skipped); errors caught and logged without failing the scan; requires `osv-scanner` in PATH
+- `spectre.ts` - bounded malicious-intent scanner; **disabled by default**, opt in per repo; excludes ordinary prose before scoring, then analyzes eligible code-bearing typed diffs as one whole-PR request when possible or bounded related/file/hunk chunks otherwise (no agent session, tools, import following, or repository browsing); supports Anthropic, OpenAI, Google, Mistral, and Amazon Bedrock via `@earendil-works/pi-ai`; deterministic risk scoring prioritizes execution surfaces and compound behavior; configurable per-repo skip paths/extensions, file and call caps, input/output limits, minimum severity, and concurrency; ruleId prefix `spectre/`
+- `dep-doctor.ts` - dependency health scanner; **disabled by default**, opt in per repo; only fires when a lockfile is changed by the PR; compares resolved package/version pairs against the merge-base lockfile; runs OSV-Scanner for known-vulnerability detection (bare OSV ID rule IDs); checks public npm/PyPI registry APIs for abandoned and deprecated packages (ruleId `abandoned/deprecated`); supported lockfiles: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `go.sum`; registry health checks support every listed npm/PyPI format while Go is OSV-only; malformed, unsupported, size-excluded, and operationally failed coverage returns `incomplete`; requires `osv-scanner` in PATH
 - `helpers.ts` - shared adapter utility functions
 
 **Common finding shape:**
@@ -137,7 +137,7 @@ Two separate Node.js processes:
 | `src/types.ts` | All TypeScript type definitions: findings, config, runtime, enums |
 | `src/config.ts` | Loads and merges `config/layne.json`; cached after first read |
 | `src/config-validator.ts` | Standalone config validation; also runnable via `npm run validate-config` |
-| `src/scan-context.ts` | Builds `ScanContext`; implements `diff_only` mode by projecting changed hunks into `.layne/diff-only/` |
+| `src/scan-context.ts` | Builds `ScanContext`; implements `diff_only` mode in an unpredictable worker-owned `.layne-diff-*` directory within the temporary workspace |
 | `src/github.ts` | Check Run CRUD + label management (`ensureLabelsExist`, `setLabels`) |
 | `src/metrics.ts` | Prometheus metric definitions; exports no-op stubs when `METRICS_ENABLED` is not `true` |
 | `src/notifiers/index.ts` | Notification orchestrator; iterates registered notifiers |
@@ -163,7 +163,8 @@ Key points for code navigation:
 - `extraArgs` fully replaces the default (not extended)
 - `config/layne.json` must be present in the Docker image (`COPY config/ ./config/`)
 - Notifier contract: `async function notify({ findings, owner, repo, prNumber, toolConfig })` - must never throw
-- Notification dedup key: `layne:scan:count:{owner}/{repo}#{prNumber}` (Redis, 30-day TTL)
+- Notification dedup key: `layne:notification:v1:{notifier}:{owner}/{repo}#{prNumber}` (Redis, 30-day TTL)
+- Notifications default to critical/high findings, final internal errors, and effective exception approvals; coverage events are opt-in via `notifyOn`, and non-blocking findings are opt-in via `minFindingSeverity`
 - `webhookUrl` values starting with `$` are resolved from `process.env` at runtime
 - Label errors never affect the scan result or Check Run
 

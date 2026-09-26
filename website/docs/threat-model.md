@@ -196,11 +196,13 @@ Rotate the key in the Anthropic console and update `ANTHROPIC_API_KEY` in your `
 | Data | Where stored | Retention |
 |---|---|---|
 | Scan job queue | Redis | Until job completes or fails; evicted by BullMQ |
-| Notification dedup counts | Redis (`layne:scan:count:…`) | 30-day TTL |
+| Notification dedup cursors | Redis (`layne:notification:v1:…`) | 30-day TTL |
 | Exception approval records | Redis (`layne:exception:…`, `layne:exception-ids:…`) | 30-day TTL; invalidated when the flagged line changes |
+| Pending/materialized bulk exception requests | Redis (`layne:exception-all-request:…`) | 30-day TTL; bound to one PR head and GitHub comment ID |
+| Bulk exception comment-to-head bindings | Redis (`layne:exception-all-comment:…`) | 30-day TTL; prevents a redelivered GitHub comment from approving another head |
 | PR metadata cache (deferred triggers) | Redis (`layne:pr:…`) | 7-day TTL |
 | Cloned repository workspaces | Ephemeral temp directory | Deleted in `finally` block after each scan |
-| Scan findings | Not stored | Posted directly to the GitHub Check Run and discarded |
+| Scan findings | GitHub Check Runs; optional Spectre response cache in Redis | Cache TTLs are configurable; cache entries include source evidence and are HMAC-signed, not encrypted. Access to Redis and its backups must be restricted accordingly. |
 
 Layne does not maintain a database of findings. If Redis is lost, the only consequence is that notifications may re-fire for previously notified PRs.
 

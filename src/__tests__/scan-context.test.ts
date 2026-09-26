@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,7 +23,12 @@ describe('createScanContext()', () => {
     await rm(workspacePath, { recursive: true, force: true });
   });
 
-  it('returns the original workspace unchanged in changed_files mode', async () => {
+  it('keeps the original workspace in changed_files mode while preparing a bounded LLM prompt', async () => {
+    await mkdir(join(workspacePath, 'src'), { recursive: true });
+    await writeFile(join(workspacePath, 'src/app.js'), 'old\nchanged\n', 'utf8');
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      cb(null, '@@ -2,1 +2,1 @@\n', '');
+    });
     const context = await createScanContext({
       workspacePath,
       changedFiles: ['src/app.js'],
@@ -39,10 +44,60 @@ describe('createScanContext()', () => {
       baseSha: 'base',
       repoWorkspacePath: workspacePath,
       scanWorkspacePath: workspacePath,
+      sourceFiles: ['src/app.js'],
       scanFiles: ['src/app.js'],
-      promptFiles: [],
-      changedLineRanges: new Map(),
+      promptFiles: [{ file: 'src/app.js', content: '@@ lines 1-2 @@\n1| old\n2| changed' }],
+      changedLineRanges: new Map([['src/app.js', [{ start: 2, end: 2 }]]]),
     });
+    expect(mockExecFile).toHaveBeenCalledOnce();
+  });
+
+  it('reuses canonical changed ranges instead of running a second Git diff', async () => {
+    await mkdir(join(workspacePath, 'src'), { recursive: true });
+    await writeFile(join(workspacePath, 'src/app.js'), 'old\nchanged\n', 'utf8');
+    const ranges = new Map([['src/app.js', [{ start: 2, end: 2 }]]]);
+
+    const context = await createScanContext({
+      workspacePath,
+      changedFiles: ['src/app.js'],
+      baseSha: 'base',
+      headSha: 'head',
+      scanConfig: { mode: 'changed_files', contextLines: 0 },
+      changedLineRanges: ranges,
+    });
+
+    expect(context.changedLineRanges).toBe(ranges);
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('stops range extraction when the signal is aborted during Git', async () => {
+    const controller = new AbortController();
+    mockExecFile.mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      controller.abort(new Error('scan deadline'));
+      cb(null, '@@ -1,1 +1,1 @@\n', '');
+    });
+
+    await expect(createScanContext({
+      workspacePath,
+      changedFiles: ['src/app.js'],
+      baseSha: 'base',
+      headSha: 'head',
+      signal: controller.signal,
+    })).rejects.toThrow('scan deadline');
+  });
+
+  it('does not start file projection with an already-aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled'));
+
+    await expect(createScanContext({
+      workspacePath,
+      changedFiles: ['src/app.js'],
+      baseSha: 'base',
+      headSha: 'head',
+      changedLineRanges: new Map([['src/app.js', [{ start: 1, end: 1 }]]]),
+      signal: controller.signal,
+    })).rejects.toThrow('cancelled');
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
@@ -89,6 +144,7 @@ describe('createScanContext()', () => {
       { file: 'src/app.js', line: 3, tool: 'semgrep' },
       { file: 'src/app.js', line: 4, tool: 'semgrep' },
       { file: 'src/other.js', line: 1, tool: 'semgrep' },
+      { file: 'package-lock.json', line: 5, tool: 'dep-doctor' },
     ];
 
     const filtered = filterFindingsToChangedLines(findings, {
@@ -98,6 +154,7 @@ describe('createScanContext()', () => {
       baseSha: 'base',
       repoWorkspacePath: '/tmp/ws',
       scanWorkspacePath: '/tmp/ws',
+      sourceFiles: [],
       scanFiles: [],
       promptFiles: [],
       changedLineRanges: new Map([
@@ -105,6 +162,26 @@ describe('createScanContext()', () => {
       ]),
     });
 
-    expect(filtered).toEqual([{ file: 'src/app.js', line: 3, tool: 'semgrep' }]);
+    expect(filtered).toEqual([
+      { file: 'src/app.js', line: 3, tool: 'semgrep' },
+      { file: 'package-lock.json', line: 5, tool: 'dep-doctor' },
+    ]);
+  });
+
+  it('does not follow a repository-controlled .layne symlink when projecting files', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'layne-projection-outside-'));
+    try {
+      await symlink(outside, join(workspacePath, '.layne'));
+      await writeFile(join(workspacePath, 'app.js'), 'eval(input);\n');
+      const context = await createScanContext({
+        workspacePath, changedFiles: ['app.js'], baseSha: 'base', headSha: 'head',
+        scanConfig: { mode: 'diff_only', contextLines: 0 },
+        changedLineRanges: new Map([['app.js', [{ start: 1, end: 1 }]]]),
+      });
+      expect(await readFile(join(context.scanWorkspacePath, 'app.js'), 'utf8')).toBe('eval(input);\n');
+      await expect(readFile(join(outside, 'diff-only/app.js'))).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
